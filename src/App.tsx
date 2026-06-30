@@ -21,6 +21,23 @@ type NoteGenerationReport = {
   total_chunks: number
 }
 
+type ChunkLlmQuestionPreview = {
+  question: string
+  option_a: string
+  option_b: string
+  option_c: string
+  option_d: string
+  correct_answer: string
+  explanation: string
+}
+
+type ChunkLlmResult = {
+  status: string
+  key_points: string[]
+  questions: ChunkLlmQuestionPreview[]
+  error: string | null
+}
+
 type ChunkPreview = {
   note_path: string
   note_title: string
@@ -31,6 +48,7 @@ type ChunkPreview = {
   end_line: number
   char_count: number
   preview_text: string
+  llm_result: ChunkLlmResult
 }
 
 type GenerationSummary = {
@@ -50,6 +68,7 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationSummary, setGenerationSummary] = useState<GenerationSummary | null>(null)
   const [showChunks, setShowChunks] = useState(false)
+  const [selectedChunk, setSelectedChunk] = useState<ChunkPreview | null>(null)
   const [error, setError] = useState('')
 
   const chooseVault = async () => {
@@ -80,6 +99,7 @@ function App() {
     setSelectedNote(null)
     setGenerationSummary(null)
     setShowChunks(false)
+    setSelectedChunk(null)
 
     try {
       const data = await invoke<Note[]>('get_notes', { vaultPath: path })
@@ -107,6 +127,7 @@ function App() {
       })
       setGenerationSummary(summary)
       setShowChunks(false)
+      setSelectedChunk(null)
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to generate chunk preview'
@@ -192,16 +213,65 @@ function App() {
                   {generationSummary.chunk_previews.map((chunk) => (
                     <li
                       key={`${chunk.note_path}-${chunk.section_index}-${chunk.chunk_index}`}
-                      className="chunk-item"
+                      className={`chunk-item${selectedChunk?.note_path === chunk.note_path && selectedChunk.section_index === chunk.section_index && selectedChunk.chunk_index === chunk.chunk_index ? ' is-selected' : ''}`}
                     >
-                      <div className="chunk-item-head">
-                        <h3>{chunk.heading}</h3>
-                        <span>{chunk.char_count} chars</span>
-                      </div>
-                      <p className="chunk-meta">
-                        {chunk.note_title} • lines {chunk.start_line}-{chunk.end_line}
-                      </p>
-                      <p className="chunk-preview-text">{chunk.preview_text}</p>
+                      <button
+                        type="button"
+                        className={`chunk-item-btn${selectedChunk?.note_path === chunk.note_path && selectedChunk.section_index === chunk.section_index && selectedChunk.chunk_index === chunk.chunk_index ? ' is-active' : ''}`}
+                        onClick={() => setSelectedChunk(chunk)}
+                      >
+                        <div className="chunk-item-head">
+                          <h3>{chunk.heading}</h3>
+                          <span>{chunk.char_count} chars</span>
+                        </div>
+                        <p className="chunk-meta">
+                          {chunk.note_title} • lines {chunk.start_line}-{chunk.end_line}
+                        </p>
+                        <p className="chunk-preview-text">{chunk.preview_text}</p>
+                      </button>
+
+                      {selectedChunk?.note_path === chunk.note_path && selectedChunk.section_index === chunk.section_index && selectedChunk.chunk_index === chunk.chunk_index && (
+                        <article className="chunk-result-panel">
+                          <h3>
+                            Chunk Result • {chunk.heading}
+                          </h3>
+                          <p className="chunk-result-status">
+                            Status: {chunk.llm_result.status}
+                          </p>
+
+                          {chunk.llm_result.error ? (
+                            <p className="chunk-result-error">{chunk.llm_result.error}</p>
+                          ) : (
+                            <div className="chunk-result-block">
+                              <h4>MCQs</h4>
+                              <ul>
+                                {chunk.llm_result.questions.map((mcq) => (
+                                  <li key={`${mcq.question}-${mcq.correct_answer}`} className="chunk-mcq-item">
+                                    <p className="chunk-result-question">{mcq.question}</p>
+                                    <ul className="chunk-mcq-options">
+                                      <li className={mcq.correct_answer === 'A' ? 'is-correct' : ''}>
+                                        <span>A.</span> {mcq.option_a}
+                                      </li>
+                                      <li className={mcq.correct_answer === 'B' ? 'is-correct' : ''}>
+                                        <span>B.</span> {mcq.option_b}
+                                      </li>
+                                      <li className={mcq.correct_answer === 'C' ? 'is-correct' : ''}>
+                                        <span>C.</span> {mcq.option_c}
+                                      </li>
+                                      <li className={mcq.correct_answer === 'D' ? 'is-correct' : ''}>
+                                        <span>D.</span> {mcq.option_d}
+                                      </li>
+                                    </ul>
+                                    <p className="chunk-result-answer">
+                                      Correct Answer: {mcq.correct_answer}
+                                    </p>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </article>
+                      )}
                     </li>
                   ))}
                 </ul>

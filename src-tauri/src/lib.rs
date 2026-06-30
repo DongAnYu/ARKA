@@ -2,6 +2,8 @@
 mod models;
 mod services;
 
+use std::path::PathBuf;
+
 use models::note::Note;
 use models::question::Question;
 use services::generation::GenerationSummary;
@@ -19,8 +21,8 @@ fn get_notes(vault_path: String) -> Result<Vec<Note>, String> {
 }
 
 #[tauri::command]
-fn preview_generation(vault_path: String) -> Result<GenerationSummary, String> {
-  services::generation::orchestrate_vault(&vault_path)
+async fn preview_generation(vault_path: String) -> Result<GenerationSummary, String> {
+  services::generation::orchestrate_vault(&vault_path).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -28,6 +30,16 @@ pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .setup(|app| {
+      let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env");
+      match dotenvy::from_path(&env_path) {
+        Ok(_) => log::info!("Loaded environment from {}", env_path.display()),
+        Err(err) => log::warn!(
+          "Could not load .env from {}: {} (falling back to process environment/defaults)",
+          env_path.display(),
+          err
+        ),
+      }
+
       tauri::async_runtime::block_on(async {
         services::database::run_smoke_test().await
       })
