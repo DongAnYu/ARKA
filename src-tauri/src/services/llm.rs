@@ -1,6 +1,7 @@
 use std::env;
 use std::error::Error;
 use std::fmt;
+use std::future::Future;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -8,6 +9,7 @@ use reqwest::Client;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::time::sleep;
 
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_MODEL: &str = "qwen3:4b";
@@ -308,29 +310,15 @@ impl LlmService {
             chunk_markdown,
         );
 
-        for attempt in 1..=GENERATION_MAX_ATTEMPTS {
-            let json_payload = match self
-                .chat_json(system_prompt, &user_prompt, stage_a_format_schema())
-                .await
-            {
-                Ok(payload) => payload,
-                Err(err) => {
-                    if attempt < GENERATION_MAX_ATTEMPTS {
-                        log::warn!(
-                            "LLM Stage A request failed on attempt {}/{}: {}",
-                            attempt,
-                            GENERATION_MAX_ATTEMPTS,
-                            err
-                        );
-                        continue;
-                    }
-                    return Err(err);
-                }
-            };
+        let (parsed, attempts) = self
+            .retry_with_backoff("Stage A", |attempt| {
+                let user_prompt = user_prompt.clone();
+                async move {
+                let json_payload = self
+                    .chat_json(system_prompt, &user_prompt, stage_a_format_schema())
+                    .await?;
 
-            let parsed = match parse_stage_a_output(&json_payload) {
-                Ok(parsed) => parsed,
-                Err(err) => {
+                parse_stage_a_output(&json_payload).map_err(|err| {
                     log::warn!(
                         "LLM Stage A schema validation failed on attempt {}/{}: {} | payload_preview={}",
                         attempt,
@@ -338,22 +326,18 @@ impl LlmService {
                         err,
                         log_preview(&json_payload, 600)
                     );
-                    if attempt < GENERATION_MAX_ATTEMPTS {
-                        continue;
-                    }
-                    return Err(LlmServiceError::Schema(err));
+                    LlmServiceError::Schema(err)
+                })
                 }
-            };
+            })
+            .await?;
 
-            log::info!(
-                "LLM Stage A generation finished (key_points={}, attempts={})",
-                parsed.key_points.len(),
-                attempt
-            );
-            return Ok(parsed);
-        }
-
-        unreachable!("Stage A retry loop must return success or error")
+        log::info!(
+            "LLM Stage A generation finished (key_points={}, attempts={})",
+            parsed.key_points.len(),
+            attempts
+        );
+        Ok(parsed)
     }
 
     pub async fn generate_stage_b_mcqs(
@@ -387,29 +371,15 @@ impl LlmService {
             key_points_json,
         );
 
-        for attempt in 1..=GENERATION_MAX_ATTEMPTS {
-            let json_payload = match self
-                .chat_json(system_prompt, &user_prompt, stage_b_format_schema())
-                .await
-            {
-                Ok(payload) => payload,
-                Err(err) => {
-                    if attempt < GENERATION_MAX_ATTEMPTS {
-                        log::warn!(
-                            "LLM Stage B request failed on attempt {}/{}: {}",
-                            attempt,
-                            GENERATION_MAX_ATTEMPTS,
-                            err
-                        );
-                        continue;
-                    }
-                    return Err(err);
-                }
-            };
+        let (parsed, attempts) = self
+            .retry_with_backoff("Stage B", |attempt| {
+                let user_prompt = user_prompt.clone();
+                async move {
+                let json_payload = self
+                    .chat_json(system_prompt, &user_prompt, stage_b_format_schema())
+                    .await?;
 
-            let parsed = match parse_stage_b_output(&json_payload) {
-                Ok(parsed) => parsed,
-                Err(err) => {
+                parse_stage_b_output(&json_payload).map_err(|err| {
                     log::warn!(
                         "LLM Stage B schema validation failed on attempt {}/{}: {} | payload_preview={}",
                         attempt,
@@ -417,22 +387,52 @@ impl LlmService {
                         err,
                         log_preview(&json_payload, 800)
                     );
-                    if attempt < GENERATION_MAX_ATTEMPTS {
-                        continue;
-                    }
-                    return Err(LlmServiceError::Schema(err));
+                    LlmServiceError::Schema(err)
+                })
                 }
-            };
+            })
+            .await?;
 
-            log::info!(
-                "LLM Stage B generation finished (questions={}, attempts={})",
-                parsed.questions.len(),
-                attempt
-            );
-            return Ok(parsed);
+        log::info!(
+            "LLM Stage B generation finished (questions={}, attempts={})",
+            parsed.questions.len(),
+            attempts
+        );
+        Ok(parsed)
+    }
+
+    async fn retry_with_backoff<T, Op, Fut>(
+        &self,
+        stage_label: &str,
+        mut operation: Op,
+    ) -> Result<(T, usize), LlmServiceError>
+    where
+        Op: FnMut(usize) -> Fut,
+        Fut: Future<Output = Result<T, LlmServiceError>>,
+    {
+        for attempt in 1..=GENERATION_MAX_ATTEMPTS {
+            match operation(attempt).await {
+                Ok(value) => return Ok((value, attempt)),
+                Err(err) => {
+                    if attempt >= GENERATION_MAX_ATTEMPTS {
+                        return Err(err);
+                    }
+
+                    let delay = retry_delay(attempt);
+                    log::warn!(
+                        "LLM {} attempt {}/{} failed: {}. Retrying in {} ms",
+                        stage_label,
+                        attempt,
+                        GENERATION_MAX_ATTEMPTS,
+                        err,
+                        delay.as_millis()
+                    );
+                    sleep(delay).await;
+                }
+            }
         }
 
-        unreachable!("Stage B retry loop must return success or error")
+        unreachable!("retry loop must return success or error")
     }
 
     async fn chat_json(
@@ -555,6 +555,12 @@ fn parse_u64_env(key: &str, default_value: u64) -> Result<u64, LlmConfigError> {
             }),
         Err(_) => Ok(default_value),
     }
+}
+
+fn retry_delay(attempt: usize) -> Duration {
+    let base_ms: u64 = 300;
+    let exponent = attempt.saturating_sub(1).min(10) as u32;
+    Duration::from_millis(base_ms.saturating_mul(2u64.saturating_pow(exponent)))
 }
 
 fn strip_markdown_fences(raw: &str) -> String {

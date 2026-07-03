@@ -1,10 +1,16 @@
+use std::sync::Arc;
+
 use serde::Serialize;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::models::note::Note;
 
 use super::chunker::{self, MarkdownChunk};
 use super::filesystem;
 use super::llm::{LlmService, StageBMcq};
+
+const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
 
 /// Lightweight chunk metadata returned to callers for observability.
 ///
@@ -64,6 +70,93 @@ pub struct GenerationSummary {
 	pub chunk_previews: Vec<ChunkPreview>,
 }
 
+#[derive(Debug, Clone)]
+struct ChunkProcessor {
+	llm_service: Option<Arc<LlmService>>,
+}
+
+impl ChunkProcessor {
+	fn new(llm_service: Option<Arc<LlmService>>) -> Self {
+		Self { llm_service }
+	}
+
+	async fn process(&self, chunk: &MarkdownChunk) -> ChunkPreview {
+		ChunkPreview {
+			note_path: chunk.note_path.clone(),
+			note_title: chunk.note_title.clone(),
+			heading: chunk.heading.clone(),
+			section_index: chunk.section_index,
+			chunk_index: chunk.chunk_index,
+			start_line: chunk.start_line,
+			end_line: chunk.end_line,
+			char_count: chunk.content.chars().count(),
+			preview_text: build_preview_text(&chunk.content, 220),
+			llm_result: self.run_llm_pipeline(chunk).await,
+		}
+	}
+
+	async fn run_llm_pipeline(&self, chunk: &MarkdownChunk) -> ChunkLlmResult {
+		let Some(service) = self.llm_service.as_deref() else {
+			return ChunkLlmResult {
+				status: String::from("error_init"),
+				key_points: Vec::new(),
+				questions: Vec::new(),
+				error: Some(String::from("LLM service could not be initialized from env")),
+			};
+		};
+
+		let stage_a = match service.generate_stage_a_key_points(&chunk.content).await {
+			Ok(value) => value,
+			Err(err) => {
+				return ChunkLlmResult {
+					status: String::from("error_stage_a"),
+					key_points: Vec::new(),
+					questions: Vec::new(),
+					error: Some(err.to_string()),
+				};
+			}
+		};
+
+		let key_points = stage_a
+			.key_points
+			.into_iter()
+			.map(|item| item.knowledge_point)
+			.collect::<Vec<_>>();
+
+		if key_points.is_empty() {
+			return ChunkLlmResult {
+				status: String::from("no_content"),
+				key_points,
+				questions: Vec::new(),
+				error: None,
+			};
+		}
+
+		let stage_b = match service.generate_stage_b_mcqs(&chunk.content, &key_points).await {
+			Ok(value) => value,
+			Err(err) => {
+				return ChunkLlmResult {
+					status: String::from("error_stage_b"),
+					key_points,
+					questions: Vec::new(),
+					error: Some(err.to_string()),
+				};
+			}
+		};
+
+		ChunkLlmResult {
+			status: String::from("ok"),
+			key_points,
+			questions: stage_b
+				.questions
+				.into_iter()
+				.map(mcq_to_preview)
+				.collect(),
+			error: None,
+		}
+	}
+}
+
 /// Runs the chunking pipeline for all notes in memory.
 ///
 /// Orchestration flow:
@@ -72,9 +165,9 @@ pub struct GenerationSummary {
 /// 3. Collect note-level and chunk-level metrics.
 pub async fn orchestrate_notes(notes: &[Note]) -> GenerationSummary {
 	let mut note_reports = Vec::new();
-	let mut chunk_previews = Vec::new();
+	let mut all_chunks = Vec::new();
 	let mut notes_with_chunks = 0;
-	let llm_service = LlmService::from_env().ok();
+	let processor = Arc::new(ChunkProcessor::new(LlmService::from_env().ok().map(Arc::new)));
 
 	for note in notes {
 		let chunks = chunker::chunk_note(note);
@@ -88,15 +181,43 @@ pub async fn orchestrate_notes(notes: &[Note]) -> GenerationSummary {
 			total_chunks: chunks.len(),
 		});
 
-		// Preserve chunk order for deterministic downstream processing.
-		for chunk in &chunks {
-			chunk_previews.push(chunk_to_preview(chunk, llm_service.as_ref()).await);
+		all_chunks.extend(chunks);
+	}
+
+	let total_chunks = all_chunks.len();
+	let mut ordered_previews = vec![None; total_chunks];
+	if total_chunks > 0 {
+		let semaphore = Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_CHUNKS));  // Arc: Atomically Reference Counted
+		let mut jobs = JoinSet::new();
+
+		for (order, chunk) in all_chunks.into_iter().enumerate() {
+			let semaphore = Arc::clone(&semaphore);
+			let processor = Arc::clone(&processor);
+			jobs.spawn(async move {
+				let _permit = semaphore
+					.acquire_owned()
+					.await
+					.expect("semaphore should remain open");
+				let preview = processor.process(&chunk).await;
+				(order, preview)
+			});
+		}
+
+		while let Some(job_result) = jobs.join_next().await {
+			match job_result {
+				Ok((order, preview)) => ordered_previews[order] = Some(preview),
+				Err(err) => {
+					log::error!("Chunk generation task failed: {err}");
+				}
+			}
 		}
 	}
 
+	let chunk_previews = ordered_previews.into_iter().flatten().collect::<Vec<_>>();
+
 	GenerationSummary {
 		total_notes: notes.len(),
-		total_chunks: chunk_previews.len(),
+		total_chunks,
 		notes_with_chunks,
 		note_reports,
 		chunk_previews,
@@ -108,84 +229,6 @@ pub async fn orchestrate_notes(notes: &[Note]) -> GenerationSummary {
 pub async fn orchestrate_vault(vault_path: &str) -> Result<GenerationSummary, String> {
 	let notes = filesystem::load_vault_notes(vault_path)?;
 	Ok(orchestrate_notes(&notes).await)
-}
-
-/// Converts a full chunk into a compact preview record.
-async fn chunk_to_preview(chunk: &MarkdownChunk, llm_service: Option<&LlmService>) -> ChunkPreview {
-	ChunkPreview {
-		note_path: chunk.note_path.clone(),
-		note_title: chunk.note_title.clone(),
-		heading: chunk.heading.clone(),
-		section_index: chunk.section_index,
-		chunk_index: chunk.chunk_index,
-		start_line: chunk.start_line,
-		end_line: chunk.end_line,
-		char_count: chunk.content.chars().count(),
-		preview_text: build_preview_text(&chunk.content, 220),
-		llm_result: run_chunk_llm_pipeline(chunk, llm_service).await,
-	}
-}
-
-/// Runs Stage A -> Stage B for a chunk through the configured LLM service.
-async fn run_chunk_llm_pipeline(chunk: &MarkdownChunk, llm_service: Option<&LlmService>) -> ChunkLlmResult {
-	let Some(service) = llm_service else {
-		return ChunkLlmResult {
-			status: String::from("error_init"),
-			key_points: Vec::new(),
-			questions: Vec::new(),
-			error: Some(String::from("LLM service could not be initialized from env")),
-		};
-	};
-
-	let stage_a = match service.generate_stage_a_key_points(&chunk.content).await {
-		Ok(value) => value,
-		Err(err) => {
-			return ChunkLlmResult {
-				status: String::from("error_stage_a"),
-				key_points: Vec::new(),
-				questions: Vec::new(),
-				error: Some(err.to_string()),
-			};
-		}
-	};
-
-	let key_points = stage_a
-		.key_points
-		.into_iter()
-		.map(|item| item.knowledge_point)
-		.collect::<Vec<_>>();
-
-	if key_points.is_empty() {
-		return ChunkLlmResult {
-			status: String::from("no_content"),
-			key_points,
-			questions: Vec::new(),
-			error: None,
-		};
-	}
-
-	let stage_b = match service.generate_stage_b_mcqs(&chunk.content, &key_points).await {
-		Ok(value) => value,
-		Err(err) => {
-			return ChunkLlmResult {
-				status: String::from("error_stage_b"),
-				key_points,
-				questions: Vec::new(),
-				error: Some(err.to_string()),
-			};
-		}
-	};
-
-	ChunkLlmResult {
-		status: String::from("ok"),
-		key_points,
-		questions: stage_b
-			.questions
-			.into_iter()
-			.map(mcq_to_preview)
-			.collect(),
-		error: None,
-	}
 }
 
 fn mcq_to_preview(item: StageBMcq) -> ChunkLlmQuestionPreview {

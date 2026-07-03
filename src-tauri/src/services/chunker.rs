@@ -57,6 +57,10 @@ pub fn chunk_markdown(note_path: &str, note_title: &str, markdown: &str) -> Vec<
     // Step 2: Cascade oversized sections through deeper heading levels.
     let refined = refine_oversized_sections(sections, preferred_level);
 
+    // Step 2.5: Merge tiny boundary sections so metadata-only/introduction
+    // fragments do not become standalone chunks.
+    let refined = merge_tiny_sections(refined, MIN_CHUNK_CHARS);
+
     // Step 3: Paragraph-level splitting + small-chunk merging on each section.
     let mut chunks = Vec::new();
 
@@ -101,6 +105,53 @@ pub fn chunk_markdown(note_path: &str, note_title: &str, markdown: &str) -> Vec<
     }
 
     chunks
+}
+
+/// Merges tiny sections into neighboring sections before chunk splitting.
+///
+/// Rules mirror chunk-level merging:
+/// - Prefer appending tiny sections to the previous section.
+/// - If there is no previous section, prepend tiny section content to the next section.
+/// - If no neighbor exists, keep the section as-is.
+fn merge_tiny_sections(mut sections: Vec<Section>, min_chars: usize) -> Vec<Section> {
+    // Fast path: nothing to merge when there is only one section or merging is disabled.
+    if sections.len() <= 1 || min_chars == 0 {
+        return sections;
+    }
+
+    let mut index = 0;
+    while index < sections.len() {
+        // Only sections below the configured threshold are candidates for merging.
+        let is_tiny = sections[index].content.trim().len() < min_chars;
+        if !is_tiny {
+            index += 1;
+            continue;
+        }
+
+        // Prefer merging tiny sections into the previous section to keep forward flow stable.
+        if index > 0 {
+            let tiny = sections.remove(index);
+            let previous = &mut sections[index - 1];
+            previous.content.push_str("\n\n");
+            previous.content.push_str(tiny.content.trim());
+            previous.end_line = tiny.end_line;
+            continue;
+        }
+
+        // If there is no previous section, merge into the next section instead.
+        if sections.len() > 1 {
+            let tiny = sections.remove(index);
+            let next = &mut sections[index];
+            next.content = format!("{}\n\n{}", tiny.content.trim(), next.content.trim());
+            next.start_line = tiny.start_line;
+            continue;
+        }
+
+        // Isolated tiny section with no neighbors: keep it unchanged.
+        index += 1;
+    }
+
+    sections
 }
 
 /// Merges tiny chunk fragments into adjacent chunks.
@@ -539,5 +590,23 @@ mod tests {
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0], "tiny");
+    }
+
+    #[test]
+    fn tiny_leading_section_is_merged_into_next_section() {
+        let note_title = "k8s";
+        let intro = "metadata";
+        let body = "Kubernetes control plane schedules workloads and keeps desired state. ".repeat(6);
+        let markdown = format!(
+            "## 05. What is Kubernetes\n{}\n\n## 1. Kubernetes Architecture\n{}",
+            intro, body
+        );
+
+        let chunks = chunk_markdown("/vault/k8s.md", note_title, &markdown);
+
+        assert!(!chunks.is_empty());
+        assert!(chunks[0].content.contains("metadata"));
+        assert!(chunks[0].content.contains("Kubernetes control plane"));
+        assert_ne!(chunks[0].heading, "05. What is Kubernetes");
     }
 }
