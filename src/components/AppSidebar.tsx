@@ -1,0 +1,37 @@
+import { FolderOpen, Home, Plug, Settings } from 'lucide-react'
+import { NavLink } from 'react-router-dom'
+import arkaLogo from '../assets/arka-logo.svg'
+
+const navItems = [
+  { to: '/', label: 'Home', icon: Home, end: true },
+  { to: '/vault', label: 'Vault', icon: FolderOpen },
+  { to: '/models', label: 'Models', icon: Plug },
+  { to: '/settings', label: 'Settings', icon: Settings },
+]
+
+export function AppSidebar() {
+  return (
+    <aside className="app-sidebar" aria-label="App navigation">
+      <div className="sidebar-brand">
+        <img src={arkaLogo} alt="Recall logo" className="sidebar-logo" />
+        <span className="sidebar-title">Recall</span>
+      </div>
+
+      <nav className="sidebar-nav">
+        {navItems.map(({ to, label, icon: Icon, end }) => (
+          <NavLink
+            key={to}
+            to={to}
+            end={end}
+            className={({ isActive }) =>
+              `sidebar-nav-item${isActive ? ' is-active' : ''}`
+            }
+          >
+            <Icon className="size-4" aria-hidden="true" />
+            {label}
+          </NavLink>
+        ))}
+      </nav>
+    </aside>
+  )
+}
