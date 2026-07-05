@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::collections::HashSet;
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 use reqwest::Client;
@@ -15,6 +16,8 @@ const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_MODEL: &str = "qwen3:4b";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const GENERATION_MAX_ATTEMPTS: usize = 3;
+
+static RUNTIME_LLM_CONFIG: OnceLock<RwLock<Option<LlmConfig>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
@@ -48,6 +51,64 @@ impl LlmConfig {
     }
 }
 
+fn runtime_config_lock() -> &'static RwLock<Option<LlmConfig>> {
+    RUNTIME_LLM_CONFIG.get_or_init(|| RwLock::new(None))
+}
+
+pub fn set_runtime_llm_config(
+    base_url: &str,
+    model: &str,
+    timeout_secs: u64,
+) -> Result<(), LlmConfigError> {
+    let normalized_base_url = base_url.trim();
+    if normalized_base_url.is_empty() {
+        return Err(LlmConfigError::InvalidValue {
+            key: String::from("base_url"),
+            value: String::from(base_url),
+            reason: String::from("must be non-empty"),
+        });
+    }
+
+    let normalized_model = model.trim();
+    if normalized_model.is_empty() {
+        return Err(LlmConfigError::InvalidValue {
+            key: String::from("model"),
+            value: String::from(model),
+            reason: String::from("must be non-empty"),
+        });
+    }
+
+    if timeout_secs == 0 {
+        return Err(LlmConfigError::InvalidValue {
+            key: String::from("timeout_secs"),
+            value: timeout_secs.to_string(),
+            reason: String::from("must be greater than 0"),
+        });
+    }
+
+    let config = LlmConfig {
+        base_url: normalized_base_url.to_string(),
+        model: normalized_model.to_string(),
+        timeout_secs,
+    };
+
+    let lock = runtime_config_lock();
+    let mut guard = lock.write().map_err(|_| LlmConfigError::RuntimeConfigPoisoned)?;
+    *guard = Some(config);
+
+    Ok(())
+}
+
+pub fn resolve_llm_config() -> Result<LlmConfig, LlmConfigError> {
+    let lock = runtime_config_lock();
+    let guard = lock.read().map_err(|_| LlmConfigError::RuntimeConfigPoisoned)?;
+    if let Some(config) = guard.as_ref() {
+        return Ok(config.clone());
+    }
+
+    LlmConfig::from_env()
+}
+
 #[derive(Debug)]
 pub struct LlmService {
     client: Client,
@@ -71,6 +132,90 @@ struct OllamaChatMessage {
 #[derive(Debug, Deserialize)]
 struct OllamaChatResponse {
     message: Option<OllamaChatMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaTagModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaTagModel {
+    name: String,
+}
+
+pub async fn fetch_ollama_models(
+    base_url: &str,
+    model_name: Option<&str>,
+    timeout_secs: u64,
+) -> Result<Vec<String>, LlmServiceError> {
+    let normalized_base_url = base_url.trim().trim_end_matches('/');
+    let endpoint = format!("{normalized_base_url}/api/tags");
+
+    let client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(LlmServiceError::Http)?;
+
+    let response = client
+        .get(&endpoint)
+        .send()
+        .await
+        .map_err(|source| LlmServiceError::Connect {
+            url: endpoint.clone(),
+            source,
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(LlmServiceError::Http)?;
+    if !status.is_success() {
+        return Err(LlmServiceError::HttpStatus { status, body });
+    }
+
+    let parsed: OllamaTagsResponse =
+        serde_json::from_str(&body).map_err(LlmServiceError::ResponseDecode)?;
+
+    let requested_model = model_name.unwrap_or("").trim().to_string();
+    let normalized_filter = requested_model.to_lowercase();
+
+    let all_models = parsed
+        .models
+        .iter()
+        .map(|item| item.name.trim())
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+
+    if !requested_model.is_empty() {
+        let exact_match_exists = all_models
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(&requested_model));
+
+        if !exact_match_exists {
+            return Err(LlmServiceError::ModelNotFound {
+                model: requested_model,
+            });
+        }
+    }
+
+    let mut models = parsed
+        .models
+        .into_iter()
+        .map(|item| item.name.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .filter(|item| {
+            if normalized_filter.is_empty() {
+                return true;
+            }
+
+            item.to_lowercase().contains(&normalized_filter)
+        })
+        .collect::<Vec<_>>();
+
+    models.sort_by_key(|item| item.to_lowercase());
+    models.dedup();
+
+    Ok(models)
 }
 
 /// Wrapper for Stage A output so parsing is deterministic.
@@ -273,6 +418,17 @@ impl LlmService {
         let config = LlmConfig::from_env()?;
         log::info!(
             "LLM config loaded (base_url={}, model={}, timeout_secs={})",
+            config.base_url,
+            config.model,
+            config.timeout_secs
+        );
+        Self::new(config).map_err(LlmConfigError::HttpClientBuild)
+    }
+
+    pub fn from_runtime_or_env() -> Result<Self, LlmConfigError> {
+        let config = resolve_llm_config()?;
+        log::info!(
+            "LLM config resolved (base_url={}, model={}, timeout_secs={})",
             config.base_url,
             config.model,
             config.timeout_secs
@@ -495,6 +651,12 @@ impl LlmService {
 #[derive(Debug)]
 pub enum LlmConfigError {
     InvalidInteger { key: String, value: String },
+    InvalidValue {
+        key: String,
+        value: String,
+        reason: String,
+    },
+    RuntimeConfigPoisoned,
     HttpClientBuild(reqwest::Error),
 }
 
@@ -503,6 +665,12 @@ impl fmt::Display for LlmConfigError {
         match self {
             Self::InvalidInteger { key, value } => {
                 write!(f, "Invalid integer for {key}: {value}")
+            }
+            Self::InvalidValue { key, value, reason } => {
+                write!(f, "Invalid value for {key} ('{value}'): {reason}")
+            }
+            Self::RuntimeConfigPoisoned => {
+                write!(f, "Runtime LLM config state is unavailable")
             }
             Self::HttpClientBuild(err) => write!(f, "Failed to build HTTP client: {err}"),
         }
@@ -517,6 +685,7 @@ pub enum LlmServiceError {
     Http(reqwest::Error),
     HttpStatus { status: StatusCode, body: String },
     ResponseDecode(serde_json::Error),
+    ModelNotFound { model: String },
     Serialize(serde_json::Error),
     EmptyModelResponse,
     Schema(LlmSchemaError),
@@ -536,6 +705,10 @@ impl fmt::Display for LlmServiceError {
                 write!(f, "LLM endpoint returned HTTP {status}: {body}")
             }
             Self::ResponseDecode(err) => write!(f, "Failed to decode LLM response envelope: {err}"),
+            Self::ModelNotFound { model } => write!(
+                f,
+                "Model '{model}' was not found on this provider URL. Try fetching all models first."
+            ),
             Self::Serialize(err) => write!(f, "Failed to serialize LLM request context: {err}"),
             Self::EmptyModelResponse => write!(f, "LLM returned an empty response message"),
             Self::Schema(err) => write!(f, "{err}"),

@@ -32,7 +32,8 @@ body {
 
 .app-shell {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .app-sidebar {
@@ -43,6 +44,10 @@ body {
   border-right: 1px solid var(--color-graphite);
   background-color: var(--color-surface);
   box-shadow: var(--shadow-subtle);
+  height: 100vh;
+  overflow-y: auto;
+  position: sticky;
+  top: 0;
 }
 
 .sidebar-brand {
@@ -106,10 +111,178 @@ body {
 .app-content {
   flex: 1;
   min-width: 0;
+  overflow-y: auto;
+  height: 100vh;
 }
 
 .blank-page {
   min-height: 100vh;
+}
+
+.settings-page {
+  gap: 16px;
+  justify-content: flex-start;
+}
+
+.settings-panel {
+  background-color: var(--color-surface);
+  border-radius: 12px;
+  box-shadow: var(--shadow-subtle);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-header h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.56px;
+}
+
+.settings-header h2 {
+  margin: 6px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.36px;
+  color: var(--color-bright-gray);
+}
+
+.settings-header p,
+.settings-section-head p,
+.settings-help-text {
+  margin: 0;
+  color: var(--color-medium-gray);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.28px;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  text-align: left;
+  width: 100%;
+  padding: 16px;
+  border: none;
+  border-radius: 12px;
+  background-color: var(--color-abyss);
+  box-shadow: var(--shadow-subtle);
+  color: var(--color-medium-gray);
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s, box-shadow 0.2s;
+}
+
+.provider-card:hover {
+  color: var(--color-bright-gray);
+  background-color: #222222;
+}
+
+.provider-card.is-active {
+  color: var(--color-bright-gray);
+  background-color: rgba(167, 139, 250, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.5), var(--shadow-subtle);
+}
+
+.provider-card-title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.32px;
+}
+
+.provider-card-description {
+  font-size: 13px;
+  color: var(--color-medium-gray);
+  letter-spacing: -0.26px;
+}
+
+.settings-section-head h3 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.4;
+  letter-spacing: -0.36px;
+  font-weight: 600;
+  color: var(--color-bright-gray);
+}
+
+.settings-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-field label {
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: -0.26px;
+  color: var(--color-bright-gray);
+  font-weight: 600;
+}
+
+.settings-input {
+  width: 100%;
+  border: 1px solid var(--color-graphite);
+  border-radius: 8px;
+  background-color: var(--color-abyss);
+  color: var(--color-bright-gray);
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.28px;
+  box-shadow: var(--shadow-subtle);
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: var(--color-amethyst);
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.45), var(--shadow-subtle);
+}
+
+.settings-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.settings-fetch-btn {
+  align-self: stretch;
+  padding: 10px 12px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.model-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.model-input {
+  flex: 1;
+}
+
+.settings-status {
+  margin: 0;
+  color: var(--color-lavender);
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: -0.26px;
 }
 
 .app-container {
@@ -846,6 +1019,19 @@ body {
 
   .summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .provider-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .model-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-fetch-btn {
+    width: 100%;
   }
 
   .generation-summary-head {

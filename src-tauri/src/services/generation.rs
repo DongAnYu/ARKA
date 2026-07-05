@@ -101,7 +101,7 @@ impl ChunkProcessor {
 				status: String::from("error_init"),
 				key_points: Vec::new(),
 				questions: Vec::new(),
-				error: Some(String::from("LLM service could not be initialized from env")),
+				error: Some(String::from("LLM service could not be initialized from runtime settings or env")),
 			};
 		};
 
@@ -167,7 +167,7 @@ pub async fn orchestrate_notes(notes: &[Note]) -> GenerationSummary {
 	let mut note_reports = Vec::new();
 	let mut all_chunks = Vec::new();
 	let mut notes_with_chunks = 0;
-	let processor = Arc::new(ChunkProcessor::new(LlmService::from_env().ok().map(Arc::new)));
+	let processor = Arc::new(ChunkProcessor::new(LlmService::from_runtime_or_env().ok().map(Arc::new)));
 
 	for note in notes {
 		let chunks = chunker::chunk_note(note);
