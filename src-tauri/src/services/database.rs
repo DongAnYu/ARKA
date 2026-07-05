@@ -71,7 +71,7 @@ pub async fn load_model_config() -> Result<ModelConfig, sqlx::Error> {
         .await?;
 
     let config = sqlx::query_as::<_, ModelConfig>(
-        "SELECT provider, base_url, selected_model, timeout_secs FROM model_settings WHERE id = 1",
+        "SELECT provider, base_url, selected_model, timeout_secs, api_key FROM model_settings WHERE id = 1",
     )
     .fetch_one(&pool)
     .await?;
@@ -87,19 +87,21 @@ pub async fn save_model_config(config: ModelConfig) -> Result<(), sqlx::Error> {
         .await?;
 
     sqlx::query(
-        "INSERT INTO model_settings (id, provider, base_url, selected_model, timeout_secs, updated_at)
-         VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                "INSERT INTO model_settings (id, provider, base_url, selected_model, timeout_secs, api_key, updated_at)
+                 VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(id) DO UPDATE SET
-           provider = excluded.provider,
-           base_url = excluded.base_url,
-           selected_model = excluded.selected_model,
-           timeout_secs = excluded.timeout_secs,
-           updated_at = excluded.updated_at",
+            provider = excluded.provider,
+            base_url = excluded.base_url,
+            selected_model = excluded.selected_model,
+            timeout_secs = excluded.timeout_secs,
+            api_key = excluded.api_key,
+            updated_at = excluded.updated_at",
     )
     .bind(&config.provider)
     .bind(&config.base_url)
     .bind(&config.selected_model)
     .bind(config.timeout_secs)
+        .bind(&config.api_key)
     .execute(&pool)
     .await?;
 

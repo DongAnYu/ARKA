@@ -16,6 +16,7 @@ type DbModelConfig = {
   base_url: string
   selected_model: string
   timeout_secs: number
+  api_key: string | null
 }
 
 const MODEL_HISTORY_KEY = 'models-page-fetch-history-v1'
@@ -69,23 +70,20 @@ const writeModelHistory = (history: ModelHistoryMap) => {
   window.localStorage.setItem(MODEL_HISTORY_KEY, JSON.stringify(history))
 }
 
-const clearModelHistoryForKey = (provider: ProviderId, baseUrl: string) => {
-  const history = readModelHistory()
-  const key = getHistoryKey(provider, baseUrl)
-  delete history[key]
-  writeModelHistory(history)
-}
-
 export function ModelsPage() {
   const isInitialLoadDone = useRef(false)
+  const [savedConfig, setSavedConfig] = useState<DbModelConfig | null>(null)
   const [provider, setProvider] = useState<ProviderId>('ollama')
   const [baseUrl, setBaseUrl] = useState(findProvider('ollama').defaultBaseUrl)
+  const [openRouterApiKey, setOpenRouterApiKey] = useState('')
   const [timeoutSecs, setTimeoutSecs] = useState('60')
   const [modelQuery, setModelQuery] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [isFetchingModels, setIsFetchingModels] = useState(false)
   const [fetchStatus, setFetchStatus] = useState('')
+  const [saveStatus, setSaveStatus] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
 
   const activeProvider = useMemo(() => findProvider(provider), [provider])
 
@@ -94,10 +92,12 @@ export function ModelsPage() {
     invoke<DbModelConfig>('load_model_config')
       .then((config) => {
         const savedProvider = (config.provider === 'openrouter' ? 'openrouter' : 'ollama') as ProviderId
+        setSavedConfig(config)
         setProvider(savedProvider)
         setBaseUrl(config.base_url)
         setTimeoutSecs(String(config.timeout_secs))
         setSelectedModel(config.selected_model)
+        setOpenRouterApiKey(config.api_key ?? '')
         isInitialLoadDone.current = true
       })
       .catch((err) => {
@@ -118,36 +118,63 @@ export function ModelsPage() {
     }
   }, [provider, baseUrl])
 
-  useEffect(() => {
+  const saveModelSettings = async () => {
+    setSaveStatus('')
     const normalizedBaseUrl = baseUrl.trim()
-    const normalizedModel = selectedModel.trim()
+    const normalizedModel =
+      provider === 'openrouter'
+        ? selectedModel.trim() || modelQuery.trim()
+        : selectedModel.trim()
+    const normalizedApiKey = openRouterApiKey.trim()
     const parsedTimeout = Number(timeoutSecs)
     const isValidTimeout = Number.isInteger(parsedTimeout) && parsedTimeout > 0
 
-    if (provider !== 'ollama' || !normalizedBaseUrl || !normalizedModel || !isValidTimeout) {
+    if (!normalizedBaseUrl || !normalizedModel || !isValidTimeout) {
+      setSaveStatus('Base URL, model, and timeout are required before saving.')
       return
     }
 
-    invoke('save_model_config', {
-      config: {
+    if (provider === 'openrouter' && !normalizedApiKey) {
+      setSaveStatus('OpenRouter API key is required before saving.')
+      return
+    }
+
+    setIsSaving(true)
+    try {
+      await invoke('save_model_config', {
+        config: {
+          provider,
+          base_url: normalizedBaseUrl,
+          selected_model: normalizedModel,
+          timeout_secs: parsedTimeout,
+          api_key: provider === 'openrouter' ? normalizedApiKey : null,
+        },
+      })
+
+      setSavedConfig({
         provider,
         base_url: normalizedBaseUrl,
         selected_model: normalizedModel,
         timeout_secs: parsedTimeout,
-      },
-    }).catch((err) => {
-      console.error('Failed to save model config to DB:', err)
-    })
+        api_key: provider === 'openrouter' ? normalizedApiKey : null,
+      })
 
-    invoke('set_runtime_llm_settings', {
-      provider,
-      baseUrl: normalizedBaseUrl,
-      model: normalizedModel,
-      timeoutSecs: parsedTimeout,
-    }).catch((err) => {
-      console.error('Failed to sync runtime LLM settings:', err)
-    })
-  }, [provider, baseUrl, selectedModel, timeoutSecs])
+      await invoke('set_runtime_llm_settings', {
+        provider,
+        baseUrl: normalizedBaseUrl,
+        model: normalizedModel,
+        timeoutSecs: parsedTimeout,
+        apiKey: provider === 'openrouter' ? normalizedApiKey : null,
+      })
+
+      setSaveStatus('Model settings saved.')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to save model settings'
+      setSaveStatus(message)
+    } finally {
+      setIsSaving(false)
+    }
+  }
 
   const persistHistory = (models: string[]) => {
     const normalized = dedupeModels(models)
@@ -161,21 +188,30 @@ export function ModelsPage() {
 
   const selectProvider = (nextProvider: ProviderId) => {
     const config = findProvider(nextProvider)
+
+    if (savedConfig && (savedConfig.provider === 'openrouter' ? 'openrouter' : 'ollama') === nextProvider) {
+      setProvider(nextProvider)
+      setBaseUrl(savedConfig.base_url)
+      setTimeoutSecs(String(savedConfig.timeout_secs))
+      setSelectedModel(savedConfig.selected_model)
+      setOpenRouterApiKey(savedConfig.api_key ?? '')
+      setFetchStatus('')
+      if (nextProvider === 'openrouter') {
+        setModelQuery(savedConfig.selected_model)
+      } else {
+        setModelQuery('')
+      }
+      return
+    }
+
     setProvider(nextProvider)
     setBaseUrl(config.defaultBaseUrl)
     setFetchStatus('')
     setModelQuery('')
     setSelectedModel('')
-    invoke('save_model_config', {
-      config: {
-        provider: nextProvider,
-        base_url: config.defaultBaseUrl,
-        selected_model: '',
-        timeout_secs: Number(timeoutSecs) || 60,
-      },
-    }).catch((err) => {
-      console.error('Failed to save model config to DB:', err)
-    })
+    if (nextProvider !== 'openrouter') {
+      setOpenRouterApiKey('')
+    }
   }
 
   const fetchModels = async () => {
@@ -197,7 +233,7 @@ export function ModelsPage() {
     try {
       const fetchedModels = await invoke<string[]>('fetch_ollama_models', {
         baseUrl: baseUrl.trim(),
-        modelName: modelQuery.trim() || null,
+        modelName: null,
         timeoutSecs: parsedTimeout,
       })
 
@@ -215,7 +251,7 @@ export function ModelsPage() {
       }
 
       if (fetchedModels.length === 0) {
-        setFetchStatus('No matching models found from the provider.')
+        setFetchStatus('No models found from the provider.')
       } else {
         setFetchStatus(`Fetched ${fetchedModels.length} models from ${activeProvider.name}.`)
       }
@@ -225,13 +261,6 @@ export function ModelsPage() {
     } finally {
       setIsFetchingModels(false)
     }
-  }
-
-  const clearFetchedModels = () => {
-    clearModelHistoryForKey(provider, baseUrl)
-    setAvailableModels([])
-    setSelectedModel('')
-    setFetchStatus('Cleared fetched models for this provider and URL.')
   }
 
   return (
@@ -292,6 +321,24 @@ export function ModelsPage() {
             placeholder="60"
           />
         </div>
+
+        {provider === 'openrouter' && (
+          <div className="settings-field">
+            <label htmlFor="openrouter-api-key">OpenRouter API key</label>
+            <p className="settings-help-text">
+              Used for OpenRouter requests. Current backend still reads OPENROUTER_API_KEY from env.
+            </p>
+            <input
+              id="openrouter-api-key"
+              className="settings-input"
+              type="password"
+              value={openRouterApiKey}
+              onChange={(event) => setOpenRouterApiKey(event.target.value)}
+              placeholder="sk-or-v1-..."
+              autoComplete="off"
+            />
+          </div>
+        )}
       </section>
 
       <section className="settings-panel">
@@ -300,63 +347,76 @@ export function ModelsPage() {
           <p>Pick the chat model</p>
         </header>
 
-        <p className="settings-help-text">
-          Fetch all models, or enter an exact model name to validate it at this URL.
-        </p>
+        {provider === 'ollama' ? (
+          <>
+            <p className="settings-help-text">
+              Fetch all models from Ollama, then choose one from the dropdown.
+            </p>
 
-        <div className="settings-field">
-          <label htmlFor="model-query">Model name to validate (optional)</label>
-          <div className="model-row">
-            <input
-              id="model-query"
-              className="settings-input model-input"
-              type="text"
-              value={modelQuery}
-              onChange={(event) => setModelQuery(event.target.value)}
-              placeholder="e.g. qwen3:4b"
-              autoComplete="off"
-            />
-            <button
-              type="button"
-              className="btn-secondary settings-fetch-btn"
-              onClick={fetchModels}
-              disabled={isFetchingModels}
-            >
-              {isFetchingModels ? 'Fetching...' : 'Fetch models'}
-            </button>
-          </div>
-        </div>
+            <div className="settings-field">
+              <label htmlFor="selected-model">Model</label>
+              <div className="model-row">
+                <select
+                  id="selected-model"
+                  className="settings-input model-input"
+                  value={selectedModel}
+                  onChange={(event) => setSelectedModel(event.target.value)}
+                >
+                  <option value="">Select fetched model</option>
+                  {availableModels.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
 
-        <div className="settings-field">
-          <label htmlFor="selected-model">Model</label>
-          <div className="model-row">
-            <select
-              id="selected-model"
-              className="settings-input model-input"
-              value={selectedModel}
-              onChange={(event) => setSelectedModel(event.target.value)}
-            >
-              <option value="">Select fetched model</option>
-              {availableModels.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
+                <button
+                  type="button"
+                  className="btn-secondary settings-fetch-btn"
+                  onClick={fetchModels}
+                  disabled={isFetchingModels}
+                >
+                  {isFetchingModels ? 'Fetching...' : 'Fetch models'}
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="settings-help-text">
+              Enter the OpenRouter model id (for example: inclusionai/ling-2.6-flash).
+            </p>
 
-            <button
-              type="button"
-              className="btn-secondary settings-fetch-btn"
-              onClick={clearFetchedModels}
-              disabled={availableModels.length === 0}
-            >
-              Clear models
-            </button>
-          </div>
-        </div>
+            <div className="settings-field">
+              <label htmlFor="model-query">OpenRouter model id</label>
+              <input
+                id="model-query"
+                className="settings-input"
+                type="text"
+                value={modelQuery}
+                onChange={(event) => setModelQuery(event.target.value)}
+                placeholder="e.g. inclusionai/ling-2.6-flash"
+                autoComplete="off"
+              />
+            </div>
+          </>
+        )}
 
         {fetchStatus && <p className="settings-status">{fetchStatus}</p>}
       </section>
+
+      <div className="settings-actions">
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={saveModelSettings}
+          disabled={isSaving}
+        >
+          {isSaving ? 'Saving...' : 'Save model settings'}
+        </button>
+
+        {saveStatus && <p className="settings-status">{saveStatus}</p>}
+      </div>
     </div>
   )
 }

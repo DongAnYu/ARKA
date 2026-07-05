@@ -1,8 +1,11 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use tokio::time::{Duration, sleep};
 
 use crate::models::note::Note;
 
@@ -11,6 +14,10 @@ use super::filesystem;
 use super::llm::{LlmService, StageBMcq};
 
 const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
+const PAUSE_POLL_MS: u64 = 250;
+
+static PREVIEW_JOBS: OnceLock<Mutex<HashMap<String, Arc<PreviewJob>>>> = OnceLock::new();
+static NEXT_PREVIEW_JOB_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Lightweight chunk metadata returned to callers for observability.
 ///
@@ -68,6 +75,207 @@ pub struct GenerationSummary {
 	pub notes_with_chunks: usize,
 	pub note_reports: Vec<NoteGenerationReport>,
 	pub chunk_previews: Vec<ChunkPreview>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GenerationProgressSnapshot {
+	pub job_id: String,
+	pub total_notes: usize,
+	pub total_chunks: usize,
+	pub notes_with_chunks: usize,
+	pub completed_chunks: usize,
+	pub mcq_generated: usize,
+	pub progress_percent: u8,
+	pub is_paused: bool,
+	pub is_cancelled: bool,
+	pub is_finished: bool,
+	pub error: Option<String>,
+	pub summary: Option<GenerationSummary>,
+}
+
+#[derive(Debug)]
+struct PreviewJob {
+	paused: AtomicBool,
+	cancelled: AtomicBool,
+	snapshot: Mutex<GenerationProgressSnapshot>,
+}
+
+fn preview_jobs() -> &'static Mutex<HashMap<String, Arc<PreviewJob>>> {
+	PREVIEW_JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn next_preview_job_id() -> String {
+	format!("preview-{}", NEXT_PREVIEW_JOB_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+fn set_progress_percent(snapshot: &mut GenerationProgressSnapshot) {
+	snapshot.progress_percent = if snapshot.total_chunks == 0 {
+		100
+	} else {
+		((snapshot.completed_chunks as f64 / snapshot.total_chunks as f64) * 100.0)
+			.round()
+			.clamp(0.0, 100.0) as u8
+	};
+}
+
+pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, String> {
+	let notes = filesystem::load_vault_notes(vault_path)?;
+	let mut note_reports = Vec::new();
+	let mut all_chunks = Vec::new();
+	let mut notes_with_chunks = 0;
+
+	for note in &notes {
+		let chunks = chunker::chunk_note(note);
+		if !chunks.is_empty() {
+			notes_with_chunks += 1;
+		}
+
+		note_reports.push(NoteGenerationReport {
+			note_path: note.path.clone(),
+			note_title: note.title.clone(),
+			total_chunks: chunks.len(),
+		});
+
+		all_chunks.extend(chunks);
+	}
+
+	let job_id = next_preview_job_id();
+	let initial_snapshot = GenerationProgressSnapshot {
+		job_id: job_id.clone(),
+		total_notes: notes.len(),
+		total_chunks: all_chunks.len(),
+		notes_with_chunks,
+		completed_chunks: 0,
+		mcq_generated: 0,
+		progress_percent: 0,
+		is_paused: false,
+		is_cancelled: false,
+		is_finished: false,
+		error: None,
+		summary: None,
+	};
+
+	let job = Arc::new(PreviewJob {
+		paused: AtomicBool::new(false),
+		cancelled: AtomicBool::new(false),
+		snapshot: Mutex::new(initial_snapshot),
+	});
+
+	preview_jobs()
+		.lock()
+		.expect("preview job map mutex should remain available")
+		.insert(job_id.clone(), Arc::clone(&job));
+
+	tauri::async_runtime::spawn(async move {
+		let processor = ChunkProcessor::new(LlmService::from_runtime_or_env().ok().map(Arc::new));
+		let total_chunks = all_chunks.len();
+		let mut ordered_previews = vec![None; total_chunks];
+
+		for (order, chunk) in all_chunks.into_iter().enumerate() {
+			if job.cancelled.load(Ordering::Relaxed) {
+				break;
+			}
+
+			while job.paused.load(Ordering::Relaxed) {
+				if job.cancelled.load(Ordering::Relaxed) {
+					break;
+				}
+				sleep(Duration::from_millis(PAUSE_POLL_MS)).await;
+			}
+
+			if job.cancelled.load(Ordering::Relaxed) {
+				break;
+			}
+
+			let preview = processor.process(&chunk).await;
+			let mcq_count = preview.llm_result.questions.len();
+			ordered_previews[order] = Some(preview);
+
+			let mut snapshot = job
+				.snapshot
+				.lock()
+				.expect("preview job snapshot mutex should remain available");
+			snapshot.completed_chunks += 1;
+			snapshot.mcq_generated += mcq_count;
+			set_progress_percent(&mut snapshot);
+		}
+
+		let chunk_previews = ordered_previews.into_iter().flatten().collect::<Vec<_>>();
+		let summary = GenerationSummary {
+			total_notes: notes.len(),
+			total_chunks,
+			notes_with_chunks,
+			note_reports,
+			chunk_previews,
+		};
+
+		let mut snapshot = job
+			.snapshot
+			.lock()
+			.expect("preview job snapshot mutex should remain available");
+		snapshot.is_cancelled = job.cancelled.load(Ordering::Relaxed);
+		if !snapshot.is_cancelled {
+			snapshot.summary = Some(summary);
+		}
+		snapshot.is_finished = true;
+		snapshot.is_paused = false;
+		set_progress_percent(&mut snapshot);
+	});
+
+	Ok(job_id)
+}
+
+pub fn get_preview_generation_progress(job_id: &str) -> Result<GenerationProgressSnapshot, String> {
+	let jobs = preview_jobs()
+		.lock()
+		.map_err(|_| String::from("Preview job state is unavailable."))?;
+
+	let job = jobs
+		.get(job_id)
+		.ok_or_else(|| format!("Preview job '{job_id}' was not found."))?;
+
+	let snapshot = job
+		.snapshot
+		.lock()
+		.map_err(|_| String::from("Preview job snapshot is unavailable."))?
+		.clone();
+
+	Ok(snapshot)
+}
+
+pub fn set_preview_generation_paused(job_id: &str, paused: bool) -> Result<(), String> {
+	let jobs = preview_jobs()
+		.lock()
+		.map_err(|_| String::from("Preview job state is unavailable."))?;
+
+	let job = jobs
+		.get(job_id)
+		.ok_or_else(|| format!("Preview job '{job_id}' was not found."))?;
+
+	job.paused.store(paused, Ordering::Relaxed);
+	let mut snapshot = job
+		.snapshot
+		.lock()
+		.map_err(|_| String::from("Preview job snapshot is unavailable."))?;
+	snapshot.is_paused = paused;
+
+	Ok(())
+}
+
+pub fn cancel_preview_generation(job_id: &str) -> Result<(), String> {
+	let jobs = preview_jobs()
+		.lock()
+		.map_err(|_| String::from("Preview job state is unavailable."))?;
+
+	let job = jobs
+		.get(job_id)
+		.ok_or_else(|| format!("Preview job '{job_id}' was not found."))?;
+
+	job.cancelled.store(true, Ordering::Relaxed);
+	// Also unpause so the loop can exit
+	job.paused.store(false, Ordering::Relaxed);
+
+	Ok(())
 }
 
 #[derive(Debug, Clone)]

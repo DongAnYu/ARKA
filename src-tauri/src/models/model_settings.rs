@@ -7,4 +7,5 @@ pub struct ModelConfig {
     pub base_url: String,
     pub selected_model: String,
     pub timeout_secs: i64,
+    pub api_key: Option<String>,
 }

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use models::note::Note;
 use models::question::Question;
 use models::model_settings::ModelConfig;
-use services::generation::GenerationSummary;
+use services::generation::{GenerationProgressSnapshot, GenerationSummary};
 
 #[tauri::command]
 async fn get_questions() -> Result<Vec<Question>, String> {
@@ -24,6 +24,26 @@ fn get_notes(vault_path: String) -> Result<Vec<Note>, String> {
 #[tauri::command]
 async fn preview_generation(vault_path: String) -> Result<GenerationSummary, String> {
   services::generation::orchestrate_vault(&vault_path).await
+}
+
+#[tauri::command]
+async fn start_preview_generation(vault_path: String) -> Result<String, String> {
+  services::generation::start_preview_generation_job(&vault_path).await
+}
+
+#[tauri::command]
+fn get_preview_generation_progress(job_id: String) -> Result<GenerationProgressSnapshot, String> {
+  services::generation::get_preview_generation_progress(&job_id)
+}
+
+#[tauri::command]
+fn set_preview_generation_paused(job_id: String, paused: bool) -> Result<(), String> {
+  services::generation::set_preview_generation_paused(&job_id, paused)
+}
+
+#[tauri::command]
+fn cancel_preview_generation(job_id: String) -> Result<(), String> {
+  services::generation::cancel_preview_generation(&job_id)
 }
 
 #[tauri::command]
@@ -62,17 +82,20 @@ fn set_runtime_llm_settings(
   base_url: String,
   model: String,
   timeout_secs: Option<u64>,
+  api_key: Option<String>,
 ) -> Result<(), String> {
-  if provider.trim().to_lowercase() != "ollama" {
-    return Err(String::from("Only Ollama runtime settings are currently supported."));
-  }
-
   let timeout = timeout_secs.unwrap_or(60);
   if timeout == 0 {
     return Err(String::from("Timeout must be greater than 0 seconds."));
   }
 
-  services::llm::set_runtime_llm_config(&base_url, &model, timeout)
+  services::llm::set_runtime_llm_config(
+    &provider,
+    &base_url,
+    &model,
+    timeout,
+    api_key.as_deref(),
+  )
     .map_err(|err| format!("Failed to apply runtime LLM settings: {err}"))
 }
 
@@ -109,6 +132,10 @@ pub fn run() {
       get_questions,
       get_notes,
       preview_generation,
+      start_preview_generation,
+      get_preview_generation_progress,
+      set_preview_generation_paused,
+      cancel_preview_generation,
       fetch_ollama_models,
       set_runtime_llm_settings,
       load_model_config,

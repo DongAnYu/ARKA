@@ -228,6 +228,13 @@ body {
   gap: 8px;
 }
 
+.settings-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
 .settings-field label {
   font-size: 13px;
   line-height: 1.5;
@@ -430,6 +437,107 @@ body {
   letter-spacing: -0.26px;
   margin: -24px 0 24px;
   word-break: break-all;
+}
+
+.generation-progress {
+  background-color: var(--color-surface);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: var(--shadow-subtle);
+  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.generation-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.generation-progress-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.36px;
+  color: var(--color-bright-gray);
+}
+
+.generation-progress-head span {
+  color: var(--color-lavender);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.32px;
+}
+
+/* Progress bar track */
+.generation-bar-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 9999px;
+  background-color: var(--color-abyss);
+  box-shadow: rgba(255, 255, 255, 0.05) 0px 0px 0px 1px inset;
+  overflow: hidden;
+}
+
+/* Progress bar fill */
+.generation-bar-fill {
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, var(--color-amethyst), var(--color-lavender));
+  transition: width 0.3s ease;
+}
+
+/* Generation progress action buttons */
+.generation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.generation-progress .btn-pause {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--color-abyss);
+  border: none;
+  border-radius: 8px;
+  color: var(--color-lavender);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.26px;
+  cursor: pointer;
+  box-shadow: var(--shadow-subtle);
+  transition: color 0.2s, background-color 0.2s;
+}
+
+.generation-progress .btn-pause:hover {
+  color: var(--color-white);
+  background-color: #222222;
+}
+
+.generation-progress .btn-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background-color: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--color-muted-gray);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.26px;
+  cursor: pointer;
+  transition: color 0.2s, background-color 0.2s;
+}
+
+.generation-progress .btn-cancel:hover {
+  color: var(--color-error-red);
+  background-color: var(--color-abyss);
 }
 
 .generation-summary {

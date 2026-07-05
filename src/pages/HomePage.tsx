@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { ArrowRight, Sparkles } from 'lucide-react'
@@ -78,6 +78,21 @@ type GenerationSummary = {
   chunk_previews: ChunkPreview[]
 }
 
+type GenerationProgress = {
+  job_id: string
+  total_notes: number
+  total_chunks: number
+  notes_with_chunks: number
+  completed_chunks: number
+  mcq_generated: number
+  progress_percent: number
+  is_paused: boolean
+  is_cancelled: boolean
+  is_finished: boolean
+  error: string | null
+  summary: GenerationSummary | null
+}
+
 export function HomePage() {
   const welcomeMessage = getWelcomeMessage()
   const [vaultPath, setVaultPath] = useState('')
@@ -86,6 +101,8 @@ export function HomePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('reader')
   const [isLoading, setIsLoading] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [generationJobId, setGenerationJobId] = useState<string | null>(null)
+  const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null)
   const [generationSummary, setGenerationSummary] = useState<GenerationSummary | null>(null)
   const [showChunks, setShowChunks] = useState(false)
   const [selectedChunk, setSelectedChunk] = useState<ChunkPreview | null>(null)
@@ -140,20 +157,108 @@ export function HomePage() {
 
     setIsGenerating(true)
     setError('')
+    setGenerationProgress(null)
+    setGenerationSummary(null)
+    setShowChunks(false)
+    setSelectedChunk(null)
 
     try {
-      const summary = await invoke<GenerationSummary>('preview_generation', {
+      const jobId = await invoke<string>('start_preview_generation', {
         vaultPath,
       })
-      setGenerationSummary(summary)
-      setShowChunks(false)
-      setSelectedChunk(null)
+      setGenerationJobId(jobId)
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to generate chunk preview'
       setError(message)
-    } finally {
       setIsGenerating(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!generationJobId) {
+      return
+    }
+
+    let disposed = false
+
+    const poll = async () => {
+      try {
+        const progress = await invoke<GenerationProgress>('get_preview_generation_progress', {
+          jobId: generationJobId,
+        })
+
+        if (disposed) {
+          return
+        }
+
+        setGenerationProgress(progress)
+        setIsGenerating(!progress.is_finished)
+
+        if (progress.error) {
+          setError(progress.error)
+        }
+
+        if (progress.is_finished) {
+          if (progress.summary) {
+            setGenerationSummary(progress.summary)
+          }
+          setGenerationJobId(null)
+        }
+      } catch (err) {
+        if (!disposed) {
+          const message = err instanceof Error ? err.message : 'Failed to load generation progress'
+          setError(message)
+          setIsGenerating(false)
+          setGenerationJobId(null)
+        }
+      }
+    }
+
+    poll()
+    const timer = window.setInterval(poll, 700)
+
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [generationJobId])
+
+  const togglePauseGeneration = async () => {
+    if (!generationProgress) {
+      return
+    }
+
+    const nextPaused = !generationProgress.is_paused
+    try {
+      await invoke('set_preview_generation_paused', {
+        jobId: generationProgress.job_id,
+        paused: nextPaused,
+      })
+      setGenerationProgress((current) =>
+        current ? { ...current, is_paused: nextPaused } : current,
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to toggle generation pause'
+      setError(message)
+    }
+  }
+
+  const cancelGeneration = async () => {
+    if (!generationProgress) {
+      return
+    }
+
+    try {
+      await invoke('cancel_preview_generation', {
+        jobId: generationProgress.job_id,
+      })
+      setGenerationProgress(null)
+      setGenerationJobId(null)
+      setIsGenerating(false)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to cancel generation'
+      setError(message)
     }
   }
 
@@ -170,41 +275,102 @@ export function HomePage() {
           what you actually remember.
         </p>
         <div className="header-actions">
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={chooseVault}
-            disabled={isLoading || isGenerating}
-          >
-            {isLoading ? (
-              'Loading...'
-            ) : (
-              <span className="btn-content">
-                Choose Vault
-                <ArrowRight className="size-4" aria-hidden="true" />
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={generatePreview}
-            disabled={isLoading || isGenerating || !vaultPath}
-          >
-            {isGenerating ? (
-              'Generating...'
-            ) : (
-              <span className="btn-content">
-                <Sparkles className="size-4" aria-hidden="true" />
-                Generate Preview
-              </span>
-            )}
-          </button>
+          {!vaultPath ? (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={chooseVault}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                'Loading...'
+              ) : (
+                <span className="btn-content">
+                  Choose Vault
+                  <ArrowRight className="size-4" aria-hidden="true" />
+                </span>
+              )}
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={generatePreview}
+                disabled={isGenerating}
+              >
+                {isGenerating ? (
+                  'Generating...'
+                ) : (
+                  <span className="btn-content">
+                    <Sparkles className="size-4" aria-hidden="true" />
+                    Generate Preview
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={chooseVault}
+                disabled={isLoading || isGenerating}
+              >
+                Change Vault
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {vaultPath && <p className="vault-path">{vaultPath}</p>}
       {error && <div className="error-banner">{error}</div>}
+
+      {generationProgress && !generationProgress.is_finished && (
+        <section className="generation-progress" aria-live="polite">
+          <div className="generation-progress-head">
+            <h2>Generating Preview</h2>
+            <span>{generationProgress.progress_percent}%</span>
+          </div>
+
+          <div className="generation-bar-track">
+            <div
+              className="generation-bar-fill"
+              style={{ width: `${generationProgress.progress_percent}%` }}
+            />
+          </div>
+
+          <div className="summary-grid">
+            <p>
+              <span>Chunks Completed</span>
+              <strong>{generationProgress.completed_chunks}/{generationProgress.total_chunks}</strong>
+            </p>
+            <p>
+              <span>MCQs Generated</span>
+              <strong>{generationProgress.mcq_generated}</strong>
+            </p>
+            <p>
+              <span>Status</span>
+              <strong>{generationProgress.is_paused ? 'Paused' : 'Running'}</strong>
+            </p>
+          </div>
+
+          <div className="generation-actions">
+            <button
+              type="button"
+              className="btn-pause"
+              onClick={togglePauseGeneration}
+            >
+              {generationProgress.is_paused ? '▶ Resume' : '⏸ Pause'}
+            </button>
+            <button
+              type="button"
+              className="btn-cancel"
+              onClick={cancelGeneration}
+            >
+              ✕ Cancel
+            </button>
+          </div>
+        </section>
+      )}
 
       {generationSummary && (
         <section className="generation-summary" aria-live="polite">
