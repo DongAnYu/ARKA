@@ -9,7 +9,32 @@ const navItems = [
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
-export function AppSidebar() {
+type AppSidebarProps = {
+  variant?: 'sidebar' | 'mobile'
+}
+
+export function AppSidebar({ variant = 'sidebar' }: AppSidebarProps) {
+  if (variant === 'mobile') {
+    return (
+      <nav className="mobile-nav" aria-label="App navigation">
+        {navItems.map(({ to, label, icon: Icon, end }) => (
+          <NavLink
+            key={to}
+            to={to}
+            end={end}
+            className={({ isActive }) =>
+              `mobile-nav-item${isActive ? ' is-active' : ''}`
+            }
+            aria-label={label}
+          >
+            <Icon className="size-4" aria-hidden="true" />
+            <span>{label}</span>
+          </NavLink>
+        ))}
+      </nav>
+    )
+  }
+
   return (
     <aside className="app-sidebar" aria-label="App navigation">
       <div className="sidebar-brand">

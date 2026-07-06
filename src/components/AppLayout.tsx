@@ -8,6 +8,7 @@ export function AppLayout() {
       <main className="app-content">
         <Outlet />
       </main>
+      <AppSidebar variant="mobile" />
     </div>
   )
 }

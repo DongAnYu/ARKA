@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { ArrowRight, Sparkles } from 'lucide-react'
+import { ArrowRight, FolderOpen, Sparkles } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import arkaLogo from '../assets/arka-logo.svg'
@@ -295,7 +295,7 @@ export function HomePage() {
             <>
               <button
                 type="button"
-                className="btn-primary"
+                className="btn-primary btn-generate-action"
                 onClick={generatePreview}
                 disabled={isGenerating}
               >
@@ -310,11 +310,14 @@ export function HomePage() {
               </button>
               <button
                 type="button"
-                className="btn-secondary"
+                className="btn-secondary btn-vault-action"
                 onClick={chooseVault}
                 disabled={isLoading || isGenerating}
               >
-                Change Vault
+                <span className="btn-content">
+                  <FolderOpen className="size-4" aria-hidden="true" />
+                  Change Vault
+                </span>
               </button>
             </>
           )}
