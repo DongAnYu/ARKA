@@ -1,10 +1,11 @@
-import { FolderOpen, Home, Plug, Settings } from 'lucide-react'
+import { FolderOpen, HelpCircle, Home, Plug, Settings } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import arkaLogo from '../assets/arka-logo.svg'
 
 const navItems = [
   { to: '/', label: 'Home', icon: Home, end: true },
   { to: '/vault', label: 'Vault', icon: FolderOpen },
+  { to: '/questions', label: 'Questions', icon: HelpCircle },
   { to: '/models', label: 'Models', icon: Plug },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]

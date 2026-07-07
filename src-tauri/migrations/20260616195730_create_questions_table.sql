@@ -7,5 +7,8 @@ CREATE TABLE questions (
     option_c TEXT NOT NULL,
     option_d TEXT NOT NULL,
     correct_answer TEXT NOT NULL,
-    explanation TEXT
+    explanation TEXT,
+    model TEXT,
+    space_id INTEGER NOT NULL DEFAULT 1
 );
+    

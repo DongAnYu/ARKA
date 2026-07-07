@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { ArrowRight, FolderOpen, Sparkles } from 'lucide-react'
+import { ArrowRight, Check, ChevronDown, FolderOpen, Plus, Save, Sparkles } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import arkaLogo from '../assets/arka-logo.svg'
@@ -93,20 +93,73 @@ type GenerationProgress = {
   summary: GenerationSummary | null
 }
 
+type Question = {
+  question: string
+  option_a: string
+  option_b: string
+  option_c: string
+  option_d: string
+  correct_answer: string
+  explanation: string | null
+  space_id: number
+}
+
+type RecallSpace = {
+  id: number
+  name: string
+  description: string | null
+}
+
 export function HomePage() {
   const welcomeMessage = getWelcomeMessage()
+  const saveInFlightRef = useRef(false)
   const [vaultPath, setVaultPath] = useState('')
   const [notes, setNotes] = useState<Note[]>([])
   const [selectedNote, setSelectedNote] = useState<Note | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('reader')
   const [isLoading, setIsLoading] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isSavingQuestions, setIsSavingQuestions] = useState(false)
   const [generationJobId, setGenerationJobId] = useState<string | null>(null)
   const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null)
   const [generationSummary, setGenerationSummary] = useState<GenerationSummary | null>(null)
   const [showChunks, setShowChunks] = useState(false)
   const [selectedChunk, setSelectedChunk] = useState<ChunkPreview | null>(null)
+  const [recallSpaces, setRecallSpaces] = useState<RecallSpace[]>([])
+  const [selectedSpaceId, setSelectedSpaceId] = useState(1)
+  const [saveDestinationMode, setSaveDestinationMode] = useState<'existing' | 'new'>('existing')
+  const [newSpaceName, setNewSpaceName] = useState('')
+  const [newSpaceDescription, setNewSpaceDescription] = useState('')
+  const [saveStatus, setSaveStatus] = useState('')
+  const [saveStatusKind, setSaveStatusKind] = useState<'success' | 'error' | ''>('')
+  const [hasSavedQuestions, setHasSavedQuestions] = useState(false)
   const [error, setError] = useState('')
+
+  const generatedQuestionCount =
+    generationSummary?.chunk_previews.reduce(
+      (total, chunk) => total + chunk.llm_result.questions.length,
+      0,
+    ) ?? 0
+
+  const selectedSpace = recallSpaces.find((space) => space.id === selectedSpaceId)
+
+  const loadRecallSpaces = async () => {
+    try {
+      const spaces = await invoke<RecallSpace[]>('get_spaces')
+      setRecallSpaces(spaces)
+
+      if (spaces.length > 0 && !spaces.some((space) => space.id === selectedSpaceId)) {
+        setSelectedSpaceId(spaces[0].id)
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load recall spaces'
+      setError(message)
+    }
+  }
+
+  useEffect(() => {
+    loadRecallSpaces()
+  }, [])
 
   const chooseVault = async () => {
     setError('')
@@ -137,6 +190,9 @@ export function HomePage() {
     setGenerationSummary(null)
     setShowChunks(false)
     setSelectedChunk(null)
+    setSaveStatus('')
+    setSaveStatusKind('')
+    setHasSavedQuestions(false)
 
     try {
       const data = await invoke<Note[]>('get_notes', { vaultPath: path })
@@ -259,6 +315,105 @@ export function HomePage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to cancel generation'
       setError(message)
+    }
+  }
+
+  const saveGeneratedQuestions = async () => {
+    if (saveInFlightRef.current || isSavingQuestions || hasSavedQuestions) {
+      return
+    }
+
+    if (!generationSummary) {
+      setSaveStatus('No questions to save.')
+      setSaveStatusKind('error')
+      return
+    }
+
+    if (generatedQuestionCount === 0) {
+      setSaveStatus('No generated questions were found in this preview.')
+      setSaveStatusKind('error')
+      return
+    }
+
+    if (saveDestinationMode === 'new' && !newSpaceName.trim()) {
+      setSaveStatus('Name the new recall space before saving.')
+      setSaveStatusKind('error')
+      return
+    }
+
+    if (saveDestinationMode === 'existing' && !selectedSpaceId) {
+      setSaveStatus('Choose a recall space before saving.')
+      setSaveStatusKind('error')
+      return
+    }
+
+    saveInFlightRef.current = true
+    setIsSavingQuestions(true)
+    setSaveStatus('')
+    setSaveStatusKind('')
+
+    try {
+      let destinationSpaceId = selectedSpaceId
+
+      if (saveDestinationMode === 'new') {
+        const trimmedName = newSpaceName.trim()
+
+        const createdSpace = await invoke<RecallSpace>('create_space', {
+          name: trimmedName,
+          description: newSpaceDescription.trim() || null,
+        })
+
+        destinationSpaceId = createdSpace.id
+        setSelectedSpaceId(createdSpace.id)
+        setSaveDestinationMode('existing')
+        setNewSpaceName('')
+        setNewSpaceDescription('')
+        await loadRecallSpaces()
+      }
+
+      // Extract all questions from chunks
+      const questionsToSave: Question[] = []
+      generationSummary.chunk_previews.forEach((chunk) => {
+        chunk.llm_result.questions.forEach((q) => {
+          questionsToSave.push({
+            question: q.question,
+            option_a: q.option_a,
+            option_b: q.option_b,
+            option_c: q.option_c,
+            option_d: q.option_d,
+            correct_answer: q.correct_answer,
+            explanation: q.explanation,
+            space_id: destinationSpaceId,
+          })
+        })
+      })
+
+      // Load current model config to get model name
+      const modelConfig = await invoke<any>('load_model_config')
+      const modelName = modelConfig.selected_model || 'unknown'
+
+      // Save to database
+      await invoke('save_generated_questions', {
+        questions: questionsToSave,
+        model: modelName,
+      })
+
+      // Success feedback
+      const spaceName =
+        saveDestinationMode === 'new'
+          ? newSpaceName.trim()
+          : selectedSpace?.name ?? `space ${destinationSpaceId}`
+      setHasSavedQuestions(true)
+      setSaveStatus(`Saved ${questionsToSave.length} questions to ${spaceName}.`)
+      setSaveStatusKind('success')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to save questions'
+      setSaveStatus(message)
+      setSaveStatusKind('error')
+      setHasSavedQuestions(false)
+    } finally {
+      saveInFlightRef.current = false
+      setIsSavingQuestions(false)
     }
   }
 
@@ -415,6 +570,109 @@ export function HomePage() {
               <strong>{generationSummary.total_chunks}</strong>
             </p>
           </div>
+
+          <div className="generation-summary-actions">
+            <div className="recall-save-panel">
+              <div className="recall-save-head">
+                <div>
+                  <h3>Save to Recall Space</h3>
+                  <p>{generatedQuestionCount} generated questions ready</p>
+                </div>
+                <div className="save-mode-toggle" role="group" aria-label="Save destination">
+                  <button
+                    type="button"
+                    className={`save-mode-btn${saveDestinationMode === 'existing' ? ' is-active' : ''}`}
+                    onClick={() => setSaveDestinationMode('existing')}
+                    disabled={isSavingQuestions || hasSavedQuestions}
+                  >
+                    Existing
+                  </button>
+                  <button
+                    type="button"
+                    className={`save-mode-btn${saveDestinationMode === 'new' ? ' is-active' : ''}`}
+                    onClick={() => setSaveDestinationMode('new')}
+                    disabled={isSavingQuestions || hasSavedQuestions}
+                  >
+                    New
+                  </button>
+                </div>
+              </div>
+
+              {saveDestinationMode === 'existing' ? (
+                <label className="recall-space-select-wrap">
+                  <span>Recall space</span>
+                  <select
+                    className="recall-space-select"
+                    value={selectedSpaceId}
+                    onChange={(event) => setSelectedSpaceId(Number(event.target.value))}
+                    disabled={isSavingQuestions || hasSavedQuestions || recallSpaces.length === 0}
+                  >
+                    {recallSpaces.map((space) => (
+                      <option key={space.id} value={space.id}>
+                        {space.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="recall-space-chevron" aria-hidden="true" />
+                </label>
+              ) : (
+                <div className="new-space-fields">
+                  <label className="settings-field">
+                    <span>Name</span>
+                    <input
+                      className="settings-input"
+                      value={newSpaceName}
+                      onChange={(event) => setNewSpaceName(event.target.value)}
+                      placeholder="Exam prep, Algorithms, Week 4..."
+                      disabled={isSavingQuestions || hasSavedQuestions}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>Description</span>
+                    <input
+                      className="settings-input"
+                      value={newSpaceDescription}
+                      onChange={(event) => setNewSpaceDescription(event.target.value)}
+                      placeholder="Optional"
+                      disabled={isSavingQuestions || hasSavedQuestions}
+                    />
+                  </label>
+                </div>
+              )}
+
+              <button
+                type="button"
+                className="btn-primary btn-save-questions"
+                onClick={saveGeneratedQuestions}
+                disabled={isSavingQuestions || hasSavedQuestions || generatedQuestionCount === 0}
+              >
+                {isSavingQuestions ? (
+                  'Saving...'
+                ) : hasSavedQuestions ? (
+                  <span className="btn-content">
+                    <Check className="btn-icon" aria-hidden="true" />
+                    Saved
+                  </span>
+                ) : (
+                  <span className="btn-content">
+                    {saveDestinationMode === 'new' ? (
+                      <Plus className="btn-icon" aria-hidden="true" />
+                    ) : (
+                      <Save className="btn-icon" aria-hidden="true" />
+                    )}
+                    Save Questions
+                  </span>
+                )}
+              </button>
+
+              {saveStatus && (
+                <p className={`settings-status save-status${saveStatusKind ? ` is-${saveStatusKind}` : ''}`}>
+                  {saveStatus}
+                </p>
+              )}
+            </div>
+          </div>
+
           {showChunks && (
             <div className="chunk-panel">
               {generationSummary.chunk_previews.length === 0 ? (

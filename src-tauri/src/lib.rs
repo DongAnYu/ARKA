@@ -5,15 +5,23 @@ mod services;
 use std::path::PathBuf;
 
 use models::note::Note;
-use models::question::Question;
+use models::question::{Question, QuestionInput};
 use models::model_settings::ModelConfig;
 use services::generation::{GenerationProgressSnapshot, GenerationSummary};
+use models::recall_space::RecallSpace;
 
 #[tauri::command]
 async fn get_questions() -> Result<Vec<Question>, String> {
   services::database::get_questions()
     .await
     .map_err(|err| format!("Failed to load questions: {err}"))
+}
+
+#[tauri::command]
+async fn get_questions_by_space(space_id: i64) -> Result<Vec<Question>, String> {
+  services::database::get_questions_by_space(space_id)
+    .await
+    .map_err(|err| format!("Failed to load questions for space {space_id}: {err}"))
 }
 
 #[tauri::command]
@@ -99,6 +107,41 @@ fn set_runtime_llm_settings(
     .map_err(|err| format!("Failed to apply runtime LLM settings: {err}"))
 }
 
+#[tauri::command]
+async fn save_generated_questions(questions: Vec<QuestionInput>, model: String) -> Result<(), String> {
+  services::database::save_questions(questions, model)
+    .await
+    .map_err(|err| format!("Failed to save questions: {err}"))
+}
+
+#[tauri::command]
+async fn get_spaces() -> Result<Vec<RecallSpace>, String> {
+  services::database::get_spaces()
+    .await
+    .map_err(|err| format!("Failed to load recall spaces: {err}"))
+}
+
+#[tauri::command]
+async fn create_space(name: String, description: Option<String>) -> Result<RecallSpace, String> {
+  services::database::create_space(&name, description.as_deref())
+    .await
+    .map_err(|err| format!("Failed to create recall space: {err}"))
+}
+
+#[tauri::command]
+async fn modify_space(id: i64, name: String, description: Option<String>) -> Result<RecallSpace, String> {
+  services::database::modify_space(id, &name, description.as_deref())
+    .await
+    .map_err(|err| format!("Failed to modify recall space: {err}"))
+}
+
+#[tauri::command]
+async fn delete_space(id: i64) -> Result<(), String> {
+  services::database::delete_space(id)
+    .await
+    .map_err(|err| format!("Failed to delete recall space: {err}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -130,6 +173,7 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
       get_questions,
+      get_questions_by_space,
       get_notes,
       preview_generation,
       start_preview_generation,
@@ -139,7 +183,9 @@ pub fn run() {
       fetch_ollama_models,
       set_runtime_llm_settings,
       load_model_config,
-      save_model_config
+      save_model_config,
+      save_generated_questions
+      ,get_spaces, create_space, modify_space, delete_space
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
