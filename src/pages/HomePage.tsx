@@ -6,24 +6,47 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import arkaLogo from '../assets/arka-logo.svg'
 
-const getWelcomeMessage = (date: Date = new Date()): string => {
+const getWelcomeMessage = (date = new Date()) => {
   const hour = date.getHours()
 
   if (hour >= 5 && hour < 12) {
-    return 'Good morning — ready to test your recall?'
+    return (
+      <>
+        Good morning!
+        <br />
+        Ready to test your recall?
+      </>
+    )
   }
 
   if (hour >= 12 && hour < 17) {
-    return 'Good afternoon — ready to test your recall?'
+    return (
+      <>
+        Good afternoon!
+        <br />
+        Ready to test your recall?
+      </>
+    )
   }
 
   if (hour >= 17 && hour < 22) {
-    return 'Good evening — ready to test your recall?'
+    return (
+      <>
+        Good evening!
+        <br />
+        Ready to test your recall?
+      </>
+    )
   }
 
-  return 'Late night — ready to test your recall?'
+  return (
+    <>
+      Late night, 
+      <br />
+      Ready to test your recall?
+    </>
+  )
 }
-
 type ViewMode = 'reader' | 'raw'
 
 type Note = {
@@ -576,7 +599,7 @@ export function HomePage() {
               <div className="recall-save-head">
                 <div>
                   <h3>Save to Recall Space</h3>
-                  <p>{generatedQuestionCount} generated questions ready</p>
+                  <p>{generatedQuestionCount} questions ready to save</p>
                 </div>
                 <div className="save-mode-toggle" role="group" aria-label="Save destination">
                   <button
@@ -640,37 +663,37 @@ export function HomePage() {
                 </div>
               )}
 
-              <button
-                type="button"
-                className="btn-primary btn-save-questions"
-                onClick={saveGeneratedQuestions}
-                disabled={isSavingQuestions || hasSavedQuestions || generatedQuestionCount === 0}
-              >
-                {isSavingQuestions ? (
-                  'Saving...'
-                ) : hasSavedQuestions ? (
-                  <span className="btn-content">
-                    <Check className="btn-icon" aria-hidden="true" />
-                    Saved
-                  </span>
-                ) : (
-                  <span className="btn-content">
-                    {saveDestinationMode === 'new' ? (
-                      <Plus className="btn-icon" aria-hidden="true" />
-                    ) : (
-                      <Save className="btn-icon" aria-hidden="true" />
-                    )}
-                    Save Questions
-                  </span>
-                )}
-              </button>
-
               {saveStatus && (
                 <p className={`settings-status save-status${saveStatusKind ? ` is-${saveStatusKind}` : ''}`}>
                   {saveStatus}
                 </p>
               )}
             </div>
+
+            <button
+              type="button"
+              className="btn-primary btn-save-questions"
+              onClick={saveGeneratedQuestions}
+              disabled={isSavingQuestions || hasSavedQuestions || generatedQuestionCount === 0}
+            >
+              {isSavingQuestions ? (
+                'Saving...'
+              ) : hasSavedQuestions ? (
+                <span className="btn-content">
+                  <Check className="btn-icon" aria-hidden="true" />
+                  Saved
+                </span>
+              ) : (
+                <span className="btn-content">
+                  {saveDestinationMode === 'new' ? (
+                    <Plus className="btn-icon" aria-hidden="true" />
+                  ) : (
+                    <Save className="btn-icon" aria-hidden="true" />
+                  )}
+                  Save Questions
+                </span>
+              )}
+            </button>
           </div>
 
           {showChunks && (
@@ -820,9 +843,7 @@ export function HomePage() {
         </article>
       ) : (
         <div className="notes-container" aria-live="polite">
-          {notes.length === 0 ? (
-            <p className="empty-state">Choose a vault to load your notes.</p>
-          ) : (
+          {notes.length === 0 ? null : (
             <>
               <p className="notes-count">Found {notes.length} Notes</p>
               <ul className="note-list">

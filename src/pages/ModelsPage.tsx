@@ -265,154 +265,156 @@ export function ModelsPage() {
 
   return (
     <div className="app-container settings-page" aria-label="Models page">
-      <section className="settings-panel">
-        <header className="settings-header">
-          <h1>Provider</h1>
-          <h2>Choose your LLM source</h2>
-          <p>Choose how the assistant connects to a language model.</p>
-        </header>
-
-        <div className="provider-grid" role="radiogroup" aria-label="Provider">
-          {providerOptions.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              className={`provider-card${provider === option.id ? ' is-active' : ''}`}
-              onClick={() => selectProvider(option.id)}
-              role="radio"
-              aria-checked={provider === option.id}
-            >
-              <span className="provider-card-title">{option.name}</span>
-              <span className="provider-card-description">{option.description}</span>
-            </button>
-          ))}
-        </div>
-      </section>
+      <header className="settings-panel">
+        <h1>Model settings</h1>
+        <p className="settings-help-text">Set the values used to connect your LLM.</p>
+      </header>
 
       <section className="settings-panel">
-        <header className="settings-section-head">
-          <h3>Connection</h3>
-          <p>Base URL &amp; timeout</p>
-        </header>
 
-        <div className="settings-field">
-          <label htmlFor="base-url">Base URL</label>
-          <p className="settings-help-text">The HTTP endpoint of your provider.</p>
-          <input
-            id="base-url"
-            className="settings-input"
-            type="url"
-            value={baseUrl}
-            onChange={(event) => setBaseUrl(event.target.value)}
-            placeholder={activeProvider.defaultBaseUrl}
-          />
-        </div>
+        <div className="settings-stack">
+          <section className="settings-subsection">
+            <header className="settings-section-head">
+              <h3>Provider</h3>
+              <p>Choose Ollama or OpenRouter.</p>
+            </header>
 
-        <div className="settings-field">
-          <label htmlFor="timeout-secs">Timeout (seconds)</label>
-          <input
-            id="timeout-secs"
-            className="settings-input"
-            type="number"
-            min={1}
-            step={1}
-            value={timeoutSecs}
-            onChange={(event) => setTimeoutSecs(event.target.value)}
-            placeholder="60"
-          />
-        </div>
-
-        {provider === 'openrouter' && (
-          <div className="settings-field">
-            <label htmlFor="openrouter-api-key">OpenRouter API key</label>
-            <p className="settings-help-text">
-              Used for OpenRouter requests. Current backend still reads OPENROUTER_API_KEY from env.
-            </p>
-            <input
-              id="openrouter-api-key"
-              className="settings-input"
-              type="password"
-              value={openRouterApiKey}
-              onChange={(event) => setOpenRouterApiKey(event.target.value)}
-              placeholder="sk-or-v1-..."
-              autoComplete="off"
-            />
-          </div>
-        )}
-      </section>
-
-      <section className="settings-panel">
-        <header className="settings-section-head">
-          <h3>Model</h3>
-          <p>Pick the chat model</p>
-        </header>
-
-        {provider === 'ollama' ? (
-          <>
-            <p className="settings-help-text">
-              Fetch all models from Ollama, then choose one from the dropdown.
-            </p>
-
-            <div className="settings-field">
-              <label htmlFor="selected-model">Model</label>
-              <div className="model-row">
-                <select
-                  id="selected-model"
-                  className="settings-input model-input"
-                  value={selectedModel}
-                  onChange={(event) => setSelectedModel(event.target.value)}
-                >
-                  <option value="">Select fetched model</option>
-                  {availableModels.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                </select>
-
+            <div className="provider-grid" role="radiogroup" aria-label="Provider">
+              {providerOptions.map((option) => (
                 <button
+                  key={option.id}
                   type="button"
-                  className="btn-secondary settings-fetch-btn"
-                  onClick={fetchModels}
-                  disabled={isFetchingModels}
+                  className={`provider-card${provider === option.id ? ' is-active' : ''}`}
+                  onClick={() => selectProvider(option.id)}
+                  role="radio"
+                  aria-checked={provider === option.id}
                 >
-                  {isFetchingModels ? 'Fetching...' : 'Fetch models'}
+                  <span className="provider-card-title">{option.name}</span>
+                  <span className="provider-card-description">{option.description}</span>
                 </button>
-              </div>
+              ))}
             </div>
-          </>
-        ) : (
-          <>
-            <p className="settings-help-text">
-              Enter the OpenRouter model id (for example: inclusionai/ling-2.6-flash).
-            </p>
+          </section>
+
+          <section className="settings-subsection">
+            <header className="settings-section-head">
+              <h3>Connection</h3>
+              <p>Endpoint and timeout values.</p>
+            </header>
 
             <div className="settings-field">
-              <label htmlFor="model-query">OpenRouter model id</label>
+              <label htmlFor="base-url">Base URL</label>
+              <p className="settings-help-text">Use the provider endpoint.</p>
               <input
-                id="model-query"
+                id="base-url"
                 className="settings-input"
-                type="text"
-                value={modelQuery}
-                onChange={(event) => setModelQuery(event.target.value)}
-                placeholder="e.g. inclusionai/ling-2.6-flash"
-                autoComplete="off"
+                type="url"
+                value={baseUrl}
+                onChange={(event) => setBaseUrl(event.target.value)}
+                placeholder={activeProvider.defaultBaseUrl}
               />
             </div>
-          </>
-        )}
 
-        {fetchStatus && <p className="settings-status">{fetchStatus}</p>}
+            <div className="settings-field">
+              <label htmlFor="timeout-secs">Timeout (seconds)</label>
+              <input
+                id="timeout-secs"
+                className="settings-input"
+                type="number"
+                min={1}
+                step={1}
+                value={timeoutSecs}
+                onChange={(event) => setTimeoutSecs(event.target.value)}
+                placeholder="60"
+              />
+            </div>
+
+            {provider === 'openrouter' && (
+              <div className="settings-field">
+                <label htmlFor="openrouter-api-key">OpenRouter API key</label>
+                <p className="settings-help-text">Needed for OpenRouter requests.</p>
+                <input
+                  id="openrouter-api-key"
+                  className="settings-input"
+                  type="password"
+                  value={openRouterApiKey}
+                  onChange={(event) => setOpenRouterApiKey(event.target.value)}
+                  placeholder="sk-or-v1-..."
+                  autoComplete="off"
+                />
+              </div>
+            )}
+          </section>
+
+          <section className="settings-subsection settings-subsection-last">
+            <header className="settings-section-head">
+              <h3>Select the model to use</h3>
+            </header>
+
+            {provider === 'ollama' ? (
+              <>
+                <p className="settings-help-text">Fetch local models, then pick one.</p>
+
+                <div className="settings-field">
+                  <label htmlFor="selected-model">Model</label>
+                  <div className="model-row">
+                    <select
+                      id="selected-model"
+                      className="settings-input model-input"
+                      value={selectedModel}
+                      onChange={(event) => setSelectedModel(event.target.value)}
+                    >
+                      <option value="">Select a fetched model</option>
+                      {availableModels.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+
+                    <button
+                      type="button"
+                      className="btn-secondary settings-fetch-btn"
+                      onClick={fetchModels}
+                      disabled={isFetchingModels}
+                    >
+                      {isFetchingModels ? 'Fetching...' : 'Fetch models'}
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="settings-help-text">Enter a model id such as inclusionai/ling-2.6-flash.</p>
+
+                <div className="settings-field">
+                  <label htmlFor="model-query">OpenRouter model id</label>
+                  <input
+                    id="model-query"
+                    className="settings-input"
+                    type="text"
+                    value={modelQuery}
+                    onChange={(event) => setModelQuery(event.target.value)}
+                    placeholder="e.g. inclusionai/ling-2.6-flash"
+                    autoComplete="off"
+                  />
+                </div>
+              </>
+            )}
+
+            {fetchStatus && <p className="settings-status">{fetchStatus}</p>}
+          </section>
+        </div>
       </section>
 
-      <div className="settings-actions">
+      <div className="settings-actions settings-actions-right">
         <button
           type="button"
           className="btn-primary"
           onClick={saveModelSettings}
           disabled={isSaving}
         >
-          {isSaving ? 'Saving...' : 'Save model settings'}
+          {isSaving ? 'Saving...' : 'Save changes'}
         </button>
 
         {saveStatus && <p className="settings-status">{saveStatus}</p>}

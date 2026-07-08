@@ -213,8 +213,9 @@ body {
   overflow-y: auto;
   height: 100vh;
   background:
-    radial-gradient(900px circle at 10% -10%, rgba(var(--rgb-amethyst), 0.12), transparent 60%),
-    radial-gradient(700px circle at 110% 20%, rgba(var(--rgb-lavender), 0.08), transparent 58%),
+    linear-gradient(150deg, #171717 0%, #1d1730 48%, #171717 100%),
+    radial-gradient(900px circle at 10% -10%, rgba(var(--rgb-amethyst), 0.16), transparent 60%),
+    radial-gradient(700px circle at 110% 20%, rgba(var(--rgb-lavender), 0.12), transparent 58%),
     var(--color-abyss);
 }
 
@@ -402,6 +403,25 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
+}
+
+.settings-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-subsection {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-subsection-last {
+  padding-bottom: 2px;
+}
+
+.settings-actions-right {
+  width: 100%;
+  align-items: flex-end;
 }
 
 .questions-page {
@@ -690,6 +710,52 @@ body {
 
 .home-page {
   justify-content: center;
+}
+
+.home-page .app-header h1 {
+  font-size: 60px;
+  line-height: 1.15;
+}
+
+.home-page .welcome-description {
+  font-size: 18px;
+  line-height: 1.7;
+}
+
+.home-page .header-actions .btn-primary,
+.home-page .header-actions .btn-secondary {
+  font-size: 17px;
+}
+
+.home-page .vault-path {
+  font-size: 14px;
+}
+
+.home-page .generation-progress-head h2,
+.home-page .generation-summary h2,
+.home-page .note-detail-title {
+  font-size: 22px;
+}
+
+.home-page .generation-progress-head span,
+.home-page .summary-grid strong {
+  font-size: 24px;
+}
+
+.home-page .summary-grid span,
+.home-page .notes-count,
+.home-page .btn-back,
+.home-page .empty-state {
+  font-size: 15px;
+}
+
+.home-page .note-item {
+  font-size: 17px;
+}
+
+.home-page .note-detail-content,
+.home-page .note-reader {
+  font-size: 17px;
 }
 
 .app-header {
