@@ -94,6 +94,16 @@ async fn open_pool() -> Result<sqlx::SqlitePool, sqlx::Error> {
         .await
 }
 
+async fn ensure_default_space(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO recall_spaces (id, name, description) VALUES (1, 'General', 'Default space for ungrouped questions')",
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 pub async fn get_questions() -> Result<Vec<Question>, sqlx::Error> {
     let pool = open_pool().await?;
 
@@ -121,6 +131,7 @@ pub async fn get_questions_by_space(space_id: i64) -> Result<Vec<Question>, sqlx
 
 pub async fn get_spaces() -> Result<Vec<RecallSpace>, sqlx::Error> {
     let pool = open_pool().await?;
+    ensure_default_space(&pool).await?;
 
     let spaces = sqlx::query_as::<_, RecallSpace>(
         "SELECT id, name, description FROM recall_spaces ORDER BY id",
@@ -166,10 +177,16 @@ pub async fn modify_space(id: i64, name: &str, description: Option<&str>) -> Res
 }
 
 pub async fn delete_space(id: i64) -> Result<(), sqlx::Error> {
+    if id == 1 {
+        return Err(sqlx::Error::Protocol(
+            "Default space 'General' cannot be deleted.".into(),
+        ));
+    }
+
     let pool = open_pool().await?;
 
-    // Reassign any existing questions to default space (1) before deletion
-    sqlx::query("UPDATE questions SET space_id = 1 WHERE space_id = ?")
+    // Delete all questions inside this space before deleting the space.
+    sqlx::query("DELETE FROM questions WHERE space_id = ?")
         .bind(id)
         .execute(&pool)
         .await?;
@@ -200,6 +217,30 @@ pub async fn save_questions(questions: Vec<QuestionInput>, model: String) -> Res
         .bind(if question.space_id > 0 { question.space_id } else { 1_i64 })
         .execute(&pool)
         .await?;
+    }
+
+    Ok(())
+}
+
+pub async fn delete_question(id: i64) -> Result<(), sqlx::Error> {
+    let pool = open_pool().await?;
+
+    sqlx::query("DELETE FROM questions WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn delete_questions(ids: Vec<i64>) -> Result<(), sqlx::Error> {
+    let pool = open_pool().await?;
+
+    for id in ids {
+        sqlx::query("DELETE FROM questions WHERE id = ?")
+            .bind(id)
+            .execute(&pool)
+            .await?;
     }
 
     Ok(())
@@ -246,6 +287,7 @@ pub async fn run_smoke_test() -> Result<(), sqlx::Error> {
     let pool = open_pool().await?;
 
     sqlx::migrate!("./migrations").run(&pool).await?;
+    ensure_default_space(&pool).await?;
 
     Ok(())
 }

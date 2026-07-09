@@ -25,6 +25,20 @@ async fn get_questions_by_space(space_id: i64) -> Result<Vec<Question>, String> 
 }
 
 #[tauri::command]
+async fn delete_question(id: i64) -> Result<(), String> {
+  services::database::delete_question(id)
+    .await
+    .map_err(|err| format!("Failed to delete question {id}: {err}"))
+}
+
+#[tauri::command]
+async fn delete_questions(ids: Vec<i64>) -> Result<(), String> {
+  services::database::delete_questions(ids)
+    .await
+    .map_err(|err| format!("Failed to delete selected questions: {err}"))
+}
+
+#[tauri::command]
 fn get_notes(vault_path: String) -> Result<Vec<Note>, String> {
   services::filesystem::load_vault_notes(&vault_path)
 }
@@ -174,6 +188,8 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       get_questions,
       get_questions_by_space,
+      delete_question,
+      delete_questions,
       get_notes,
       preview_generation,
       start_preview_generation,
@@ -184,8 +200,11 @@ pub fn run() {
       set_runtime_llm_settings,
       load_model_config,
       save_model_config,
-      save_generated_questions
-      ,get_spaces, create_space, modify_space, delete_space
+      save_generated_questions,
+      get_spaces,
+      create_space,
+      modify_space,
+      delete_space
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
