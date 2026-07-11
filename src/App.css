@@ -457,6 +457,12 @@ body {
   box-shadow: var(--shadow-subtle);
   overflow: hidden;
   position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.recall-space-button {
+  flex: 1;
 }
 
 .recall-space-card.is-managing {
@@ -476,6 +482,10 @@ body {
   justify-content: space-between;
   gap: 16px;
   transition: background-color var(--motion-fast) var(--ease-standard);
+}
+
+.recall-space-button[aria-disabled='true'] {
+  cursor: default;
 }
 
 .recall-space-button:hover {
@@ -595,6 +605,8 @@ body {
 }
 
 .recall-space-meta {
+  width: 100%;
+  flex: 1;
   min-width: 0;
   display: grid;
   gap: 8px;
@@ -606,6 +618,22 @@ body {
   line-height: 1.4;
   color: var(--color-bright-gray);
   text-wrap: pretty;
+}
+
+.recall-space-inline-editor {
+  width: 100%;
+  min-width: 0;
+}
+
+.recall-space-inline-input {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.recall-space-inline-title {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .recall-space-meta p {
@@ -699,6 +727,7 @@ body {
   display: grid;
   gap: 6px;
   min-width: 0;
+  flex: 1;
 }
 
 .question-id {
@@ -743,6 +772,92 @@ body {
   padding: 0;
   display: grid;
   gap: 10px;
+}
+
+/* ============ Editable Text Component ============ */
+
+.editable-text {
+  cursor: text;
+  border-radius: 4px;
+  transition: box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+.editable-text:hover:not(.is-disabled) {
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.25);
+}
+
+.editable-text:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.45);
+}
+
+.editable-text.is-disabled {
+  cursor: default;
+}
+
+.editable-text-placeholder {
+  color: var(--color-muted-gray);
+  font-style: italic;
+}
+
+.editable-text-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.45);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  margin: 0;
+  outline: none;
+}
+
+.editable-text-input:focus {
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.7);
+}
+
+/* Question-specific overrides */
+
+.question-inline-input {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.question-inline-input-title {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--color-bright-gray);
+}
+
+.question-inline-text {
+  display: inline;
+}
+
+.question-inline-text-title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--color-bright-gray);
+  text-wrap: pretty;
+}
+
+/* Space-specific overrides */
+
+.editable-space-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.4;
+  color: var(--color-bright-gray);
+  text-wrap: pretty;
+}
+
+.editable-space-description {
+  margin: 0;
+  color: var(--color-medium-gray);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .question-option {

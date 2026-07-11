@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ArrowLeft, ChevronDown, Trash2 } from 'lucide-react'
+import { EditableText } from '../components/EditableText'
 
 type Question = {
   id: number
@@ -216,6 +217,42 @@ export function QuestionsPage() {
     return allQuestions.filter((item) => item.space_id === spaceId).length
   }
 
+  const saveSpaceField = async (space: RecallSpace, field: 'name' | 'description', nextValue: string) => {
+    const name = field === 'name' ? nextValue : space.name
+    const description = field === 'description' ? (nextValue.length > 0 ? nextValue : null) : space.description
+
+    const updated = await invoke<RecallSpace>('modify_space', {
+      id: space.id,
+      name,
+      description,
+    })
+
+    setSpaces((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+  }
+
+  const saveQuestionField = async (
+    question: Question,
+    field: 'question' | 'option_a' | 'option_b' | 'option_c' | 'option_d',
+    nextValue: string,
+  ) => {
+    const updated = await invoke<Question>('modify_question', {
+      id: question.id,
+      questionInput: {
+        question: field === 'question' ? nextValue : question.question,
+        option_a: field === 'option_a' ? nextValue : question.option_a,
+        option_b: field === 'option_b' ? nextValue : question.option_b,
+        option_c: field === 'option_c' ? nextValue : question.option_c,
+        option_d: field === 'option_d' ? nextValue : question.option_d,
+        correct_answer: question.correct_answer,
+        explanation: question.explanation,
+        space_id: question.space_id,
+      },
+    })
+
+    setQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+    setAllQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+  }
+
   return (
     <div className="app-container questions-page">
       <header className="settings-panel">
@@ -270,39 +307,63 @@ export function QuestionsPage() {
                       </label>
                     )}
 
-                    <button
-                      type="button"
+                    <div
                       className="question-toggle"
                       onClick={() => toggleExpanded(item.id)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          toggleExpanded(item.id)
+                        }
+                      }}
                       aria-expanded={expandedIds.includes(item.id)}
                       aria-controls={`question-details-${item.id}`}
                     >
                       <div className="question-summary">
                         <span className="question-id">#{item.id}</span>
-                        <h2>{item.question}</h2>
+                        <div onClick={(event) => event.stopPropagation()}>
+                          <EditableText
+                            value={item.question}
+                            onSave={(next) => saveQuestionField(item, 'question', next)}
+                            disabled={isManagingQuestions || isDeletingQuestions}
+                            className="question-inline-text question-inline-text-title"
+                            inputClassName="question-inline-input question-inline-input-title"
+                            as="h2"
+                            aria-label={`Edit question ${item.id}`}
+                          />
+                        </div>
                       </div>
                       <ChevronDown
                         className={`question-chevron${expandedIds.includes(item.id) ? ' is-open' : ''}`}
                         aria-hidden="true"
                       />
-                    </button>
+                    </div>
                   </div>
 
                   {expandedIds.includes(item.id) && (
                     <div className="question-details" id={`question-details-${item.id}`}>
                       <ul className="question-options">
-                        {[
-                          { key: 'A' as const, value: item.option_a },
-                          { key: 'B' as const, value: item.option_b },
-                          { key: 'C' as const, value: item.option_c },
-                          { key: 'D' as const, value: item.option_d },
-                        ].map((option) => (
+                        {([
+                          { key: 'A' as const, value: item.option_a, field: 'option_a' as const },
+                          { key: 'B' as const, value: item.option_b, field: 'option_b' as const },
+                          { key: 'C' as const, value: item.option_c, field: 'option_c' as const },
+                          { key: 'D' as const, value: item.option_d, field: 'option_d' as const },
+                        ]).map((option) => (
                           <li
                             key={option.key}
                             className={`question-option${isCorrectOption(option.value, option.key, item) ? ' is-correct' : ''}`}
                           >
                             <span className="question-option-key">{option.key}</span>
-                            <span>{option.value}</span>
+                            <EditableText
+                              value={option.value}
+                              onSave={(next) => saveQuestionField(item, option.field, next)}
+                              disabled={isManagingQuestions || isDeletingQuestions}
+                              className="question-inline-text"
+                              inputClassName="question-inline-input"
+                              aria-label={`Edit option ${option.key} for question ${item.id}`}
+                            />
                           </li>
                         ))}
                       </ul>
@@ -363,24 +424,65 @@ export function QuestionsPage() {
 
               return (
                 <article className={`recall-space-card${isManagingSpaces ? ' is-managing' : ''}`} key={space.id}>
-                  <button
-                    type="button"
+                  <div
                     className="recall-space-button"
-                    onClick={() => openSpace(space)}
+                    onClick={() => {
+                      if (deletingSpaceId !== null) {
+                        return
+                      }
+
+                      void openSpace(space)
+                    }}
+                    onKeyDown={(event) => {
+                      if (deletingSpaceId !== null) {
+                        return
+                      }
+
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        void openSpace(space)
+                      }
+                    }}
                     aria-label={`Open ${space.name}`}
-                    disabled={deletingSpaceId !== null}
+                    role="button"
+                    tabIndex={deletingSpaceId !== null ? -1 : 0}
+                    aria-disabled={deletingSpaceId !== null}
                   >
                     <div className="recall-space-meta">
                       <span className="question-id">Space #{space.id}</span>
-                      <h2>{space.name}</h2>
-                      <p>{space.description?.trim() || 'No description provided.'}</p>
+
+                      <div className="recall-space-inline-editor" onClick={(event) => event.stopPropagation()}>
+                        <EditableText
+                          value={space.name}
+                          onSave={(next) => saveSpaceField(space, 'name', next)}
+                          disabled={deletingSpaceId !== null}
+                          className="editable-space-title"
+                          inputClassName="recall-space-inline-input recall-space-inline-title"
+                          as="h2"
+                          aria-label={`Edit title for ${space.name}`}
+                        />
+                      </div>
+
+                      <div className="recall-space-inline-editor" onClick={(event) => event.stopPropagation()}>
+                        <EditableText
+                          value={space.description?.trim() ?? ''}
+                          onSave={(next) => saveSpaceField(space, 'description', next)}
+                          disabled={deletingSpaceId !== null}
+                          placeholder="No description provided."
+                          className="editable-space-description"
+                          inputClassName="recall-space-inline-input"
+                          as="p"
+                          allowEmpty
+                          aria-label={`Edit description for ${space.name}`}
+                        />
+                      </div>
                     </div>
 
                     <div className="recall-space-count" aria-label={`${questionCount} questions`}>
                       <strong>{questionCount}</strong>
                       <span>{questionCount === 1 ? 'Question' : 'Questions'}</span>
                     </div>
-                  </button>
+                  </div>
 
                   {isManagingSpaces && (
                     <button

@@ -129,6 +129,58 @@ pub async fn get_questions_by_space(space_id: i64) -> Result<Vec<Question>, sqlx
     Ok(questions)
 }
 
+pub async fn modify_question(id: i64, question_input: QuestionInput) -> Result<Question, sqlx::Error> {
+    let pool = open_pool().await?;
+
+    sqlx::query(
+        "UPDATE questions SET question = ?, option_a = ?, option_b = ?, option_c = ?, option_d = ?, correct_answer = ?, explanation = ?, space_id = ? WHERE id = ?",
+    )
+    .bind(&question_input.question)
+    .bind(&question_input.option_a)
+    .bind(&question_input.option_b)
+    .bind(&question_input.option_c)
+    .bind(&question_input.option_d)
+    .bind(&question_input.correct_answer)
+    .bind(&question_input.explanation)
+    .bind(if question_input.space_id > 0 { question_input.space_id } else { 1_i64 })
+    .bind(id)
+    .execute(&pool)
+    .await?;
+
+    let updated_question = sqlx::query_as::<_, Question>(
+        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id FROM questions WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await?;
+
+    Ok(updated_question)
+}
+
+pub async fn delete_question(id: i64) -> Result<(), sqlx::Error> {
+    let pool = open_pool().await?;
+
+    sqlx::query("DELETE FROM questions WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn delete_questions(ids: Vec<i64>) -> Result<(), sqlx::Error> {
+    let pool = open_pool().await?;
+
+    for id in ids {
+        sqlx::query("DELETE FROM questions WHERE id = ?")
+            .bind(id)
+            .execute(&pool)
+            .await?;
+    }
+
+    Ok(())
+}
+
 pub async fn get_spaces() -> Result<Vec<RecallSpace>, sqlx::Error> {
     let pool = open_pool().await?;
     ensure_default_space(&pool).await?;
@@ -217,30 +269,6 @@ pub async fn save_questions(questions: Vec<QuestionInput>, model: String) -> Res
         .bind(if question.space_id > 0 { question.space_id } else { 1_i64 })
         .execute(&pool)
         .await?;
-    }
-
-    Ok(())
-}
-
-pub async fn delete_question(id: i64) -> Result<(), sqlx::Error> {
-    let pool = open_pool().await?;
-
-    sqlx::query("DELETE FROM questions WHERE id = ?")
-        .bind(id)
-        .execute(&pool)
-        .await?;
-
-    Ok(())
-}
-
-pub async fn delete_questions(ids: Vec<i64>) -> Result<(), sqlx::Error> {
-    let pool = open_pool().await?;
-
-    for id in ids {
-        sqlx::query("DELETE FROM questions WHERE id = ?")
-            .bind(id)
-            .execute(&pool)
-            .await?;
     }
 
     Ok(())

@@ -4,7 +4,6 @@ import { HomePage } from './pages/HomePage'
 import { ModelsPage } from './pages/ModelsPage'
 import { QuestionsPage } from './pages/QuestionsPage'
 import { SettingsPage } from './pages/SettingsPage'
-import { VaultPage } from './pages/VaultPage'
 import './App.css'
 
 function App() {
@@ -12,7 +11,6 @@ function App() {
     <Routes>
       <Route element={<AppLayout />}>
         <Route path="/" element={<HomePage />} />
-        <Route path="/vault" element={<VaultPage />} />
         <Route path="/questions" element={<QuestionsPage />} />
         <Route path="/models" element={<ModelsPage />} />
         <Route path="/settings" element={<SettingsPage />} />

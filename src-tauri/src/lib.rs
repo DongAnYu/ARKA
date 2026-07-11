@@ -39,6 +39,13 @@ async fn delete_questions(ids: Vec<i64>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn modify_question(id: i64, question_input: QuestionInput) -> Result<Question, String> {
+  services::database::modify_question(id, question_input)
+    .await
+    .map_err(|err| format!("Failed to modify question {id}: {err}"))
+}
+
+#[tauri::command]
 fn get_notes(vault_path: String) -> Result<Vec<Note>, String> {
   services::filesystem::load_vault_notes(&vault_path)
 }
@@ -190,6 +197,7 @@ pub fn run() {
       get_questions_by_space,
       delete_question,
       delete_questions,
+      modify_question,
       get_notes,
       preview_generation,
       start_preview_generation,
