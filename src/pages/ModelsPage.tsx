@@ -77,8 +77,7 @@ export function ModelsPage() {
   const [baseUrl, setBaseUrl] = useState(findProvider('ollama').defaultBaseUrl)
   const [openRouterApiKey, setOpenRouterApiKey] = useState('')
   const [timeoutSecs, setTimeoutSecs] = useState('60')
-  const [modelQuery, setModelQuery] = useState('')
-  const [selectedModel, setSelectedModel] = useState('')
+  const [modelId, setModelId] = useState('')
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [isFetchingModels, setIsFetchingModels] = useState(false)
   const [fetchStatus, setFetchStatus] = useState('')
@@ -96,7 +95,7 @@ export function ModelsPage() {
         setProvider(savedProvider)
         setBaseUrl(config.base_url)
         setTimeoutSecs(String(config.timeout_secs))
-        setSelectedModel(config.selected_model)
+        setModelId(config.selected_model)
         setOpenRouterApiKey(config.api_key ?? '')
         isInitialLoadDone.current = true
       })
@@ -113,18 +112,15 @@ export function ModelsPage() {
     const key = getHistoryKey(provider, baseUrl)
     const models = history[key] ?? []
     setAvailableModels(models)
-    if (isInitialLoadDone.current) {
-      setSelectedModel((current) => (models.includes(current) ? current : ''))
+    if (isInitialLoadDone.current && provider === 'ollama') {
+      setModelId((current) => (models.includes(current) ? current : ''))
     }
   }, [provider, baseUrl])
 
   const saveModelSettings = async () => {
     setSaveStatus('')
     const normalizedBaseUrl = baseUrl.trim()
-    const normalizedModel =
-      provider === 'openrouter'
-        ? selectedModel.trim() || modelQuery.trim()
-        : selectedModel.trim()
+    const normalizedModel = modelId.trim()
     const normalizedApiKey = openRouterApiKey.trim()
     const parsedTimeout = Number(timeoutSecs)
     const isValidTimeout = Number.isInteger(parsedTimeout) && parsedTimeout > 0
@@ -193,22 +189,16 @@ export function ModelsPage() {
       setProvider(nextProvider)
       setBaseUrl(savedConfig.base_url)
       setTimeoutSecs(String(savedConfig.timeout_secs))
-      setSelectedModel(savedConfig.selected_model)
+      setModelId(savedConfig.selected_model)
       setOpenRouterApiKey(savedConfig.api_key ?? '')
       setFetchStatus('')
-      if (nextProvider === 'openrouter') {
-        setModelQuery(savedConfig.selected_model)
-      } else {
-        setModelQuery('')
-      }
       return
     }
 
     setProvider(nextProvider)
     setBaseUrl(config.defaultBaseUrl)
     setFetchStatus('')
-    setModelQuery('')
-    setSelectedModel('')
+    setModelId('')
     if (nextProvider !== 'openrouter') {
       setOpenRouterApiKey('')
     }
@@ -241,7 +231,7 @@ export function ModelsPage() {
       persistHistory(mergedModels)
 
       if (fetchedModels.length > 0) {
-        setSelectedModel((current) => {
+        setModelId((current) => {
           if (current && mergedModels.includes(current)) {
             return current
           }
@@ -361,8 +351,8 @@ export function ModelsPage() {
                     <select
                       id="selected-model"
                       className="settings-input model-input"
-                      value={selectedModel}
-                      onChange={(event) => setSelectedModel(event.target.value)}
+                      value={modelId}
+                      onChange={(event) => setModelId(event.target.value)}
                     >
                       <option value="">Select a fetched model</option>
                       {availableModels.map((item) => (
@@ -393,8 +383,8 @@ export function ModelsPage() {
                     id="model-query"
                     className="settings-input"
                     type="text"
-                    value={modelQuery}
-                    onChange={(event) => setModelQuery(event.target.value)}
+                    value={modelId}
+                    onChange={(event) => setModelId(event.target.value)}
                     placeholder="e.g. inclusionai/ling-2.6-flash"
                     autoComplete="off"
                   />

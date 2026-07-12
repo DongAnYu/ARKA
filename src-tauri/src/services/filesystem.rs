@@ -12,10 +12,6 @@ pub fn select_vault(vault_path: &str) -> Result<PathBuf, String> {
         return Err(format!("Vault path does not exist: {vault_path}"));
     }
 
-    if !path.is_dir() {
-        return Err(format!("Vault path is not a directory: {vault_path}"));
-    }
-
     path.canonicalize()
         .map_err(|err| format!("Failed to resolve vault path: {err}"))
 }
@@ -29,8 +25,16 @@ pub fn scan_markdown_files(vault_path: &Path) -> io::Result<Vec<PathBuf>> {
 pub fn load_vault_notes(vault_path: &str) -> Result<Vec<Note>, String> {
     let vault = select_vault(vault_path)?;
 
-    let files =
-        scan_markdown_files(&vault).map_err(|err| format!("Failed to scan vault: {err}"))?;
+    let files = if vault.is_dir() {
+        scan_markdown_files(&vault).map_err(|err| format!("Failed to scan vault: {err}"))?
+    } else if is_markdown_file(&vault) {
+        vec![vault]
+    } else {
+        return Err(format!(
+            "Selected file is not a markdown file (.md or .markdown): {}",
+            vault.to_string_lossy()
+        ));
+    };
 
     let mut notes = Vec::new();
     for file in files {
@@ -72,18 +76,20 @@ fn scan_recursive(dir: &Path, markdown_files: &mut Vec<PathBuf>) -> io::Result<(
             continue;
         }
 
-        let is_markdown = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("md"))
-            .unwrap_or(false);
-
-        if is_markdown {
+        if is_markdown_file(&path) {
             markdown_files.push(path);
         }
     }
 
     Ok(())
+}
+
+fn is_markdown_file(path: &Path) -> bool {
+    path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+        .unwrap_or(false)
 }
 
 fn extract_title(path: &Path) -> String {

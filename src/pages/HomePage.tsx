@@ -189,9 +189,15 @@ export function HomePage() {
 
     try {
       const selected = await open({
-        directory: true,
+        directory: false,
         multiple: false,
-        title: 'Choose Obsidian Vault',
+        title: 'Choose Markdown File',
+        filters: [
+          {
+            name: 'Markdown',
+            extensions: ['md', 'markdown'],
+          },
+        ],
       })
 
       if (typeof selected !== 'string') {
@@ -201,7 +207,7 @@ export function HomePage() {
       setVaultPath(selected)
       await loadNotes(selected)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to choose vault'
+      const message = err instanceof Error ? err.message : 'Failed to choose markdown file'
       setError(message)
     }
   }
@@ -464,7 +470,7 @@ export function HomePage() {
                 'Loading...'
               ) : (
                 <span className="btn-content">
-                  Choose Vault
+                  Choose Markdown File
                   <ArrowRight className="size-4" aria-hidden="true" />
                 </span>
               )}
@@ -494,7 +500,7 @@ export function HomePage() {
               >
                 <span className="btn-content">
                   <FolderOpen className="size-4" aria-hidden="true" />
-                  Change Vault
+                  Change File
                 </span>
               </button>
             </>

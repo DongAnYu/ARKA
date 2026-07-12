@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ArrowLeft, ChevronDown, Trash2 } from 'lucide-react'
-import { EditableText } from '../components/EditableText'
+import { ArrowLeft, ChevronDown, Ellipsis, Trash2 } from 'lucide-react'
 
 type Question = {
   id: number
@@ -29,11 +28,23 @@ export function QuestionsPage() {
   const [isLoadingSpaces, setIsLoadingSpaces] = useState(true)
   const [isLoadingQuestions, setIsLoadingQuestions] = useState(false)
   const [error, setError] = useState('')
-  const [expandedIds, setExpandedIds] = useState<number[]>([])
   const [selectedSpace, setSelectedSpace] = useState<RecallSpace | null>(null)
   const [isManagingQuestions, setIsManagingQuestions] = useState(false)
   const [selectedQuestionIds, setSelectedQuestionIds] = useState<number[]>([])
   const [isDeletingQuestions, setIsDeletingQuestions] = useState(false)
+  const [pendingDeleteQuestions, setPendingDeleteQuestions] = useState(false)
+  const [editingSpace, setEditingSpace] = useState<RecallSpace | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editDescription, setEditDescription] = useState('')
+  const [isSavingSpace, setIsSavingSpace] = useState(false)
+  const [editingQuestion, setEditingQuestion] = useState<Question | null>(null)
+  const [editQuestionText, setEditQuestionText] = useState('')
+  const [editOptionA, setEditOptionA] = useState('')
+  const [editOptionB, setEditOptionB] = useState('')
+  const [editOptionC, setEditOptionC] = useState('')
+  const [editOptionD, setEditOptionD] = useState('')
+  const [editCorrectAnswer, setEditCorrectAnswer] = useState<'A' | 'B' | 'C' | 'D'>('A')
+  const [isSavingQuestion, setIsSavingQuestion] = useState(false)
   const [isManagingSpaces, setIsManagingSpaces] = useState(false)
   const [deletingSpaceId, setDeletingSpaceId] = useState<number | null>(null)
   const [pendingDeleteSpaceId, setPendingDeleteSpaceId] = useState<number | null>(null)
@@ -42,24 +53,6 @@ export function QuestionsPage() {
     pendingDeleteSpaceId === null
       ? null
       : spaces.find((space) => space.id === pendingDeleteSpaceId) ?? null
-
-  const toggleExpanded = (id: number) => {
-    setExpandedIds((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-    )
-  }
-
-  const isCorrectOption = (choice: string, label: 'A' | 'B' | 'C' | 'D', q: Question) => {
-    const answer = q.correct_answer.trim().toLowerCase()
-    const normalizedChoice = choice.trim().toLowerCase()
-    const normalizedLabel = label.toLowerCase()
-
-    return (
-      answer === normalizedLabel ||
-      answer === `option_${normalizedLabel}` ||
-      answer === normalizedChoice
-    )
-  }
 
   useEffect(() => {
     const loadSpacesAndCounts = async () => {
@@ -86,7 +79,6 @@ export function QuestionsPage() {
 
   const openSpace = async (space: RecallSpace) => {
     setSelectedSpace(space)
-    setExpandedIds([])
     setIsManagingQuestions(false)
     setSelectedQuestionIds([])
     setError('')
@@ -109,7 +101,6 @@ export function QuestionsPage() {
   const backToSpaces = () => {
     setSelectedSpace(null)
     setQuestions([])
-    setExpandedIds([])
     setIsManagingQuestions(false)
     setSelectedQuestionIds([])
     setError('')
@@ -185,6 +176,20 @@ export function QuestionsPage() {
     )
   }
 
+  const requestDeleteQuestions = () => {
+    if (selectedQuestionIds.length === 0 || isDeletingQuestions) {
+      return
+    }
+    setPendingDeleteQuestions(true)
+  }
+
+  const cancelDeleteQuestions = () => {
+    if (isDeletingQuestions) {
+      return
+    }
+    setPendingDeleteQuestions(false)
+  }
+
   const deleteSelectedQuestions = async () => {
     if (selectedQuestionIds.length === 0 || isDeletingQuestions) {
       return
@@ -202,9 +207,9 @@ export function QuestionsPage() {
 
       setQuestions((current) => current.filter((item) => !selectedIdSet.has(item.id)))
       setAllQuestions((current) => current.filter((item) => !selectedIdSet.has(item.id)))
-      setExpandedIds((current) => current.filter((id) => !selectedIdSet.has(id)))
       setSelectedQuestionIds([])
       setIsManagingQuestions(false)
+      setPendingDeleteQuestions(false)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete selected questions'
       setError(message)
@@ -217,40 +222,121 @@ export function QuestionsPage() {
     return allQuestions.filter((item) => item.space_id === spaceId).length
   }
 
-  const saveSpaceField = async (space: RecallSpace, field: 'name' | 'description', nextValue: string) => {
-    const name = field === 'name' ? nextValue : space.name
-    const description = field === 'description' ? (nextValue.length > 0 ? nextValue : null) : space.description
-
-    const updated = await invoke<RecallSpace>('modify_space', {
-      id: space.id,
-      name,
-      description,
-    })
-
-    setSpaces((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+  const openEditSpace = (space: RecallSpace) => {
+    setEditingSpace(space)
+    setEditName(space.name)
+    setEditDescription(space.description ?? '')
+    setError('')
   }
 
-  const saveQuestionField = async (
-    question: Question,
-    field: 'question' | 'option_a' | 'option_b' | 'option_c' | 'option_d',
-    nextValue: string,
-  ) => {
-    const updated = await invoke<Question>('modify_question', {
-      id: question.id,
-      questionInput: {
-        question: field === 'question' ? nextValue : question.question,
-        option_a: field === 'option_a' ? nextValue : question.option_a,
-        option_b: field === 'option_b' ? nextValue : question.option_b,
-        option_c: field === 'option_c' ? nextValue : question.option_c,
-        option_d: field === 'option_d' ? nextValue : question.option_d,
-        correct_answer: question.correct_answer,
-        explanation: question.explanation,
-        space_id: question.space_id,
-      },
-    })
+  const cancelEditSpace = () => {
+    if (isSavingSpace) return
+    setEditingSpace(null)
+  }
 
-    setQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
-    setAllQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+  const saveEditSpace = async () => {
+    if (!editingSpace || isSavingSpace) return
+
+    const trimmedName = editName.trim()
+    if (trimmedName.length === 0) {
+      setError('Space name cannot be empty.')
+      return
+    }
+
+    setError('')
+    setIsSavingSpace(true)
+
+    try {
+      const description = editDescription.trim().length > 0 ? editDescription.trim() : null
+
+      const updated = await invoke<RecallSpace>('modify_space', {
+        id: editingSpace.id,
+        name: trimmedName,
+        description,
+      })
+
+      setSpaces((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+      setEditingSpace(null)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update recall space'
+      setError(message)
+    } finally {
+      setIsSavingSpace(false)
+    }
+  }
+
+  const openEditQuestion = (question: Question) => {
+    setEditingQuestion(question)
+    setEditQuestionText(question.question)
+    setEditOptionA(question.option_a)
+    setEditOptionB(question.option_b)
+    setEditOptionC(question.option_c)
+    setEditOptionD(question.option_d)
+    const normalizedAnswer = question.correct_answer.trim().toUpperCase()
+    if (
+      normalizedAnswer === 'A' ||
+      normalizedAnswer === 'B' ||
+      normalizedAnswer === 'C' ||
+      normalizedAnswer === 'D'
+    ) {
+      setEditCorrectAnswer(normalizedAnswer)
+    } else {
+      setEditCorrectAnswer('A')
+    }
+    setError('')
+  }
+
+  const cancelEditQuestion = () => {
+    if (isSavingQuestion) return
+    setEditingQuestion(null)
+  }
+
+  const saveEditQuestion = async () => {
+    if (!editingQuestion || isSavingQuestion) return
+
+    const trimmedQuestion = editQuestionText.trim()
+    if (trimmedQuestion.length === 0) {
+      setError('Question text cannot be empty.')
+      return
+    }
+
+    if (
+      editCorrectAnswer !== 'A' &&
+      editCorrectAnswer !== 'B' &&
+      editCorrectAnswer !== 'C' &&
+      editCorrectAnswer !== 'D'
+    ) {
+      setError('Correct answer must be one of A, B, C, or D.')
+      return
+    }
+
+    setError('')
+    setIsSavingQuestion(true)
+
+    try {
+      const updated = await invoke<Question>('modify_question', {
+        id: editingQuestion.id,
+        questionInput: {
+          question: trimmedQuestion,
+          option_a: editOptionA.trim(),
+          option_b: editOptionB.trim(),
+          option_c: editOptionC.trim(),
+          option_d: editOptionD.trim(),
+          correct_answer: editCorrectAnswer,
+          explanation: editingQuestion.explanation,
+          space_id: editingQuestion.space_id,
+        },
+      })
+
+      setQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+      setAllQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+      setEditingQuestion(null)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update question'
+      setError(message)
+    } finally {
+      setIsSavingQuestion(false)
+    }
   }
 
   return (
@@ -296,7 +382,7 @@ export function QuestionsPage() {
             <section className="questions-list" aria-label="Questions list">
               {questions.map((item) => (
                 <article className="question-card" key={item.id}>
-                  <div className={`question-card-head${isManagingQuestions ? ' is-managing' : ''}`}>
+                  <div className="question-card-head">
                     {isManagingQuestions && (
                       <label className="question-select" aria-label={`Select question ${item.id}`}>
                         <input
@@ -307,72 +393,22 @@ export function QuestionsPage() {
                       </label>
                     )}
 
-                    <div
-                      className="question-toggle"
-                      onClick={() => toggleExpanded(item.id)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault()
-                          toggleExpanded(item.id)
-                        }
-                      }}
-                      aria-expanded={expandedIds.includes(item.id)}
-                      aria-controls={`question-details-${item.id}`}
-                    >
+                    <div className="question-toggle">
                       <div className="question-summary">
                         <span className="question-id">#{item.id}</span>
-                        <div onClick={(event) => event.stopPropagation()}>
-                          <EditableText
-                            value={item.question}
-                            onSave={(next) => saveQuestionField(item, 'question', next)}
-                            disabled={isManagingQuestions || isDeletingQuestions}
-                            className="question-inline-text question-inline-text-title"
-                            inputClassName="question-inline-input question-inline-input-title"
-                            as="h2"
-                            aria-label={`Edit question ${item.id}`}
-                          />
-                        </div>
+                        <h2>{item.question}</h2>
                       </div>
-                      <ChevronDown
-                        className={`question-chevron${expandedIds.includes(item.id) ? ' is-open' : ''}`}
-                        aria-hidden="true"
-                      />
+                      <button
+                        type="button"
+                        className="question-more-btn"
+                        onClick={() => openEditQuestion(item)}
+                        aria-label={`Edit question ${item.id}`}
+                        disabled={isManagingQuestions || isDeletingQuestions}
+                      >
+                        <Ellipsis className="size-4" aria-hidden="true" />
+                      </button>
                     </div>
                   </div>
-
-                  {expandedIds.includes(item.id) && (
-                    <div className="question-details" id={`question-details-${item.id}`}>
-                      <ul className="question-options">
-                        {([
-                          { key: 'A' as const, value: item.option_a, field: 'option_a' as const },
-                          { key: 'B' as const, value: item.option_b, field: 'option_b' as const },
-                          { key: 'C' as const, value: item.option_c, field: 'option_c' as const },
-                          { key: 'D' as const, value: item.option_d, field: 'option_d' as const },
-                        ]).map((option) => (
-                          <li
-                            key={option.key}
-                            className={`question-option${isCorrectOption(option.value, option.key, item) ? ' is-correct' : ''}`}
-                          >
-                            <span className="question-option-key">{option.key}</span>
-                            <EditableText
-                              value={option.value}
-                              onSave={(next) => saveQuestionField(item, option.field, next)}
-                              disabled={isManagingQuestions || isDeletingQuestions}
-                              className="question-inline-text"
-                              inputClassName="question-inline-input"
-                              aria-label={`Edit option ${option.key} for question ${item.id}`}
-                            />
-                          </li>
-                        ))}
-                      </ul>
-
-                      <p className="question-model">
-                        Generated by: {item.model ?? 'Unknown model'}
-                      </p>
-                    </div>
-                  )}
                 </article>
               ))}
             </section>
@@ -383,15 +419,175 @@ export function QuestionsPage() {
               <button
                 type="button"
                 className="btn-primary btn-delete-questions"
-                onClick={deleteSelectedQuestions}
+                onClick={requestDeleteQuestions}
                 disabled={selectedQuestionIds.length === 0 || isDeletingQuestions}
               >
-                {isDeletingQuestions
-                  ? 'Deleting...'
-                  : selectedQuestionIds.length <= 1
-                    ? 'Delete selected question'
-                    : `Delete ${selectedQuestionIds.length} selected questions`}
+                {selectedQuestionIds.length <= 1
+                  ? 'Delete selected question'
+                  : `Delete ${selectedQuestionIds.length} selected questions`}
               </button>
+            </section>
+          )}
+
+          {pendingDeleteQuestions && (
+            <section
+              className="delete-space-modal-overlay"
+              role="presentation"
+              onClick={cancelDeleteQuestions}
+            >
+              <div
+                className="delete-space-modal"
+                role="alertdialog"
+                aria-modal="true"
+                aria-label="Delete selected questions"
+                onClick={(event) => {
+                  event.stopPropagation()
+                }}
+              >
+                <h2>Delete questions?</h2>
+                <p>
+                  <strong>
+                    {selectedQuestionIds.length === 1
+                      ? '1 question'
+                      : `${selectedQuestionIds.length} questions`}
+                  </strong>{' '}
+                  will be permanently deleted.
+                </p>
+                <div className="delete-space-modal-actions">
+                  <button
+                    type="button"
+                    className="btn-secondary delete-space-cancel-btn"
+                    onClick={cancelDeleteQuestions}
+                    disabled={isDeletingQuestions}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary delete-space-confirm-btn"
+                    onClick={() => {
+                      void deleteSelectedQuestions()
+                    }}
+                    disabled={isDeletingQuestions}
+                  >
+                    {isDeletingQuestions ? 'Deleting...' : 'Confirm delete'}
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {editingQuestion && (
+            <section
+              className="delete-space-modal-overlay"
+              role="presentation"
+              onClick={cancelEditQuestion}
+            >
+              <div
+                className="delete-space-modal edit-space-modal edit-question-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label={`Edit question ${editingQuestion.id}`}
+                onClick={(event) => {
+                  event.stopPropagation()
+                }}
+              >
+                <h2>Edit question</h2>
+                <div className="edit-space-form">
+                  <label className="edit-space-label">
+                    Question
+                    <textarea
+                      className="edit-space-input edit-space-textarea"
+                      value={editQuestionText}
+                      onChange={(e) => setEditQuestionText(e.target.value)}
+                      disabled={isSavingQuestion}
+                      rows={2}
+                      autoFocus
+                    />
+                  </label>
+                  <div className="edit-question-options-grid">
+                    <label className="edit-space-label">
+                      Option A
+                      <textarea
+                        className="edit-space-input edit-question-option-textarea"
+                        value={editOptionA}
+                        onChange={(e) => setEditOptionA(e.target.value)}
+                        disabled={isSavingQuestion}
+                        rows={2}
+                      />
+                    </label>
+                    <label className="edit-space-label">
+                      Option B
+                      <textarea
+                        className="edit-space-input edit-question-option-textarea"
+                        value={editOptionB}
+                        onChange={(e) => setEditOptionB(e.target.value)}
+                        disabled={isSavingQuestion}
+                        rows={2}
+                      />
+                    </label>
+                    <label className="edit-space-label">
+                      Option C
+                      <textarea
+                        className="edit-space-input edit-question-option-textarea"
+                        value={editOptionC}
+                        onChange={(e) => setEditOptionC(e.target.value)}
+                        disabled={isSavingQuestion}
+                        rows={2}
+                      />
+                    </label>
+                    <label className="edit-space-label">
+                      Option D
+                      <textarea
+                        className="edit-space-input edit-question-option-textarea"
+                        value={editOptionD}
+                        onChange={(e) => setEditOptionD(e.target.value)}
+                        disabled={isSavingQuestion}
+                        rows={2}
+                      />
+                    </label>
+                  </div>
+                  <label className="edit-space-label">
+                    Correct Answer
+                    <div className="recall-space-select-wrap edit-select-wrap">
+                      <select
+                        className="recall-space-select edit-space-select"
+                        value={editCorrectAnswer}
+                        onChange={(event) =>
+                          setEditCorrectAnswer(event.target.value as 'A' | 'B' | 'C' | 'D')
+                        }
+                        disabled={isSavingQuestion}
+                      >
+                        <option value="A">A</option>
+                        <option value="B">B</option>
+                        <option value="C">C</option>
+                        <option value="D">D</option>
+                      </select>
+                      <ChevronDown className="recall-space-chevron" aria-hidden="true" />
+                    </div>
+                  </label>
+                </div>
+                <div className="delete-space-modal-actions">
+                  <button
+                    type="button"
+                    className="btn-secondary delete-space-cancel-btn"
+                    onClick={cancelEditQuestion}
+                    disabled={isSavingQuestion}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary delete-space-confirm-btn"
+                    onClick={() => {
+                      void saveEditQuestion()
+                    }}
+                    disabled={isSavingQuestion}
+                  >
+                    {isSavingQuestion ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
+              </div>
             </section>
           )}
         </>
@@ -450,32 +646,10 @@ export function QuestionsPage() {
                   >
                     <div className="recall-space-meta">
                       <span className="question-id">Space #{space.id}</span>
-
-                      <div className="recall-space-inline-editor" onClick={(event) => event.stopPropagation()}>
-                        <EditableText
-                          value={space.name}
-                          onSave={(next) => saveSpaceField(space, 'name', next)}
-                          disabled={deletingSpaceId !== null}
-                          className="editable-space-title"
-                          inputClassName="recall-space-inline-input recall-space-inline-title"
-                          as="h2"
-                          aria-label={`Edit title for ${space.name}`}
-                        />
-                      </div>
-
-                      <div className="recall-space-inline-editor" onClick={(event) => event.stopPropagation()}>
-                        <EditableText
-                          value={space.description?.trim() ?? ''}
-                          onSave={(next) => saveSpaceField(space, 'description', next)}
-                          disabled={deletingSpaceId !== null}
-                          placeholder="No description provided."
-                          className="editable-space-description"
-                          inputClassName="recall-space-inline-input"
-                          as="p"
-                          allowEmpty
-                          aria-label={`Edit description for ${space.name}`}
-                        />
-                      </div>
+                      <h2>{space.name}</h2>
+                      <p>
+                        {space.description?.trim() || 'No description provided.'}
+                      </p>
                     </div>
 
                     <div className="recall-space-count" aria-label={`${questionCount} questions`}>
@@ -483,6 +657,19 @@ export function QuestionsPage() {
                       <span>{questionCount === 1 ? 'Question' : 'Questions'}</span>
                     </div>
                   </div>
+
+                  <button
+                    type="button"
+                    className="recall-space-more-btn"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      openEditSpace(space)
+                    }}
+                    aria-label={`Edit ${space.name}`}
+                    disabled={deletingSpaceId !== null}
+                  >
+                    <Ellipsis className="size-4" aria-hidden="true" />
+                  </button>
 
                   {isManagingSpaces && (
                     <button
@@ -539,6 +726,69 @@ export function QuestionsPage() {
                     disabled={deletingSpaceId !== null}
                   >
                     {deletingSpaceId !== null ? 'Deleting...' : 'Confirm delete'}
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {editingSpace && (
+            <section
+              className="delete-space-modal-overlay"
+              role="presentation"
+              onClick={cancelEditSpace}
+            >
+              <div
+                className="delete-space-modal edit-space-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label={`Edit ${editingSpace.name}`}
+                onClick={(event) => {
+                  event.stopPropagation()
+                }}
+              >
+                <h2>Edit recall space</h2>
+                <div className="edit-space-form">
+                  <label className="edit-space-label">
+                    Title
+                    <input
+                      type="text"
+                      className="edit-space-input"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      disabled={isSavingSpace}
+                      autoFocus
+                    />
+                  </label>
+                  <label className="edit-space-label">
+                    Description
+                    <textarea
+                      className="edit-space-input edit-space-textarea"
+                      value={editDescription}
+                      onChange={(e) => setEditDescription(e.target.value)}
+                      disabled={isSavingSpace}
+                      rows={3}
+                    />
+                  </label>
+                </div>
+                <div className="delete-space-modal-actions">
+                  <button
+                    type="button"
+                    className="btn-secondary delete-space-cancel-btn"
+                    onClick={cancelEditSpace}
+                    disabled={isSavingSpace}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary delete-space-confirm-btn"
+                    onClick={() => {
+                      void saveEditSpace()
+                    }}
+                    disabled={isSavingSpace}
+                  >
+                    {isSavingSpace ? 'Saving...' : 'Save'}
                   </button>
                 </div>
               </div>

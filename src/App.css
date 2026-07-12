@@ -448,7 +448,7 @@ body {
 .recall-spaces-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
 }
 
 .recall-space-card {
@@ -461,15 +461,12 @@ body {
   flex-direction: column;
 }
 
-.recall-space-button {
-  flex: 1;
-}
-
 .recall-space-card.is-managing {
   padding-bottom: 46px;
 }
 
 .recall-space-button {
+  flex: 1;
   width: 100%;
   border: none;
   background: transparent;
@@ -521,6 +518,92 @@ body {
   transform: none;
 }
 
+.recall-space-more-btn {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background-color: rgba(var(--rgb-white), 0.06);
+  color: var(--color-muted-gray);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: var(--transition-interactive-full);
+}
+
+.recall-space-card:hover .recall-space-more-btn,
+.recall-space-more-btn:focus-visible {
+  opacity: 1;
+}
+
+.recall-space-more-btn:hover:not(:disabled) {
+  background-color: rgba(var(--rgb-white), 0.12);
+  color: var(--color-bright-gray);
+}
+
+.recall-space-more-btn:disabled {
+  opacity: 0;
+  cursor: not-allowed;
+}
+
+.recall-space-card.is-managing .recall-space-more-btn {
+  right: 52px;
+}
+
+.edit-space-modal {
+  box-shadow:
+    rgba(0, 0, 0, 0.45) 0 28px 80px,
+    inset 0 0 0 1px rgba(var(--rgb-lavender), 0.25) !important;
+}
+
+.edit-space-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.edit-space-label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-medium-gray);
+}
+
+.edit-space-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background-color: rgba(var(--rgb-white), 0.06);
+  color: var(--color-bright-gray);
+  font-size: 15px;
+  line-height: 1.5;
+  font-family: inherit;
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-white), 0.1);
+  transition: box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+.edit-space-input:focus {
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.6);
+}
+
+.edit-space-input:disabled {
+  opacity: 0.6;
+}
+
+.edit-space-textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
 .delete-space-modal-overlay {
   position: fixed;
   inset: 0;
@@ -559,6 +642,14 @@ body {
   font-size: 16px;
   line-height: 1.6;
   color: #fecdd3;
+}
+
+.edit-space-modal h2 {
+  color: var(--color-bright-gray);
+}
+
+.edit-space-modal p {
+  color: var(--color-medium-gray);
 }
 
 .delete-space-modal-actions {
@@ -620,22 +711,6 @@ body {
   text-wrap: pretty;
 }
 
-.recall-space-inline-editor {
-  width: 100%;
-  min-width: 0;
-}
-
-.recall-space-inline-input {
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.recall-space-inline-title {
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
 .recall-space-meta p {
   margin: 0;
   color: var(--color-medium-gray);
@@ -686,10 +761,6 @@ body {
   align-items: stretch;
 }
 
-.question-card-head.is-managing {
-  border-bottom: 1px solid rgba(var(--rgb-white), 0.05);
-}
-
 .question-select {
   display: inline-flex;
   align-items: center;
@@ -715,12 +786,7 @@ body {
   justify-content: space-between;
   gap: 12px;
   padding: 18px 20px;
-  cursor: pointer;
   text-align: left;
-}
-
-.question-toggle:hover {
-  background-color: rgba(var(--rgb-white), 0.02);
 }
 
 .question-summary {
@@ -748,154 +814,55 @@ body {
   text-wrap: pretty;
 }
 
-.question-chevron {
+.question-more-btn {
   flex-shrink: 0;
-  color: var(--color-muted-gray);
-  transition: transform var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
-}
-
-.question-chevron.is-open {
-  transform: rotate(180deg);
-  color: var(--color-lavender);
-}
-
-.question-details {
-  border-top: 1px solid rgba(var(--rgb-white), 0.06);
-  padding: 14px 20px 18px;
-  margin: 0;
-}
-
-.question-options {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 10px;
-}
-
-/* ============ Editable Text Component ============ */
-
-.editable-text {
-  cursor: text;
-  border-radius: 4px;
-  transition: box-shadow var(--motion-fast) var(--ease-standard);
-}
-
-.editable-text:hover:not(.is-disabled) {
-  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.25);
-}
-
-.editable-text:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.45);
-}
-
-.editable-text.is-disabled {
-  cursor: default;
-}
-
-.editable-text-placeholder {
-  color: var(--color-muted-gray);
-  font-style: italic;
-}
-
-.editable-text-input {
-  width: 100%;
-  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
   border: none;
-  border-radius: 4px;
-  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.45);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  padding: 0;
-  margin: 0;
-  outline: none;
-}
-
-.editable-text-input:focus {
-  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.7);
-}
-
-/* Question-specific overrides */
-
-.question-inline-input {
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.question-inline-input-title {
-  font-size: 16px;
-  line-height: 1.5;
-  color: var(--color-bright-gray);
-}
-
-.question-inline-text {
-  display: inline;
-}
-
-.question-inline-text-title {
-  margin: 0 0 12px;
-  font-size: 16px;
-  line-height: 1.5;
-  color: var(--color-bright-gray);
-  text-wrap: pretty;
-}
-
-/* Space-specific overrides */
-
-.editable-space-title {
-  margin: 0;
-  font-size: 18px;
-  line-height: 1.4;
-  color: var(--color-bright-gray);
-  text-wrap: pretty;
-}
-
-.editable-space-description {
-  margin: 0;
-  color: var(--color-medium-gray);
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.question-option {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
   border-radius: 8px;
-  padding: 10px 12px;
-  background-color: var(--color-abyss);
-  box-shadow: var(--shadow-subtle);
-  color: var(--color-medium-gray);
-  font-size: 14px;
-}
-
-.question-option.is-correct {
-  background-color: rgba(var(--rgb-lavender), 0.15);
-  color: var(--color-bright-gray);
-  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.45), var(--shadow-subtle);
-}
-
-.question-option-key {
+  background-color: transparent;
+  color: var(--color-muted-gray);
   display: inline-flex;
-  justify-content: center;
   align-items: center;
-  border-radius: 9999px;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: var(--transition-interactive-full);
+}
+
+.question-card:hover .question-more-btn,
+.question-more-btn:focus-visible {
+  opacity: 1;
+}
+
+.question-more-btn:hover:not(:disabled) {
   background-color: rgba(var(--rgb-white), 0.08);
   color: var(--color-bright-gray);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 24px;
 }
 
-.question-model {
-  margin: 12px 2px 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--color-muted-gray);
+.question-more-btn:disabled {
+  opacity: 0;
+  cursor: not-allowed;
+}
+
+.edit-question-modal {
+  width: min(720px, 100%);
+}
+
+.edit-question-options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.edit-question-modal .edit-space-textarea {
+  min-height: 80px;
+}
+
+.edit-question-option-textarea {
+  resize: vertical;
+  min-height: 52px;
+  field-sizing: content;
 }
 
 .questions-manage-actions {
@@ -1965,14 +1932,39 @@ body {
   width: 100%;
   min-height: 42px;
   appearance: none;
-  border: 1px solid var(--color-graphite);
+  border: 1px solid rgba(var(--rgb-lavender), 0.26);
   border-radius: 8px;
-  background-color: var(--color-surface);
+  background:
+    linear-gradient(180deg, rgba(var(--rgb-white), 0.06), rgba(var(--rgb-white), 0.01)),
+    var(--color-surface);
   color: var(--color-bright-gray);
   cursor: pointer;
   font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
   padding: 10px 40px 10px 12px;
-  box-shadow: var(--shadow-subtle);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--rgb-white), 0.05),
+    0 6px 20px rgba(0, 0, 0, 0.22);
+  transition: border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+}
+
+.recall-space-select:hover:not(:disabled) {
+  border-color: rgba(var(--rgb-lavender), 0.48);
+  background:
+    linear-gradient(180deg, rgba(var(--rgb-white), 0.07), rgba(var(--rgb-white), 0.02)),
+    var(--color-surface);
+}
+
+.recall-space-select:focus-visible {
+  border-color: rgba(var(--rgb-lavender), 0.65);
+  box-shadow:
+    0 0 0 1px rgba(var(--rgb-lavender), 0.7),
+    0 0 0 4px rgba(var(--rgb-lavender), 0.2),
+    inset 0 0 0 1px rgba(var(--rgb-white), 0.05);
 }
 
 .recall-space-select:disabled {
@@ -1983,11 +1975,26 @@ body {
 .recall-space-chevron {
   position: absolute;
   right: 12px;
-  bottom: 12px;
+  top: calc(50% + 14px);
+  transform: translateY(-50%);
   width: 16px;
   height: 16px;
   color: var(--color-muted-gray);
   pointer-events: none;
+  transition: color var(--motion-fast) var(--ease-standard);
+}
+
+.recall-space-select-wrap:hover .recall-space-chevron {
+  color: var(--color-bright-gray);
+}
+
+.edit-select-wrap .recall-space-chevron {
+  top: 50%;
+}
+
+.edit-space-select {
+  min-height: 40px;
+  padding-right: 36px;
 }
 
 .new-space-fields {
