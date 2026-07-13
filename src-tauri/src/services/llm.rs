@@ -1,8 +1,8 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
-use std::collections::{HashMap, HashSet};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
@@ -84,7 +84,7 @@ fn provider_profile(provider: LlmProvider) -> ProviderProfile {
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmConfig {  
+pub struct LlmConfig {
     pub provider: LlmProvider,
     pub base_url: String,
     pub model: String,
@@ -109,8 +109,9 @@ impl LlmConfig {
         let profile = provider_profile(provider);
 
         let base_url = match provider {
-            LlmProvider::Ollama => env::var("LLM_BASE_URL")
-                .unwrap_or_else(|_| profile.default_base_url.to_string()),
+            LlmProvider::Ollama => {
+                env::var("LLM_BASE_URL").unwrap_or_else(|_| profile.default_base_url.to_string())
+            }
             LlmProvider::OpenRouter => env::var("OPENROUTER_BASE_URL")
                 .or_else(|_| env::var("LLM_BASE_URL"))
                 .unwrap_or_else(|_| profile.default_base_url.to_string()),
@@ -120,11 +121,12 @@ impl LlmConfig {
         let api_key = match provider {
             LlmProvider::Ollama => None,
             LlmProvider::OpenRouter => {
-                let key = env::var("OPENROUTER_API_KEY").map_err(|_| LlmConfigError::InvalidValue {
-                    key: String::from("OPENROUTER_API_KEY"),
-                    value: String::new(),
-                    reason: String::from("is required when LLM_PROVIDER=openrouter"),
-                })?;
+                let key =
+                    env::var("OPENROUTER_API_KEY").map_err(|_| LlmConfigError::InvalidValue {
+                        key: String::from("OPENROUTER_API_KEY"),
+                        value: String::new(),
+                        reason: String::from("is required when LLM_PROVIDER=openrouter"),
+                    })?;
 
                 let normalized = key.trim().to_string();
                 if normalized.is_empty() {
@@ -219,7 +221,9 @@ pub fn set_runtime_llm_config(
     };
 
     let lock = runtime_config_lock();
-    let mut guard = lock.write().map_err(|_| LlmConfigError::RuntimeConfigPoisoned)?;
+    let mut guard = lock
+        .write()
+        .map_err(|_| LlmConfigError::RuntimeConfigPoisoned)?;
     *guard = Some(config);
 
     Ok(())
@@ -227,7 +231,9 @@ pub fn set_runtime_llm_config(
 
 pub fn resolve_llm_config() -> Result<LlmConfig, LlmConfigError> {
     let lock = runtime_config_lock();
-    let guard = lock.read().map_err(|_| LlmConfigError::RuntimeConfigPoisoned)?;
+    let guard = lock
+        .read()
+        .map_err(|_| LlmConfigError::RuntimeConfigPoisoned)?;
     if let Some(config) = guard.as_ref() {
         return Ok(config.clone());
     }
@@ -306,14 +312,15 @@ pub async fn fetch_ollama_models(
         .build()
         .map_err(LlmServiceError::Http)?;
 
-    let response = client
-        .get(&endpoint)
-        .send()
-        .await
-        .map_err(|source| LlmServiceError::Connect {
-            url: endpoint.clone(),
-            source,
-        })?;
+    let response =
+        client
+            .get(&endpoint)
+            .send()
+            .await
+            .map_err(|source| LlmServiceError::Connect {
+                url: endpoint.clone(),
+                source,
+            })?;
 
     let status = response.status();
     let body = response.text().await.map_err(LlmServiceError::Http)?;
@@ -451,13 +458,19 @@ impl fmt::Display for LlmValidationError {
             }
             Self::EmptyQuestions => write!(f, "questions must contain at least one item"),
             Self::EmptyField { index, field } => {
-                write!(f, "field '{field}' at question index {index} must be non-empty")
+                write!(
+                    f,
+                    "field '{field}' at question index {index} must be non-empty"
+                )
             }
             Self::DuplicateOptions { index } => {
                 write!(f, "question at index {index} has duplicate options")
             }
             Self::DuplicateQuestion { index } => {
-                write!(f, "question at index {index} duplicates a previous question")
+                write!(
+                    f,
+                    "question at index {index} duplicates a previous question"
+                )
             }
             Self::InvalidCorrectAnswer { index, value } => write!(
                 f,
@@ -469,14 +482,16 @@ impl fmt::Display for LlmValidationError {
 
 /// Parses Stage A LLM output using a deterministic wrapper object.
 pub fn parse_stage_a_output(json_payload: &str) -> Result<StageAKeyPointsOutput, LlmSchemaError> {
-    let parsed: StageAKeyPointsOutput = serde_json::from_str(json_payload).map_err(LlmSchemaError::Parse)?;
+    let parsed: StageAKeyPointsOutput =
+        serde_json::from_str(json_payload).map_err(LlmSchemaError::Parse)?;
     validate_stage_a_output(&parsed)?;
     Ok(parsed)
 }
 
 /// Parses Stage B LLM output using a deterministic wrapper object.
 pub fn parse_stage_b_output(json_payload: &str) -> Result<StageBMcqOutput, LlmSchemaError> {
-    let parsed: StageBMcqOutput = serde_json::from_str(json_payload).map_err(LlmSchemaError::Parse)?;
+    let parsed: StageBMcqOutput =
+        serde_json::from_str(json_payload).map_err(LlmSchemaError::Parse)?;
     validate_stage_b_output(&parsed)?;
     Ok(parsed)
 }
@@ -495,7 +510,9 @@ fn validate_stage_a_output(parsed: &StageAKeyPointsOutput) -> Result<(), LlmSche
 
 fn validate_stage_b_output(parsed: &StageBMcqOutput) -> Result<(), LlmSchemaError> {
     if parsed.questions.is_empty() {
-        return Err(LlmSchemaError::Validation(LlmValidationError::EmptyQuestions));
+        return Err(LlmSchemaError::Validation(
+            LlmValidationError::EmptyQuestions,
+        ));
     }
 
     let mut seen_questions = HashSet::new();
@@ -540,7 +557,11 @@ fn validate_stage_b_output(parsed: &StageBMcqOutput) -> Result<(), LlmSchemaErro
     Ok(())
 }
 
-fn validate_non_empty(index: usize, field: &'static str, value: &str) -> Result<(), LlmSchemaError> {
+fn validate_non_empty(
+    index: usize,
+    field: &'static str,
+    value: &str,
+) -> Result<(), LlmSchemaError> {
     if value.trim().is_empty() {
         return Err(LlmSchemaError::Validation(LlmValidationError::EmptyField {
             index,
@@ -658,7 +679,8 @@ impl LlmService {
             chunk_markdown.chars().count(),
             key_points.len()
         );
-        let key_points_json = serde_json::to_string(key_points).map_err(LlmServiceError::Serialize)?;
+        let key_points_json =
+            serde_json::to_string(key_points).map_err(LlmServiceError::Serialize)?;
         let system_prompt = "You are generating multiple-choice questions for active recall. Return strict JSON only, no markdown, no prose.";
         let user_prompt = format!(
             concat!(
@@ -801,7 +823,8 @@ impl LlmService {
             return Err(LlmServiceError::HttpStatus { status, body });
         }
 
-        let parsed: OllamaChatResponse = serde_json::from_str(&body).map_err(LlmServiceError::ResponseDecode)?;
+        let parsed: OllamaChatResponse =
+            serde_json::from_str(&body).map_err(LlmServiceError::ResponseDecode)?;
         let content = parsed
             .message
             .map(|message| message.content)
@@ -891,7 +914,10 @@ impl LlmService {
 
 #[derive(Debug)]
 pub enum LlmConfigError {
-    InvalidInteger { key: String, value: String },
+    InvalidInteger {
+        key: String,
+        value: String,
+    },
     InvalidValue {
         key: String,
         value: String,
@@ -993,10 +1019,16 @@ fn strip_markdown_fences(raw: &str) -> String {
         return String::new();
     }
 
-    if lines.first().is_some_and(|line| line.trim_start().starts_with("```")) {
+    if lines
+        .first()
+        .is_some_and(|line| line.trim_start().starts_with("```"))
+    {
         lines.remove(0);
     }
-    if lines.last().is_some_and(|line| line.trim_start().starts_with("```")) {
+    if lines
+        .last()
+        .is_some_and(|line| line.trim_start().starts_with("```"))
+    {
         lines.pop();
     }
 
@@ -1121,11 +1153,11 @@ fn stage_b_format_schema() -> Value {
 
 #[cfg(test)]
 mod tests {
-        use super::*;
+    use super::*;
 
-        #[test]
-        fn parses_stage_a_wrapper() {
-                let payload = r#"
+    #[test]
+    fn parses_stage_a_wrapper() {
+        let payload = r#"
                 {
                     "key_points": [
                         { "knowledge_point": "Ownership defines who can access data." },
@@ -1134,17 +1166,17 @@ mod tests {
                 }
                 "#;
 
-                let parsed = parse_stage_a_output(payload).expect("stage A JSON should parse");
-                assert_eq!(parsed.key_points.len(), 2);
-                assert_eq!(
-                        parsed.key_points[0].knowledge_point,
-                        "Ownership defines who can access data."
-                );
-        }
+        let parsed = parse_stage_a_output(payload).expect("stage A JSON should parse");
+        assert_eq!(parsed.key_points.len(), 2);
+        assert_eq!(
+            parsed.key_points[0].knowledge_point,
+            "Ownership defines who can access data."
+        );
+    }
 
-        #[test]
-        fn parses_stage_b_wrapper() {
-                let payload = r#"
+    #[test]
+    fn parses_stage_b_wrapper() {
+        let payload = r#"
                 {
                     "questions": [
                         {
@@ -1160,21 +1192,21 @@ mod tests {
                 }
                 "#;
 
-                let parsed = parse_stage_b_output(payload).expect("stage B JSON should parse");
-                assert_eq!(parsed.questions.len(), 1);
-                assert_eq!(parsed.questions[0].correct_answer, "A");
-        }
+        let parsed = parse_stage_b_output(payload).expect("stage B JSON should parse");
+        assert_eq!(parsed.questions.len(), 1);
+        assert_eq!(parsed.questions[0].correct_answer, "A");
+    }
 
-                #[test]
-                fn allows_stage_a_when_key_points_empty() {
-                    let payload = r#"{ "key_points": [] }"#;
-                    let parsed = parse_stage_a_output(payload).expect("stage A should allow empty key points");
-                    assert!(parsed.key_points.is_empty());
-                }
+    #[test]
+    fn allows_stage_a_when_key_points_empty() {
+        let payload = r#"{ "key_points": [] }"#;
+        let parsed = parse_stage_a_output(payload).expect("stage A should allow empty key points");
+        assert!(parsed.key_points.is_empty());
+    }
 
-                #[test]
-                fn fails_stage_b_when_correct_answer_invalid() {
-                    let payload = r#"
+    #[test]
+    fn fails_stage_b_when_correct_answer_invalid() {
+        let payload = r#"
                     {
                         "questions": [
                         {
@@ -1190,16 +1222,16 @@ mod tests {
                     }
                     "#;
 
-                    let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
-                    assert!(matches!(
-                        err,
-                        LlmSchemaError::Validation(LlmValidationError::InvalidCorrectAnswer { .. })
-                    ));
-                }
+        let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
+        assert!(matches!(
+            err,
+            LlmSchemaError::Validation(LlmValidationError::InvalidCorrectAnswer { .. })
+        ));
+    }
 
-                #[test]
-                fn fails_stage_b_when_options_duplicate() {
-                    let payload = r#"
+    #[test]
+    fn fails_stage_b_when_options_duplicate() {
+        let payload = r#"
                     {
                         "questions": [
                         {
@@ -1215,16 +1247,16 @@ mod tests {
                     }
                     "#;
 
-                    let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
-                    assert!(matches!(
-                        err,
-                        LlmSchemaError::Validation(LlmValidationError::DuplicateOptions { .. })
-                    ));
-                }
+        let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
+        assert!(matches!(
+            err,
+            LlmSchemaError::Validation(LlmValidationError::DuplicateOptions { .. })
+        ));
+    }
 
-                #[test]
-                fn fails_stage_b_when_questions_duplicate() {
-                    let payload = r#"
+    #[test]
+    fn fails_stage_b_when_questions_duplicate() {
+        let payload = r#"
                     {
                         "questions": [
                         {
@@ -1249,10 +1281,10 @@ mod tests {
                     }
                     "#;
 
-                    let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
-                    assert!(matches!(
-                        err,
-                        LlmSchemaError::Validation(LlmValidationError::DuplicateQuestion { .. })
-                    ));
-                }
+        let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
+        assert!(matches!(
+            err,
+            LlmSchemaError::Validation(LlmValidationError::DuplicateQuestion { .. })
+        ));
+    }
 }

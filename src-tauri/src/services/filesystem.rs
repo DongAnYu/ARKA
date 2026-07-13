@@ -85,8 +85,7 @@ fn scan_recursive(dir: &Path, markdown_files: &mut Vec<PathBuf>) -> io::Result<(
 }
 
 fn is_markdown_file(path: &Path) -> bool {
-    path
-        .extension()
+    path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
         .unwrap_or(false)

@@ -1,9 +1,9 @@
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 
+use crate::models::model_settings::ModelConfig;
 use crate::models::question::{Question, QuestionInput};
 use crate::models::recall_space::RecallSpace;
-use crate::models::model_settings::ModelConfig;
 
 fn resolve_database_url() -> String {
     // Honor an explicit DATABASE_URL first (dev overrides).
@@ -26,7 +26,11 @@ fn resolve_database_url() -> String {
     // Ensure parent exists
     if let Some(parent) = db_path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
-            eprintln!("Failed to create db parent dir {}: {}", parent.display(), err);
+            eprintln!(
+                "Failed to create db parent dir {}: {}",
+                parent.display(),
+                err
+            );
         }
     }
 
@@ -108,7 +112,7 @@ pub async fn get_questions() -> Result<Vec<Question>, sqlx::Error> {
     let pool = open_pool().await?;
 
     let questions = sqlx::query_as::<_, Question>(
-        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id FROM questions ORDER BY id",
+        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at FROM questions ORDER BY id",
     )
     .fetch_all(&pool)
     .await?;
@@ -120,7 +124,7 @@ pub async fn get_questions_by_space(space_id: i64) -> Result<Vec<Question>, sqlx
     let pool = open_pool().await?;
 
     let questions = sqlx::query_as::<_, Question>(
-        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id FROM questions WHERE space_id = ? ORDER BY id",
+        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at FROM questions WHERE space_id = ? ORDER BY id",
     )
     .bind(space_id)
     .fetch_all(&pool)
@@ -129,7 +133,10 @@ pub async fn get_questions_by_space(space_id: i64) -> Result<Vec<Question>, sqlx
     Ok(questions)
 }
 
-pub async fn modify_question(id: i64, question_input: QuestionInput) -> Result<Question, sqlx::Error> {
+pub async fn modify_question(
+    id: i64,
+    question_input: QuestionInput,
+) -> Result<Question, sqlx::Error> {
     let pool = open_pool().await?;
 
     sqlx::query(
@@ -148,7 +155,7 @@ pub async fn modify_question(id: i64, question_input: QuestionInput) -> Result<Q
     .await?;
 
     let updated_question = sqlx::query_as::<_, Question>(
-        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id FROM questions WHERE id = ?",
+        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at FROM questions WHERE id = ?",
     )
     .bind(id)
     .fetch_one(&pool)
@@ -194,7 +201,10 @@ pub async fn get_spaces() -> Result<Vec<RecallSpace>, sqlx::Error> {
     Ok(spaces)
 }
 
-pub async fn create_space(name: &str, description: Option<&str>) -> Result<RecallSpace, sqlx::Error> {
+pub async fn create_space(
+    name: &str,
+    description: Option<&str>,
+) -> Result<RecallSpace, sqlx::Error> {
     let pool = open_pool().await?;
 
     sqlx::query("INSERT INTO recall_spaces (name, description) VALUES (?, ?)")
@@ -203,14 +213,20 @@ pub async fn create_space(name: &str, description: Option<&str>) -> Result<Recal
         .execute(&pool)
         .await?;
 
-    let row = sqlx::query_as::<_, RecallSpace>("SELECT id, name, description FROM recall_spaces WHERE id = last_insert_rowid()")
-        .fetch_one(&pool)
-        .await?;
+    let row = sqlx::query_as::<_, RecallSpace>(
+        "SELECT id, name, description FROM recall_spaces WHERE id = last_insert_rowid()",
+    )
+    .fetch_one(&pool)
+    .await?;
 
     Ok(row)
 }
 
-pub async fn modify_space(id: i64, name: &str, description: Option<&str>) -> Result<RecallSpace, sqlx::Error> {
+pub async fn modify_space(
+    id: i64,
+    name: &str,
+    description: Option<&str>,
+) -> Result<RecallSpace, sqlx::Error> {
     let pool = open_pool().await?;
 
     sqlx::query("UPDATE recall_spaces SET name = ?, description = ? WHERE id = ?")
@@ -220,10 +236,12 @@ pub async fn modify_space(id: i64, name: &str, description: Option<&str>) -> Res
         .execute(&pool)
         .await?;
 
-    let row = sqlx::query_as::<_, RecallSpace>("SELECT id, name, description FROM recall_spaces WHERE id = ?")
-        .bind(id)
-        .fetch_one(&pool)
-        .await?;
+    let row = sqlx::query_as::<_, RecallSpace>(
+        "SELECT id, name, description FROM recall_spaces WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await?;
 
     Ok(row)
 }
@@ -251,12 +269,15 @@ pub async fn delete_space(id: i64) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-pub async fn save_questions(questions: Vec<QuestionInput>, model: String) -> Result<(), sqlx::Error> {
+pub async fn save_questions(
+    questions: Vec<QuestionInput>,
+    model: String,
+) -> Result<(), sqlx::Error> {
     let pool = open_pool().await?;
 
     for question in questions {
         sqlx::query(
-            "INSERT INTO questions (question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO questions (question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 2.5, CURRENT_TIMESTAMP, NULL)",
         )
         .bind(&question.question)
         .bind(&question.option_a)
@@ -318,4 +339,57 @@ pub async fn run_smoke_test() -> Result<(), sqlx::Error> {
     ensure_default_space(&pool).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn get_questions_loads_saved_questions_with_scheduler_fields() {
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "obsidian-active-recall-scheduler-{unique_id}.sqlite"
+        ));
+
+        std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
+
+        run_smoke_test()
+            .await
+            .expect("migrations should run against temp database");
+
+        save_questions(
+            vec![QuestionInput {
+                question: "What scheduler are we adding?".to_string(),
+                option_a: "SM-2".to_string(),
+                option_b: "FIFO".to_string(),
+                option_c: "LIFO".to_string(),
+                option_d: "Random".to_string(),
+                correct_answer: "A".to_string(),
+                explanation: Some("SM-2 tracks interval, repetitions, and ease.".to_string()),
+                space_id: 1,
+            }],
+            "test-model".to_string(),
+        )
+        .await
+        .expect("question should save with scheduler defaults");
+
+        let questions = get_questions()
+            .await
+            .expect("questions should map from sqlite rows");
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].repetitions, 0);
+        assert_eq!(questions[0].interval_days, 0);
+        assert_eq!(questions[0].ease_factor, 2.5);
+        assert!(questions[0].next_review_at.is_some());
+        assert!(questions[0].last_reviewed_at.is_none());
+
+        std::env::remove_var("DATABASE_URL");
+        let _ = std::fs::remove_file(db_path);
+    }
 }

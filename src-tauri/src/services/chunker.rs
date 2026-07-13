@@ -65,8 +65,10 @@ pub fn chunk_markdown(note_path: &str, note_title: &str, markdown: &str) -> Vec<
     let mut chunks = Vec::new();
 
     for (section_index, section) in refined.into_iter().enumerate() {
-        let chunk_contents =
-            merge_small_chunks(split_large_content(&section.content, MAX_CHUNK_CHARS), MIN_CHUNK_CHARS);
+        let chunk_contents = merge_small_chunks(
+            split_large_content(&section.content, MAX_CHUNK_CHARS),
+            MIN_CHUNK_CHARS,
+        );
 
         for (chunk_index, chunk_content) in chunk_contents.into_iter().enumerate() {
             let trimmed = chunk_content.trim();
@@ -181,14 +183,14 @@ fn merge_small_chunks(raw_chunks: Vec<String>, min_chars: usize) -> Vec<String> 
             merged.push(current);
             continue;
         }
-        
+
         // If output already has a previous chunk, append current to that previous chunk.
         if let Some(previous) = merged.last_mut() {
             previous.push_str("\n\n");
             previous.push_str(&current);
             continue;
         }
-        
+
         // Else if there is a next pending chunk, prepend current into that next chunk.
         if index + 1 < pending.len() {
             let next = pending[index + 1].clone();
@@ -596,7 +598,8 @@ mod tests {
     fn tiny_leading_section_is_merged_into_next_section() {
         let note_title = "k8s";
         let intro = "metadata";
-        let body = "Kubernetes control plane schedules workloads and keeps desired state. ".repeat(6);
+        let body =
+            "Kubernetes control plane schedules workloads and keeps desired state. ".repeat(6);
         let markdown = format!(
             "## 05. What is Kubernetes\n{}\n\n## 1. Kubernetes Architecture\n{}",
             intro, body
