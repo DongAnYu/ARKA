@@ -1,23 +1,34 @@
 use crate::models::question::Question;
 use chrono::{Duration, Utc};
+use std::str::FromStr;
 
 #[allow(dead_code)]
+#[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rating {
-    Again,
-    Hard,
-    Good,
-    Easy,
+    Again = 2,
+    Hard = 3,
+    Good = 4,
+    Easy = 5,
+}
+
+impl FromStr for Rating {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "again" => Ok(Rating::Again),
+            "hard" => Ok(Rating::Hard),
+            "good" => Ok(Rating::Good),
+            "easy" => Ok(Rating::Easy),
+            _ => Err(format!("Unsupported rating: {value}")),
+        }
+    }
 }
 
 impl Rating {
-    fn quality(&self) -> i32 {
-        match self {
-            Rating::Again => 2,
-            Rating::Hard => 3,
-            Rating::Good => 4,
-            Rating::Easy => 5,
-        }
+    fn quality(self) -> i32 {
+        self as i32
     }
 }
 
@@ -126,6 +137,8 @@ mod tests {
 
     #[test]
     fn rating_updates_ease_with_sm2_formula() {
+        const FLOAT_TOLERANCE: f64 = 1e-10;
+
         let mut easy = question_with_schedule(0, 0, 2.5);
         SM2Scheduler::review_question(&mut easy, Rating::Easy);
         assert!((easy.ease_factor - 2.6).abs() < f64::EPSILON);
@@ -136,7 +149,7 @@ mod tests {
 
         let mut again = question_with_schedule(3, 12, 2.5);
         SM2Scheduler::review_question(&mut again, Rating::Again);
-        assert!((again.ease_factor - 2.18).abs() < f64::EPSILON);
+        assert!((again.ease_factor - 2.18).abs() < FLOAT_TOLERANCE);
     }
 
     #[test]

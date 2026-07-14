@@ -9,6 +9,7 @@ use models::note::Note;
 use models::question::{Question, QuestionInput};
 use models::recall_space::RecallSpace;
 use services::generation::{GenerationProgressSnapshot, GenerationSummary};
+use services::scheduler::Rating;
 
 #[tauri::command]
 async fn get_questions() -> Result<Vec<Question>, String> {
@@ -22,6 +23,24 @@ async fn get_questions_by_space(space_id: i64) -> Result<Vec<Question>, String> 
     services::database::get_questions_by_space(space_id)
         .await
         .map_err(|err| format!("Failed to load questions for space {space_id}: {err}"))
+}
+
+#[tauri::command]
+async fn get_due_questions(space_id: Option<i64>) -> Result<Vec<Question>, String> {
+    services::database::get_due_questions(space_id)
+        .await
+        .map_err(|err| format!("Failed to load due questions: {err}"))
+}
+
+#[tauri::command]
+async fn review_question(question_id: i64, rating: String) -> Result<Question, String> {
+    let parsed_rating = rating
+        .parse::<Rating>()
+        .map_err(|err| format!("Failed to parse review rating: {err}"))?;
+
+    services::database::review_question(question_id, parsed_rating)
+        .await
+        .map_err(|err| format!("Failed to review question {question_id}: {err}"))
 }
 
 #[tauri::command]
@@ -194,6 +213,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_questions,
             get_questions_by_space,
+            get_due_questions,
+            review_question,
             delete_question,
             delete_questions,
             modify_question,

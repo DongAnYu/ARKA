@@ -4,6 +4,7 @@ use std::str::FromStr;
 use crate::models::model_settings::ModelConfig;
 use crate::models::question::{Question, QuestionInput};
 use crate::models::recall_space::RecallSpace;
+use crate::services::scheduler::{Rating, SM2Scheduler};
 
 fn resolve_database_url() -> String {
     // Honor an explicit DATABASE_URL first (dev overrides).
@@ -131,6 +132,63 @@ pub async fn get_questions_by_space(space_id: i64) -> Result<Vec<Question>, sqlx
     .await?;
 
     Ok(questions)
+}
+
+pub async fn get_due_questions(space_id: Option<i64>) -> Result<Vec<Question>, sqlx::Error> {
+    let pool = open_pool().await?;
+
+    let questions = if let Some(space_id) = space_id.filter(|id| *id > 0) {
+        sqlx::query_as::<_, Question>(
+            "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at
+             FROM questions
+             WHERE space_id = ?
+               AND (next_review_at IS NULL OR next_review_at <= CURRENT_TIMESTAMP)
+             ORDER BY COALESCE(next_review_at, '1970-01-01 00:00:00') ASC, id ASC",
+        )
+        .bind(space_id)
+        .fetch_all(&pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, Question>(
+            "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at
+             FROM questions
+             WHERE next_review_at IS NULL OR next_review_at <= CURRENT_TIMESTAMP
+             ORDER BY COALESCE(next_review_at, '1970-01-01 00:00:00') ASC, id ASC",
+        )
+        .fetch_all(&pool)
+        .await?
+    };
+
+    Ok(questions)
+}
+
+pub async fn review_question(question_id: i64, rating: Rating) -> Result<Question, sqlx::Error> {
+    let pool = open_pool().await?;
+
+    let mut question = sqlx::query_as::<_, Question>(
+        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at FROM questions WHERE id = ?",
+    )
+    .bind(question_id)
+    .fetch_one(&pool)
+    .await?;
+
+    SM2Scheduler::review_question(&mut question, rating);
+
+    sqlx::query(
+        "UPDATE questions
+         SET repetitions = ?, interval_days = ?, ease_factor = ?, next_review_at = ?, last_reviewed_at = ?
+         WHERE id = ?",
+    )
+    .bind(question.repetitions)
+    .bind(question.interval_days)
+    .bind(question.ease_factor)
+    .bind(question.next_review_at)
+    .bind(question.last_reviewed_at)
+    .bind(question.id)
+    .execute(&pool)
+    .await?;
+
+    Ok(question)
 }
 
 pub async fn modify_question(
@@ -344,10 +402,21 @@ pub async fn run_smoke_test() -> Result<(), sqlx::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Duration, Utc};
+    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[tokio::test]
+    fn database_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn get_questions_loads_saved_questions_with_scheduler_fields() {
+        let _guard = database_test_lock()
+            .lock()
+            .expect("database test lock should not be poisoned");
+
         let unique_id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
@@ -388,6 +457,156 @@ mod tests {
         assert_eq!(questions[0].ease_factor, 2.5);
         assert!(questions[0].next_review_at.is_some());
         assert!(questions[0].last_reviewed_at.is_none());
+
+        std::env::remove_var("DATABASE_URL");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_due_questions_filters_by_due_time_and_optional_space() {
+        let _guard = database_test_lock()
+            .lock()
+            .expect("database test lock should not be poisoned");
+
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "obsidian-active-recall-due-questions-{unique_id}.sqlite"
+        ));
+
+        std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
+
+        run_smoke_test()
+            .await
+            .expect("migrations should run against temp database");
+
+        let space = create_space("Biology", Some("Due review filter test"))
+            .await
+            .expect("space should be created");
+
+        save_questions(
+            vec![
+                QuestionInput {
+                    question: "Due in general".to_string(),
+                    option_a: "A".to_string(),
+                    option_b: "B".to_string(),
+                    option_c: "C".to_string(),
+                    option_d: "D".to_string(),
+                    correct_answer: "A".to_string(),
+                    explanation: None,
+                    space_id: 1,
+                },
+                QuestionInput {
+                    question: "Due in biology".to_string(),
+                    option_a: "A".to_string(),
+                    option_b: "B".to_string(),
+                    option_c: "C".to_string(),
+                    option_d: "D".to_string(),
+                    correct_answer: "A".to_string(),
+                    explanation: None,
+                    space_id: space.id,
+                },
+            ],
+            "test-model".to_string(),
+        )
+        .await
+        .expect("questions should save with scheduler defaults");
+
+        let pool = open_pool().await.expect("pool should open");
+        let future_review_at = Utc::now().naive_utc() + Duration::days(3);
+        sqlx::query("UPDATE questions SET next_review_at = ? WHERE question = ?")
+            .bind(future_review_at)
+            .bind("Due in biology")
+            .execute(&pool)
+            .await
+            .expect("question should be moved into the future");
+
+        let all_due = get_due_questions(None)
+            .await
+            .expect("due questions should load without filter");
+        assert_eq!(all_due.len(), 1);
+        assert_eq!(all_due[0].question, "Due in general");
+
+        let general_due = get_due_questions(Some(1))
+            .await
+            .expect("general due questions should load");
+        assert_eq!(general_due.len(), 1);
+        assert_eq!(general_due[0].space_id, 1);
+
+        let biology_due = get_due_questions(Some(space.id))
+            .await
+            .expect("biology due questions should load");
+        assert!(biology_due.is_empty());
+
+        std::env::remove_var("DATABASE_URL");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn review_question_persists_scheduler_updates() {
+        let _guard = database_test_lock()
+            .lock()
+            .expect("database test lock should not be poisoned");
+
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "obsidian-active-recall-review-question-{unique_id}.sqlite"
+        ));
+
+        std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
+
+        run_smoke_test()
+            .await
+            .expect("migrations should run against temp database");
+
+        save_questions(
+            vec![QuestionInput {
+                question: "Persist scheduler update".to_string(),
+                option_a: "A".to_string(),
+                option_b: "B".to_string(),
+                option_c: "C".to_string(),
+                option_d: "D".to_string(),
+                correct_answer: "A".to_string(),
+                explanation: None,
+                space_id: 1,
+            }],
+            "test-model".to_string(),
+        )
+        .await
+        .expect("question should save with scheduler defaults");
+
+        let saved_question = get_questions()
+            .await
+            .expect("saved questions should load")
+            .into_iter()
+            .next()
+            .expect("expected one saved question");
+
+        let reviewed_question = review_question(saved_question.id, Rating::Easy)
+            .await
+            .expect("review should persist");
+
+        assert_eq!(reviewed_question.repetitions, 1);
+        assert_eq!(reviewed_question.interval_days, 1);
+        assert!(reviewed_question.last_reviewed_at.is_some());
+        assert!(reviewed_question.next_review_at.is_some());
+
+        let reloaded_question = get_questions()
+            .await
+            .expect("reloaded questions should load")
+            .into_iter()
+            .next()
+            .expect("expected one reloaded question");
+
+        assert_eq!(reloaded_question.repetitions, 1);
+        assert_eq!(reloaded_question.interval_days, 1);
+        assert!(reloaded_question.last_reviewed_at.is_some());
+        assert!(reloaded_question.next_review_at.is_some());
 
         std::env::remove_var("DATABASE_URL");
         let _ = std::fs::remove_file(db_path);
