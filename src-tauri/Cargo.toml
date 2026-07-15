@@ -7,6 +7,7 @@ license = ""
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"
+default-run = "app"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -30,3 +31,4 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 dotenvy = "0.15"
 directories = "6"
 chrono = { version = "0.4.45", features = ["serde"] }
+rust_xlsxwriter = "0.90"
