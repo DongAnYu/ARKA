@@ -1,8 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::fmt;
-use std::future::Future;
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
@@ -11,6 +10,11 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::time::sleep;
+
+pub mod default_generation;
+pub mod default_generation_schema;
+
+pub use default_generation_schema::{LlmSchemaError, StageBMcq};
 
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -247,6 +251,14 @@ pub struct LlmService {
     config: LlmConfig,
 }
 
+pub(crate) struct JsonGenerationRequest<'a> {
+    pub(crate) stage_label: &'static str,
+    pub(crate) system_prompt: &'a str,
+    pub(crate) user_prompt: &'a str,
+    pub(crate) format_schema: Value,
+    pub(crate) payload_preview_chars: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct OllamaChatRequest {
     model: String,
@@ -373,205 +385,6 @@ pub async fn fetch_ollama_models(
     Ok(models)
 }
 
-/// Wrapper for Stage A output so parsing is deterministic.
-///
-/// Expected JSON shape:
-/// {
-///   "key_points": [
-///     { "knowledge_point": "..." }
-///   ]
-/// }
-#[derive(Debug, Clone, Deserialize)]
-pub struct StageAKeyPointsOutput {
-    pub key_points: Vec<StageAKeyPoint>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct StageAKeyPoint {
-    pub knowledge_point: String,
-}
-
-/// Wrapper for Stage B output so parsing is deterministic.
-///
-/// Expected JSON shape:
-/// {
-///   "questions": [
-///     {
-///       "question": "...",
-///       "option_a": "...",
-///       "option_b": "...",
-///       "option_c": "...",
-///       "option_d": "...",
-///       "correct_answer": "A",
-///       "explanation": "..."
-///     }
-///   ]
-/// }
-#[derive(Debug, Clone, Deserialize)]
-pub struct StageBMcqOutput {
-    pub questions: Vec<StageBMcq>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct StageBMcq {
-    pub question: String,
-    pub option_a: String,
-    pub option_b: String,
-    pub option_c: String,
-    pub option_d: String,
-    pub correct_answer: String,
-    pub explanation: String,
-}
-
-#[derive(Debug)]
-pub enum LlmSchemaError {
-    Parse(serde_json::Error),
-    Validation(LlmValidationError),
-}
-
-#[derive(Debug)]
-pub enum LlmValidationError {
-    EmptyKnowledgePoint { index: usize },
-    EmptyQuestions,
-    EmptyField { index: usize, field: &'static str },
-    DuplicateOptions { index: usize },
-    DuplicateQuestion { index: usize },
-    InvalidCorrectAnswer { index: usize, value: String },
-}
-
-impl fmt::Display for LlmSchemaError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Parse(err) => write!(f, "Invalid LLM JSON payload: {err}"),
-            Self::Validation(err) => write!(f, "LLM JSON validation failed: {err}"),
-        }
-    }
-}
-
-impl Error for LlmSchemaError {}
-
-impl fmt::Display for LlmValidationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyKnowledgePoint { index } => {
-                write!(f, "knowledge_point at index {index} must be non-empty")
-            }
-            Self::EmptyQuestions => write!(f, "questions must contain at least one item"),
-            Self::EmptyField { index, field } => {
-                write!(
-                    f,
-                    "field '{field}' at question index {index} must be non-empty"
-                )
-            }
-            Self::DuplicateOptions { index } => {
-                write!(f, "question at index {index} has duplicate options")
-            }
-            Self::DuplicateQuestion { index } => {
-                write!(
-                    f,
-                    "question at index {index} duplicates a previous question"
-                )
-            }
-            Self::InvalidCorrectAnswer { index, value } => write!(
-                f,
-                "question at index {index} has invalid correct_answer '{value}' (expected A/B/C/D)"
-            ),
-        }
-    }
-}
-
-/// Parses Stage A LLM output using a deterministic wrapper object.
-pub fn parse_stage_a_output(json_payload: &str) -> Result<StageAKeyPointsOutput, LlmSchemaError> {
-    let parsed: StageAKeyPointsOutput =
-        serde_json::from_str(json_payload).map_err(LlmSchemaError::Parse)?;
-    validate_stage_a_output(&parsed)?;
-    Ok(parsed)
-}
-
-/// Parses Stage B LLM output using a deterministic wrapper object.
-pub fn parse_stage_b_output(json_payload: &str) -> Result<StageBMcqOutput, LlmSchemaError> {
-    let parsed: StageBMcqOutput =
-        serde_json::from_str(json_payload).map_err(LlmSchemaError::Parse)?;
-    validate_stage_b_output(&parsed)?;
-    Ok(parsed)
-}
-
-fn validate_stage_a_output(parsed: &StageAKeyPointsOutput) -> Result<(), LlmSchemaError> {
-    for (index, item) in parsed.key_points.iter().enumerate() {
-        if item.knowledge_point.trim().is_empty() {
-            return Err(LlmSchemaError::Validation(
-                LlmValidationError::EmptyKnowledgePoint { index },
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_stage_b_output(parsed: &StageBMcqOutput) -> Result<(), LlmSchemaError> {
-    if parsed.questions.is_empty() {
-        return Err(LlmSchemaError::Validation(
-            LlmValidationError::EmptyQuestions,
-        ));
-    }
-
-    let mut seen_questions = HashSet::new();
-
-    for (index, question) in parsed.questions.iter().enumerate() {
-        validate_non_empty(index, "question", &question.question)?;
-        validate_non_empty(index, "option_a", &question.option_a)?;
-        validate_non_empty(index, "option_b", &question.option_b)?;
-        validate_non_empty(index, "option_c", &question.option_c)?;
-        validate_non_empty(index, "option_d", &question.option_d)?;
-        validate_non_empty(index, "correct_answer", &question.correct_answer)?;
-        validate_non_empty(index, "explanation", &question.explanation)?;
-
-        let answer = question.correct_answer.trim();
-        if answer != "A" && answer != "B" && answer != "C" && answer != "D" {
-            return Err(LlmSchemaError::Validation(
-                LlmValidationError::InvalidCorrectAnswer {
-                    index,
-                    value: question.correct_answer.clone(),
-                },
-            ));
-        }
-
-        let a = question.option_a.trim();
-        let b = question.option_b.trim();
-        let c = question.option_c.trim();
-        let d = question.option_d.trim();
-        if a == b || a == c || a == d || b == c || b == d || c == d {
-            return Err(LlmSchemaError::Validation(
-                LlmValidationError::DuplicateOptions { index },
-            ));
-        }
-
-        let question_key = normalize_for_dedup(&question.question);
-        if !seen_questions.insert(question_key) {
-            return Err(LlmSchemaError::Validation(
-                LlmValidationError::DuplicateQuestion { index },
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_non_empty(
-    index: usize,
-    field: &'static str,
-    value: &str,
-) -> Result<(), LlmSchemaError> {
-    if value.trim().is_empty() {
-        return Err(LlmSchemaError::Validation(LlmValidationError::EmptyField {
-            index,
-            field,
-        }));
-    }
-
-    Ok(())
-}
-
 impl LlmService {
     pub fn new(config: LlmConfig) -> Result<Self, reqwest::Error> {
         let profile = provider_profile(config.provider);
@@ -617,131 +430,27 @@ impl LlmService {
         self.config.chat_url()
     }
 
-    pub async fn generate_stage_a_key_points(
+    pub(crate) async fn generate_json_with_retries<T, Parse>(
         &self,
-        chunk_markdown: &str,
-    ) -> Result<StageAKeyPointsOutput, LlmServiceError> {
-        log::info!(
-            "LLM Stage A generation started (chunk_chars={})",
-            chunk_markdown.chars().count()
-        );
-        let system_prompt = "You are generating knowledge extraction output for active recall. Return strict JSON only, no markdown, no prose.";
-        let user_prompt = format!(
-            concat!(
-                "Extract concrete knowledge points from this markdown chunk for study review. ",
-                "Only include points that represent stable, testable knowledge. ",
-                "Ignore navigation text, filler, personal journaling, and weak context that does not stand on its own. ",
-                "If the chunk does not contain enough real knowledge to study, return an empty array. ",
-                "Return exactly this JSON shape and nothing else: {{\"key_points\":[{{\"knowledge_point\":\"...\"}}]}}. ",
-                "Examples: {{\"key_points\":[]}} or {{\"key_points\":[{{\"knowledge_point\":\"...\"}}]}}.\n\n",
-                "Chunk:\n{}"
-            ),
-            chunk_markdown,
-        );
-
-        let (parsed, attempts) = self
-            .retry_with_backoff("Stage A", |attempt| {
-                let user_prompt = user_prompt.clone();
-                async move {
-                let json_payload = self
-                    .chat_json(system_prompt, &user_prompt, stage_a_format_schema())
-                    .await?;
-
-                parse_stage_a_output(&json_payload).map_err(|err| {
-                    log::warn!(
-                        "LLM Stage A schema validation failed on attempt {}/{}: {} | payload_preview={}",
-                        attempt,
-                        GENERATION_MAX_ATTEMPTS,
-                        err,
-                        log_preview(&json_payload, 600)
-                    );
-                    LlmServiceError::Schema(err)
-                })
-                }
-            })
-            .await?;
-
-        log::info!(
-            "LLM Stage A generation finished (key_points={}, attempts={})",
-            parsed.key_points.len(),
-            attempts
-        );
-        Ok(parsed)
-    }
-
-    pub async fn generate_stage_b_mcqs(
-        &self,
-        chunk_markdown: &str,
-        key_points: &[String],
-    ) -> Result<StageBMcqOutput, LlmServiceError> {
-        log::info!(
-            "LLM Stage B generation started (chunk_chars={}, key_points={})",
-            chunk_markdown.chars().count(),
-            key_points.len()
-        );
-        let key_points_json =
-            serde_json::to_string(key_points).map_err(LlmServiceError::Serialize)?;
-        let system_prompt = "You are generating multiple-choice questions for active recall. Return strict JSON only, no markdown, no prose.";
-        let user_prompt = format!(
-            concat!(
-                "Given this markdown chunk and extracted key points, create 1-4 MCQs for active recall. ",
-                "Each question must test a different concept and must not paraphrase another question. ",
-                "Use at most one question per key point and prioritize the strongest distinct concepts. ",
-                "If concepts overlap, generate fewer questions instead of duplicates. ",
-                "All questions must be grounded in the chunk content. ",
-                "Each question must have exactly four options (A-D), exactly one correct answer, and no duplicate options. ",
-                "Avoid 'all of the above', 'none of the above', and trick wording. ",
-                "Do not always use A as correct; distribute correct answers across A/B/C/D when reasonable. ",
-                "Before returning, self-check for schema compliance, uniqueness, and non-empty fields. ",
-                "Return exactly this JSON shape and nothing else: {{\"questions\":[{{\"question\":\"...\",\"option_a\":\"...\",\"option_b\":\"...\",\"option_c\":\"...\",\"option_d\":\"...\",\"correct_answer\":\"A\",\"explanation\":\"...\"}}]}}\n\n",
-                "Chunk:\n{}\n\n",
-                "Key points JSON:\n{}"
-            ),
-            chunk_markdown,
-            key_points_json,
-        );
-
-        let (parsed, attempts) = self
-            .retry_with_backoff("Stage B", |attempt| {
-                let user_prompt = user_prompt.clone();
-                async move {
-                let json_payload = self
-                    .chat_json(system_prompt, &user_prompt, stage_b_format_schema())
-                    .await?;
-
-                parse_stage_b_output(&json_payload).map_err(|err| {
-                    log::warn!(
-                        "LLM Stage B schema validation failed on attempt {}/{}: {} | payload_preview={}",
-                        attempt,
-                        GENERATION_MAX_ATTEMPTS,
-                        err,
-                        log_preview(&json_payload, 800)
-                    );
-                    LlmServiceError::Schema(err)
-                })
-                }
-            })
-            .await?;
-
-        log::info!(
-            "LLM Stage B generation finished (questions={}, attempts={})",
-            parsed.questions.len(),
-            attempts
-        );
-        Ok(parsed)
-    }
-
-    async fn retry_with_backoff<T, Op, Fut>(
-        &self,
-        stage_label: &str,
-        mut operation: Op,
+        request: JsonGenerationRequest<'_>,
+        parse: Parse,
     ) -> Result<(T, usize), LlmServiceError>
     where
-        Op: FnMut(usize) -> Fut,
-        Fut: Future<Output = Result<T, LlmServiceError>>,
+        Parse: Fn(&str, usize, usize) -> Result<T, LlmServiceError>,
     {
         for attempt in 1..=GENERATION_MAX_ATTEMPTS {
-            match operation(attempt).await {
+            let result = self
+                .chat_json(
+                    request.system_prompt,
+                    request.user_prompt,
+                    request.format_schema.clone(),
+                )
+                .await
+                .and_then(|json_payload| {
+                    parse(&json_payload, attempt, request.payload_preview_chars)
+                });
+
+            match result {
                 Ok(value) => return Ok((value, attempt)),
                 Err(err) => {
                     if attempt >= GENERATION_MAX_ATTEMPTS {
@@ -751,7 +460,7 @@ impl LlmService {
                     let delay = retry_delay(attempt);
                     log::warn!(
                         "LLM {} attempt {}/{} failed: {}. Retrying in {} ms",
-                        stage_label,
+                        request.stage_label,
                         attempt,
                         GENERATION_MAX_ATTEMPTS,
                         err,
@@ -1068,17 +777,6 @@ fn extract_text_content(content: &Value) -> String {
     }
 }
 
-fn normalize_for_dedup(input: &str) -> String {
-    input
-        .chars()
-        .flat_map(char::to_lowercase)
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn log_preview(raw: &str, max_chars: usize) -> String {
     let pretty = match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| raw.to_string()),
@@ -1093,198 +791,4 @@ fn log_preview(raw: &str, max_chars: usize) -> String {
     let mut preview = pretty.chars().take(max_chars).collect::<String>();
     preview.push_str("\n...<truncated>");
     preview
-}
-
-fn stage_a_format_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "key_points": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "knowledge_point": { "type": "string" }
-                    },
-                    "required": ["knowledge_point"],
-                    "additionalProperties": false
-                }
-            }
-        },
-        "required": ["key_points"],
-        "additionalProperties": false
-    })
-}
-
-fn stage_b_format_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "questions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question": { "type": "string" },
-                        "option_a": { "type": "string" },
-                        "option_b": { "type": "string" },
-                        "option_c": { "type": "string" },
-                        "option_d": { "type": "string" },
-                        "correct_answer": { "type": "string", "enum": ["A", "B", "C", "D"] },
-                        "explanation": { "type": "string" }
-                    },
-                    "required": [
-                        "question",
-                        "option_a",
-                        "option_b",
-                        "option_c",
-                        "option_d",
-                        "correct_answer",
-                        "explanation"
-                    ],
-                    "additionalProperties": false
-                }
-            }
-        },
-        "required": ["questions"],
-        "additionalProperties": false
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_stage_a_wrapper() {
-        let payload = r#"
-                {
-                    "key_points": [
-                        { "knowledge_point": "Ownership defines who can access data." },
-                        { "knowledge_point": "Borrowing avoids moving ownership." }
-                    ]
-                }
-                "#;
-
-        let parsed = parse_stage_a_output(payload).expect("stage A JSON should parse");
-        assert_eq!(parsed.key_points.len(), 2);
-        assert_eq!(
-            parsed.key_points[0].knowledge_point,
-            "Ownership defines who can access data."
-        );
-    }
-
-    #[test]
-    fn parses_stage_b_wrapper() {
-        let payload = r#"
-                {
-                    "questions": [
-                        {
-                            "question": "What does ownership control in Rust?",
-                            "option_a": "Memory and access",
-                            "option_b": "UI rendering",
-                            "option_c": "Network routing",
-                            "option_d": "Audio mixing",
-                            "correct_answer": "A",
-                            "explanation": "Ownership defines lifecycle and access rules for values."
-                        }
-                    ]
-                }
-                "#;
-
-        let parsed = parse_stage_b_output(payload).expect("stage B JSON should parse");
-        assert_eq!(parsed.questions.len(), 1);
-        assert_eq!(parsed.questions[0].correct_answer, "A");
-    }
-
-    #[test]
-    fn allows_stage_a_when_key_points_empty() {
-        let payload = r#"{ "key_points": [] }"#;
-        let parsed = parse_stage_a_output(payload).expect("stage A should allow empty key points");
-        assert!(parsed.key_points.is_empty());
-    }
-
-    #[test]
-    fn fails_stage_b_when_correct_answer_invalid() {
-        let payload = r#"
-                    {
-                        "questions": [
-                        {
-                            "question": "Q?",
-                            "option_a": "A1",
-                            "option_b": "B1",
-                            "option_c": "C1",
-                            "option_d": "D1",
-                            "correct_answer": "E",
-                            "explanation": "Because"
-                        }
-                        ]
-                    }
-                    "#;
-
-        let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
-        assert!(matches!(
-            err,
-            LlmSchemaError::Validation(LlmValidationError::InvalidCorrectAnswer { .. })
-        ));
-    }
-
-    #[test]
-    fn fails_stage_b_when_options_duplicate() {
-        let payload = r#"
-                    {
-                        "questions": [
-                        {
-                            "question": "Q?",
-                            "option_a": "Same",
-                            "option_b": "Same",
-                            "option_c": "C1",
-                            "option_d": "D1",
-                            "correct_answer": "A",
-                            "explanation": "Because"
-                        }
-                        ]
-                    }
-                    "#;
-
-        let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
-        assert!(matches!(
-            err,
-            LlmSchemaError::Validation(LlmValidationError::DuplicateOptions { .. })
-        ));
-    }
-
-    #[test]
-    fn fails_stage_b_when_questions_duplicate() {
-        let payload = r#"
-                    {
-                        "questions": [
-                        {
-                            "question": "What is Kubernetes scheduler?",
-                            "option_a": "A1",
-                            "option_b": "B1",
-                            "option_c": "C1",
-                            "option_d": "D1",
-                            "correct_answer": "A",
-                            "explanation": "Because"
-                        },
-                        {
-                            "question": "What is kubernetes scheduler",
-                            "option_a": "A2",
-                            "option_b": "B2",
-                            "option_c": "C2",
-                            "option_d": "D2",
-                            "correct_answer": "B",
-                            "explanation": "Because 2"
-                        }
-                        ]
-                    }
-                    "#;
-
-        let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
-        assert!(matches!(
-            err,
-            LlmSchemaError::Validation(LlmValidationError::DuplicateQuestion { .. })
-        ));
-    }
 }
