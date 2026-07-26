@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "eval:aqg": "powershell -ExecutionPolicy Bypass -File ./eval/run-aqg-eval.ps1",
+    "eval:stage-a": "powershell -ExecutionPolicy Bypass -File ./eval/run-stage-a-eval.ps1",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

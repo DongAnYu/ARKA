@@ -31,6 +31,7 @@ pub enum LlmProvider {
 }
 
 impl LlmProvider {
+
     fn as_str(&self) -> &'static str {
         match self {
             Self::Ollama => "ollama",
@@ -474,7 +475,7 @@ impl LlmService {
         unreachable!("retry loop must return success or error")
     }
 
-    async fn chat_json(
+    pub(crate) async fn chat_json(
         &self,
         system_prompt: &str,
         user_prompt: &str,
