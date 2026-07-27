@@ -74,6 +74,7 @@ You must output a JSON object with exactly this structure:
 - Think of `entities` as a complete "guest list" — every entity that will be mentioned anywhere in the output must be listed there first.
 - Matching is case-insensitive (e.g., "chloroplast" and "Chloroplast" refer to the same entity).
 - Before writing any knowledge points, identify **every distinct entity** that will be needed anywhere — including entities that will only appear as relation targets, not as a point's main subject.
+- **Important:** Include entities mentioned in *contrasts*, *negations*, or *negative comparisons* too. If you write "X is not Y" or "X contrasts with Y," both X and Y must be in the guest list, even if one is mentioned only in the negative or contrastive context.
 
 ### Common Mistake to Avoid
 
@@ -122,6 +123,8 @@ Before writing any knowledge points, read through the chunk carefully and identi
 
 List all entities in the `entities` array. Do not add new entities later — all must be declared upfront.
 
+**Critical:** Once an entity is declared (e.g., "photosynthesis"), every later reference to it in `raw_entity_names` and `target_entity_name` must use the *exact same string form*. Do not pluralize, abbreviate, or rephrase. For example, if you declare "photosynthesis", do not later write "photosyntheses" or "the photosynthetic process" — stick to the exact form "photosynthesis".
+
 ### Step 2: Extract Knowledge Points
 For each fact, claim, or relationship you identify, create a knowledge point. Each point should:
 - Capture a single, testable claim (the `point` text)
@@ -149,7 +152,9 @@ Choose one of these types for each point:
    - Use this for: big-picture relationships, theoretical connections, interdependencies
 
 ### Step 4: Identify Relations
-For each knowledge point, list any notable relationships to other entities. Choose the relation type that best describes the connection:
+For each knowledge point, list **only the meaningful semantic connections** to other entities — not every entity that merely appears in the point. A relation represents one specific, testable claim about how two entities are connected. Do not emit a relation just because two entities co-occur in the same sentence; identify only the one or two most important connections that are worth testing in a question.
+
+Choose the relation type that best describes the connection:
 
 1. **related_to** — General association or relevance without a more specific relationship.
    - Example: mitochondria is related_to cellular respiration
@@ -168,6 +173,15 @@ For each knowledge point, list any notable relationships to other entities. Choo
 
 6. **counter_example** — One entity contradicts or provides a counterexample to another.
    - Example: C4 photosynthesis is a counter_example to the standard Calvin cycle model (more nuanced)
+
+## Verification Checklist (Before Finalizing)
+
+Before outputting your final JSON, perform this self-check:
+1. Scan all `raw_entity_names` across every knowledge point. For each name, verify it appears in the `entities` array (case-insensitive and exact string form).
+2. Scan all `target_entity_name` values in `raw_relations`. Verify each one also appears in `entities`.
+3. If you find any name that appears in a knowledge point but not in `entities`, **add it to the `entities` array now**, then proceed.
+
+This check prevents validation errors and ensures your output is immediately usable.
 
 ## Output Requirements
 

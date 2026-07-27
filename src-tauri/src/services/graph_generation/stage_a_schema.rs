@@ -4,6 +4,7 @@
 //! Wire types are deserialized from JSON; then hydrated into business types with
 //! injected metadata (chunk_id, generated IDs, etc.).
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 
@@ -59,18 +60,6 @@ pub enum GraphStageAValidationError {
     EmptyRelationTarget {
         point_index: usize,
         relation_index: usize,
-    },
-    /// raw_entity_name does not appear in the entities list (guest list violation).
-    UndeclaredRawEntity {
-        point_index: usize,
-        entity_index: usize,
-        name: String,
-    },
-    /// relation target_entity_name does not appear in the entities list (guest list violation).
-    UndeclaredRelationTarget {
-        point_index: usize,
-        relation_index: usize,
-        target_name: String,
     },
 }
 
@@ -139,28 +128,6 @@ impl fmt::Display for GraphStageAValidationError {
                 write!(
                     f,
                     "target_entity_name at point {point_index}, relation {relation_index} must be non-empty"
-                )
-            }
-            Self::UndeclaredRawEntity {
-                point_index,
-                entity_index,
-                name,
-            } => {
-                write!(
-                    f,
-                    "raw_entity_name '{}' at point {point_index}, entity {entity_index} does not appear in entities list",
-                    name
-                )
-            }
-            Self::UndeclaredRelationTarget {
-                point_index,
-                relation_index,
-                target_name,
-            } => {
-                write!(
-                    f,
-                    "relation target '{}' at point {point_index}, relation {relation_index} does not appear in entities list",
-                    target_name
                 )
             }
         }
@@ -297,7 +264,6 @@ pub fn stage_a_format_schema() -> Value {
 /// Runs against raw `serde_json::Value` to give indexed error messages before typed deserialization.
 /// Checks: non-empty texts, valid enum values, no duplicates, required collections non-empty.
 fn validate_stage_a_json(value: &Value) -> Result<(), GraphStageAError> {
-    use std::collections::HashSet;
 
     // Check root is an object
     let obj = value.as_object().ok_or(GraphStageAError::Validation(
@@ -312,8 +278,6 @@ fn validate_stage_a_json(value: &Value) -> Result<(), GraphStageAError> {
         GraphStageAValidationError::MalformedShape,
     ))?;
 
-    // Build set of valid entity names (case-insensitive) for cross-validation
-    let mut valid_entity_names = HashSet::new();
     for (idx, entity) in entities.iter().enumerate() {
         let name = entity
             .as_str()
@@ -326,7 +290,6 @@ fn validate_stage_a_json(value: &Value) -> Result<(), GraphStageAError> {
                 GraphStageAValidationError::EmptyEntityName { entity_index: idx },
             ));
         }
-        valid_entity_names.insert(name.to_lowercase());
     }
 
     // Check knowledge_points array exists and is non-empty
@@ -425,16 +388,6 @@ fn validate_stage_a_json(value: &Value) -> Result<(), GraphStageAError> {
                     GraphStageAValidationError::DuplicateRawEntityNames { point_index: point_idx },
                 ));
             }
-            // Cross-validation: entity must be in guest list (case-insensitive)
-            if !valid_entity_names.contains(&entity_name.to_lowercase()) {
-                return Err(GraphStageAError::Validation(
-                    GraphStageAValidationError::UndeclaredRawEntity {
-                        point_index: point_idx,
-                        entity_index: entity_idx,
-                        name: entity_name.to_string(),
-                    },
-                ));
-            }
         }
 
         // Validate raw_relations (defaults to empty if missing)
@@ -468,16 +421,6 @@ fn validate_stage_a_json(value: &Value) -> Result<(), GraphStageAError> {
                     GraphStageAValidationError::EmptyRelationTarget {
                         point_index: point_idx,
                         relation_index: rel_idx,
-                    },
-                ));
-            }
-            // Cross-validation: relation target must be in guest list (case-insensitive)
-            if !valid_entity_names.contains(&target.to_lowercase()) {
-                return Err(GraphStageAError::Validation(
-                    GraphStageAValidationError::UndeclaredRelationTarget {
-                        point_index: point_idx,
-                        relation_index: rel_idx,
-                        target_name: target.to_string(),
                     },
                 ));
             }
@@ -547,9 +490,34 @@ pub fn parse_stage_a_output(
     let wire: WireExtractedKnowledge =
         serde_json::from_value(value).map_err(GraphStageAError::Parse)?;
 
-    // Convert entities to RawEntityMentions
-    let raw_entities = wire
+    // Build the entity set from the declared list, then auto-union any names
+    // referenced in knowledge_points that the LLM forgot to declare upfront.
+    // This makes hydration self-healing: a single missing entity name does not
+    // discard an entire chunk's worth of knowledge points.
+    let mut known_names: HashSet<String> = wire
         .entities
+        .iter()
+        .map(|n| n.trim().to_lowercase())
+        .collect();
+    let mut all_entity_names: Vec<String> = wire.entities.clone();
+    for kp in &wire.knowledge_points {
+        for name in &kp.raw_entity_names {
+            let key = name.trim().to_lowercase();
+            if !known_names.contains(&key) {
+                known_names.insert(key);
+                all_entity_names.push(name.trim().to_string());
+            }
+        }
+        for rel in &kp.raw_relations {
+            let key = rel.target_entity_name.trim().to_lowercase();
+            if !known_names.contains(&key) {
+                known_names.insert(key);
+                all_entity_names.push(rel.target_entity_name.trim().to_string());
+            }
+        }
+    }
+
+    let raw_entities: Vec<RawEntityMention> = all_entity_names
         .into_iter()
         .map(|name| RawEntityMention {
             name,
@@ -877,8 +845,9 @@ mod tests {
     }
 
     #[test]
-    fn test_undeclared_raw_entity_rejected() {
-        // raw_entity_names references "thylakoid" but entities list only has "chloroplast"
+    fn test_undeclared_raw_entity_auto_unioned() {
+        // raw_entity_names references "thylakoid" but entities list only has "chloroplast".
+        // Hydration should auto-union "thylakoid" rather than reject the chunk.
         let json = r#"{
             "entities": ["chloroplast"],
             "knowledge_points": [
@@ -892,20 +861,18 @@ mod tests {
         }"#;
 
         let result = parse_stage_a_output(json, "chunk_1".to_string());
-        assert!(result.is_err());
-        match result {
-            Err(GraphStageAError::Validation(GraphStageAValidationError::UndeclaredRawEntity { point_index, entity_index, name })) => {
-                assert_eq!(point_index, 0);
-                assert_eq!(entity_index, 0);
-                assert_eq!(name, "thylakoid");
-            }
-            _ => panic!("Expected UndeclaredRawEntity error"),
-        }
+        assert!(result.is_ok(), "should succeed via auto-union, got: {:?}", result);
+        let extracted = result.unwrap();
+        let entity_names: Vec<&str> = extracted.raw_entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(entity_names.contains(&"thylakoid"), "auto-unioned entity should appear in raw_entities");
+        assert!(entity_names.contains(&"chloroplast"));
+        assert_eq!(extracted.knowledge_points[0].raw_entity_names, vec!["thylakoid", "chloroplast"]);
     }
 
     #[test]
-    fn test_undeclared_relation_target_rejected() {
-        // relation target "membrane" is not in the entities list
+    fn test_undeclared_relation_target_auto_unioned() {
+        // relation target "membrane" is not in the entities list.
+        // Hydration should auto-union "membrane" rather than reject the chunk.
         let json = r#"{
             "entities": ["chloroplast"],
             "knowledge_points": [
@@ -925,14 +892,10 @@ mod tests {
         }"#;
 
         let result = parse_stage_a_output(json, "chunk_1".to_string());
-        assert!(result.is_err());
-        match result {
-            Err(GraphStageAError::Validation(GraphStageAValidationError::UndeclaredRelationTarget { point_index, relation_index, target_name })) => {
-                assert_eq!(point_index, 0);
-                assert_eq!(relation_index, 0);
-                assert_eq!(target_name, "membrane");
-            }
-            _ => panic!("Expected UndeclaredRelationTarget error"),
-        }
+        assert!(result.is_ok(), "should succeed via auto-union, got: {:?}", result);
+        let extracted = result.unwrap();
+        let entity_names: Vec<&str> = extracted.raw_entities.iter().map(|e| e.name.as_str()).collect();
+        assert!(entity_names.contains(&"membrane"), "auto-unioned relation target should appear in raw_entities");
+        assert!(entity_names.contains(&"chloroplast"));
     }
 }
