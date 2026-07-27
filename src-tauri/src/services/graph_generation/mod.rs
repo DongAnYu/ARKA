@@ -6,6 +6,7 @@
 pub mod types;
 pub mod stage_a_schema;
 pub mod stage_a_prompt;
+pub mod consolidator;
 
 // Re-exports available for consumers of this module
 // (Types are primarily used internally during consolidation and generation phases)

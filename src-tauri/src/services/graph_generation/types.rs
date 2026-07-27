@@ -21,7 +21,7 @@ pub enum KnowledgeType {
 
 /// Closed set — must stay exactly in sync with stage_a_schema.rs and
 /// stage_a_prompt.rs. Extend here first if a new relation type is needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationType {
     RelatedTo,
@@ -104,10 +104,20 @@ pub struct ExtractedKnowledge {
 /// A deduplicated entity with a stable ID. Pure connective tissue —
 /// deliberately no back-references to KnowledgePoints. Consumers filter
 /// `PropositionGraph.knowledge_points` by `entity_ids` at query time.
+///
+/// `canonical_name` is the first-seen raw form; display quality is preserved.
+/// `aliases` accumulates every raw surface form that normalized to the same
+/// comparison key — evidence preserved for future Layer 3 entity resolution
+/// (e.g. embedding-based or LLM-based merging of "Calvin cycle" ↔
+/// "light-independent reactions").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityNode {
     pub id: String,
-    pub name: String,
+    /// First-seen raw form of this entity's name (used for display).
+    pub canonical_name: String,
+    /// All raw surface forms that resolved to this node, in insertion order.
+    /// Includes the canonical name as its first element.
+    pub aliases: Vec<String>,
     pub chunk_ids: Vec<String>,
 }
 

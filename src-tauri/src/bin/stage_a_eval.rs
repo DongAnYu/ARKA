@@ -15,10 +15,12 @@ use rust_xlsxwriter::Workbook;
 use serde::Serialize;
 
 use services::chunker::chunk_markdown;
+use services::graph_generation::consolidator::{consolidate, validate_graph};
 use services::graph_generation::stage_a_prompt::format_stage_a_graph_user_prompt;
 use services::graph_generation::stage_a_schema::{
     parse_stage_a_output, stage_a_format_schema,
 };
+use services::graph_generation::types::ExtractedKnowledge;
 use services::llm::LlmService;
 
 const DEFAULT_OUTPUT_DIR_NAME: &str = "eval/output";
@@ -52,7 +54,29 @@ struct StageAEvalRun {
     successful_parses: usize,
     failed_parses: usize,
     aggregate: AggregateStats,
+    consolidation: ConsolidationStats,
     chunks: Vec<ChunkResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConsolidationStats {
+    total_raw_mentions: usize,
+    unique_entities: usize,
+    /// unique_entities / total_raw_mentions — lower means more dedup happened
+    dedup_ratio: f64,
+    kp_with_entity_ids: usize,
+    total_knowledge_points: usize,
+    total_relations: usize,
+    validation_violations: Vec<String>,
+    entities: Vec<EntitySummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct EntitySummary {
+    id: String,
+    canonical_name: String,
+    aliases: Vec<String>,
+    chunk_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,6 +172,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let format_schema = stage_a_format_schema();
     let mut chunk_results: Vec<ChunkResult> = Vec::new();
+    let mut extracted_chunks: Vec<ExtractedKnowledge> = Vec::new();
 
     for (idx, chunk) in chunks.iter().enumerate() {
         print!("  Chunk {}/{} [{}]... ", idx + 1, chunks.len(), &chunk.heading);
@@ -194,7 +219,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             total_relations
                         );
 
-                        ChunkResult {
+                        let result = ChunkResult {
                             chunk_index: idx,
                             heading: chunk.heading.clone(),
                             content_preview: truncate(&chunk.content, 200),
@@ -212,7 +237,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             ),
                             knowledge_points: Some(point_summaries),
                             error: None,
-                        }
+                        };
+                        extracted_chunks.push(extracted);
+                        result
                     }
                     Err(parse_err) => {
                         let err_str = format!("{}", parse_err);
@@ -316,6 +343,49 @@ async fn main() -> Result<(), Box<dyn Error>> {
         validation_error_breakdown: validation_errors,
     };
 
+    // ── Consolidation pass ────────────────────────────────────────────────
+    let total_raw_mentions: usize = extracted_chunks
+        .iter()
+        .map(|c| c.raw_entities.len())
+        .sum();
+
+    let graph = consolidate(extracted_chunks);
+    let violations = validate_graph(&graph);
+
+    let kp_with_ids = graph
+        .knowledge_points
+        .iter()
+        .filter(|kp| !kp.entity_ids.is_empty())
+        .count();
+
+    let dedup_ratio = if total_raw_mentions > 0 {
+        graph.entities.len() as f64 / total_raw_mentions as f64
+    } else {
+        1.0
+    };
+
+    let entity_summaries: Vec<EntitySummary> = graph
+        .entities
+        .iter()
+        .map(|e| EntitySummary {
+            id: e.id.clone(),
+            canonical_name: e.canonical_name.clone(),
+            aliases: e.aliases.clone(),
+            chunk_count: e.chunk_ids.len(),
+        })
+        .collect();
+
+    let consolidation = ConsolidationStats {
+        total_raw_mentions,
+        unique_entities: graph.entities.len(),
+        dedup_ratio,
+        kp_with_entity_ids: kp_with_ids,
+        total_knowledge_points: graph.knowledge_points.len(),
+        total_relations: graph.relations.len(),
+        validation_violations: violations.clone(),
+        entities: entity_summaries,
+    };
+
     // Output
     let timestamp = Utc::now();
     let stem = args
@@ -341,11 +411,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         successful_parses: successful_count,
         failed_parses: failed_count,
         aggregate,
+        consolidation,
         chunks: chunk_results.clone(),
     };
 
     fs::write(&json_path, serde_json::to_string_pretty(&run)?)?;
-    write_xlsx(&xlsx_path, &chunk_results)?;
+    write_xlsx(&xlsx_path, &chunk_results, &run.consolidation)?;
 
     println!("---");
     println!("Stage A evaluation completed.");
@@ -361,6 +432,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "Avg: {:.1} entities/chunk, {:.1} points/chunk, {:.2} relations/point",
         avg_entities, avg_points, avg_relations
     );
+    println!("---");
+    println!("Consolidation:");
+    println!(
+        "  Raw mentions: {}  →  Unique entities: {}  (dedup ratio: {:.2})",
+        run.consolidation.total_raw_mentions,
+        run.consolidation.unique_entities,
+        run.consolidation.dedup_ratio
+    );
+    println!(
+        "  KPs with entity_ids: {}/{}  |  Relations after dedup: {}",
+        run.consolidation.kp_with_entity_ids,
+        run.consolidation.total_knowledge_points,
+        run.consolidation.total_relations
+    );
+    if violations.is_empty() {
+        println!("  validate_graph: OK");
+    } else {
+        println!("  validate_graph: {} VIOLATIONS", violations.len());
+        for v in &violations {
+            println!("    - {v}");
+        }
+    }
 
     Ok(())
 }
@@ -442,9 +535,13 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-fn write_xlsx(path: &Path, chunks: &[ChunkResult]) -> Result<(), Box<dyn Error>> {
+fn write_xlsx(
+    path: &Path,
+    chunks: &[ChunkResult],
+    consolidation: &ConsolidationStats,
+) -> Result<(), Box<dyn Error>> {
     let mut workbook = Workbook::new();
-    let worksheet = workbook.add_worksheet();
+    let worksheet = workbook.add_worksheet().set_name("Chunks")?;
 
     let headers = [
         "chunk_index",
@@ -493,6 +590,20 @@ fn write_xlsx(path: &Path, chunks: &[ChunkResult]) -> Result<(), Box<dyn Error>>
 
         worksheet.write_string(row, 8, chunk.error.as_deref().unwrap_or(""))?;
         worksheet.write_string(row, 9, &chunk.content_preview)?;
+    }
+
+    // ── Entities sheet ───────────────────────────────────────────────────
+    let ent_sheet = workbook.add_worksheet().set_name("Entities")?;
+    let ent_headers = ["id", "canonical_name", "aliases", "chunk_count", "chunk_ids"];
+    for (col, header) in ent_headers.iter().enumerate() {
+        ent_sheet.write_string(0, col as u16, *header)?;
+    }
+    for (idx, entity) in consolidation.entities.iter().enumerate() {
+        let row = (idx + 1) as u32;
+        ent_sheet.write_string(row, 0, &entity.id)?;
+        ent_sheet.write_string(row, 1, &entity.canonical_name)?;
+        ent_sheet.write_string(row, 2, entity.aliases.join(", "))?;
+        ent_sheet.write_number(row, 3, entity.chunk_count as f64)?;
     }
 
     workbook.save(path)?;
