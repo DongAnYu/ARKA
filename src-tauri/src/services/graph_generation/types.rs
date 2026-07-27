@@ -145,10 +145,17 @@ pub struct PropositionGraph {
 // ---------------------------------------------------------------------
 
 /// Everything Stage B needs to generate one question.
+///
+/// Structured data: relations and supporting entities are kept separate from
+/// KnowledgePoints to enable flexible prompt formatting. Only immediately before
+/// calling the LLM should these be serialized into text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphContextBundle {
     pub root_point: KnowledgePoint,
     pub related_points: Vec<KnowledgePoint>,
     pub question_type: QuestionType,
-    pub generation_context: String,
+    /// Entities connected to root_point (for context, not necessarily mentioned in related_points)
+    pub supporting_entities: Vec<EntityNode>,
+    /// Relations involving root_point's entities (for context)
+    pub supporting_relations: Vec<Relation>,
 }

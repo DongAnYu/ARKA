@@ -7,6 +7,8 @@ pub mod types;
 pub mod stage_a_schema;
 pub mod stage_a_prompt;
 pub mod consolidator;
+pub mod graph_index;
+pub mod bundle_builder;
 
 // Re-exports available for consumers of this module
 // (Types are primarily used internally during consolidation and generation phases)
