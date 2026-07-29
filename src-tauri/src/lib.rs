@@ -183,6 +183,11 @@ async fn delete_space(id: i64) -> Result<(), String> {
         .map_err(|err| format!("Failed to delete recall space: {err}"))
 }
 
+#[tauri::command]
+async fn start_graph_generation_job(vault_path: String) -> Result<String, String> {
+    services::generation::start_graph_generation_job(&vault_path).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -224,6 +229,7 @@ pub fn run() {
             get_preview_generation_progress,
             set_preview_generation_paused,
             cancel_preview_generation,
+            start_graph_generation_job,
             fetch_ollama_models,
             set_runtime_llm_settings,
             load_model_config,

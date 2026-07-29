@@ -11,6 +11,13 @@ use crate::models::note::Note;
 
 use super::chunker::{self, MarkdownChunk};
 use super::filesystem;
+use super::graph_generation::{
+    bundle_builder, consolidator, graph_index,
+    stage_a_prompt::format_stage_a_graph_user_prompt,
+    stage_a_schema::{parse_stage_a_output, stage_a_format_schema},
+    stage_b_generation::generate_mcq,
+    types::ExtractedKnowledge,
+};
 use super::llm::{LlmService, StageBMcq};
 
 const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
@@ -91,6 +98,9 @@ pub struct GenerationProgressSnapshot {
     pub is_finished: bool,
     pub error: Option<String>,
     pub summary: Option<GenerationSummary>,
+    /// Human-readable phase description (e.g. "Extracting knowledge" / "Generating questions").
+    /// None for the default single-phase pipeline.
+    pub phase_label: Option<String>,
 }
 
 #[derive(Debug)]
@@ -119,6 +129,22 @@ fn set_progress_percent(snapshot: &mut GenerationProgressSnapshot) {
             .round()
             .clamp(0.0, 100.0) as u8
     };
+}
+
+/// Compute a non-regressing two-phase progress percent.
+/// Phase 1 maps to 0–50 %, Phase 2 maps to 50–100 %.
+fn two_phase_percent(phase1_done: usize, phase1_total: usize, phase2_done: usize, phase2_total: usize) -> u8 {
+    let p1 = if phase1_total == 0 {
+        50.0
+    } else {
+        (phase1_done as f64 / phase1_total as f64) * 50.0
+    };
+    let p2 = if phase2_total == 0 {
+        0.0
+    } else {
+        (phase2_done as f64 / phase2_total as f64) * 50.0
+    };
+    (p1 + p2).round().clamp(0.0, 100.0) as u8
 }
 
 pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, String> {
@@ -156,6 +182,7 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         is_finished: false,
         error: None,
         summary: None,
+        phase_label: None,
     };
 
     let job = Arc::new(PreviewJob {
@@ -223,6 +250,321 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         snapshot.is_finished = true;
         snapshot.is_paused = false;
         set_progress_percent(&mut snapshot);
+    });
+
+    Ok(job_id)
+}
+
+const GRAPH_STAGE_A_SYSTEM_PROMPT: &str =
+    "You are a knowledge graph extraction specialist. Output only valid JSON.";
+
+/// Starts an async graph-based generation job and returns its job ID.
+///
+/// Pipeline:
+/// 1. Phase 1 — Graph Stage A: extract entities + knowledge points per chunk.
+/// 2. Consolidation: merge per-chunk extractions into a single PropositionGraph.
+/// 3. Phase 2 — Stage B MCQ: generate one MCQ per bundle from the graph.
+///
+/// Progress is reported through the shared PreviewJob snapshot and is
+/// compatible with `get_preview_generation_progress` / pause / cancel.
+pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, String> {
+    let notes = filesystem::load_vault_notes(vault_path)?;
+    let mut note_reports = Vec::new();
+    let mut all_chunks: Vec<MarkdownChunk> = Vec::new();
+    let mut notes_with_chunks = 0;
+
+    for note in &notes {
+        let chunks = chunker::chunk_note(note);
+        if !chunks.is_empty() {
+            notes_with_chunks += 1;
+        }
+        note_reports.push(NoteGenerationReport {
+            note_path: note.path.clone(),
+            note_title: note.title.clone(),
+            total_chunks: chunks.len(),
+        });
+        all_chunks.extend(chunks);
+    }
+
+    let total_chunks = all_chunks.len();
+    let job_id = next_preview_job_id();
+    let initial_snapshot = GenerationProgressSnapshot {
+        job_id: job_id.clone(),
+        total_notes: notes.len(),
+        // Phase 1: total_chunks = num_chunks; updated to bundle_count once Phase 2 starts
+        total_chunks,
+        notes_with_chunks,
+        completed_chunks: 0,
+        mcq_generated: 0,
+        progress_percent: 0,
+        is_paused: false,
+        is_cancelled: false,
+        is_finished: false,
+        error: None,
+        summary: None,
+        phase_label: Some(String::from("Extracting knowledge")),
+    };
+
+    let job = Arc::new(PreviewJob {
+        paused: AtomicBool::new(false),
+        cancelled: AtomicBool::new(false),
+        snapshot: Mutex::new(initial_snapshot),
+    });
+
+    preview_jobs()
+        .lock()
+        .expect("preview job map mutex should remain available")
+        .insert(job_id.clone(), Arc::clone(&job));
+
+    let notes_clone = notes.clone();
+    tauri::async_runtime::spawn(async move {
+        let llm_arc = LlmService::from_runtime_or_env().ok().map(Arc::new);
+
+        // ── Phase 1: Graph Stage A extraction per chunk ───────────────────
+        let format_schema = stage_a_format_schema();
+        let mut extracted_chunks: Vec<ExtractedKnowledge> = Vec::new();
+        let mut chunk_previews_phase1: Vec<(usize, String, String, String)> = Vec::new();
+        // (order, note_path, note_title, heading)
+
+        for (order, chunk) in all_chunks.iter().enumerate() {
+            if job.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            while job.paused.load(Ordering::Relaxed) {
+                if job.cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                sleep(Duration::from_millis(PAUSE_POLL_MS)).await;
+            }
+            if job.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+
+            chunk_previews_phase1.push((
+                order,
+                chunk.note_path.clone(),
+                chunk.note_title.clone(),
+                chunk.heading.clone(),
+            ));
+
+            if let Some(llm) = llm_arc.as_deref() {
+                let user_prompt =
+                    format_stage_a_graph_user_prompt(&chunk.content, "(graph pipeline)");
+                let chunk_id = format!("chunk-{}", order);
+                match llm
+                    .chat_json(GRAPH_STAGE_A_SYSTEM_PROMPT, &user_prompt, format_schema.clone())
+                    .await
+                {
+                    Ok(raw_json) => {
+                        if let Ok(extracted) = parse_stage_a_output(&raw_json, chunk_id) {
+                            extracted_chunks.push(extracted);
+                        }
+                    }
+                    Err(err) => {
+                        log::warn!("Graph Stage A failed for chunk {}: {}", order, err);
+                    }
+                }
+            }
+
+            let mut snapshot = job
+                .snapshot
+                .lock()
+                .expect("preview job snapshot mutex should remain available");
+            snapshot.completed_chunks += 1;
+            // Phase 1 maps to 0–50 % (bundle_count unknown, so phase2 = 0)
+            snapshot.progress_percent = two_phase_percent(
+                snapshot.completed_chunks, total_chunks, 0, 0,
+            );
+        }
+
+        if job.cancelled.load(Ordering::Relaxed) {
+            let mut snapshot = job
+                .snapshot
+                .lock()
+                .expect("preview job snapshot mutex should remain available");
+            snapshot.is_cancelled = true;
+            snapshot.is_finished = true;
+            snapshot.is_paused = false;
+            return;
+        }
+
+        // ── Consolidation: merge extracted chunks into PropositionGraph ───
+        let graph = consolidator::consolidate(extracted_chunks);
+        let index = graph_index::build_index(&graph);
+        let bundles = bundle_builder::assemble_bundles(&graph, &index);
+        let bundle_count = bundles.len();
+
+        // Transition to Phase 2: update label, total_chunks = bundle_count, reset completed
+        {
+            let mut snapshot = job
+                .snapshot
+                .lock()
+                .expect("preview job snapshot mutex should remain available");
+            snapshot.phase_label = Some(String::from("Generating questions"));
+            snapshot.total_chunks = bundle_count;
+            snapshot.completed_chunks = 0;
+            snapshot.progress_percent = two_phase_percent(total_chunks, total_chunks, 0, bundle_count);
+        }
+
+        // ── Phase 2: MCQ generation per bundle ────────────────────────────
+        // Build a map from (note_path, heading) -> chunk metadata for summary
+        let mut chunk_meta: HashMap<String, (String, String, usize, usize, usize, usize, String)> =
+            HashMap::new();
+        for chunk in all_chunks.iter() {
+            let key = format!("{}::{}", chunk.note_path, chunk.heading);
+            chunk_meta.entry(key).or_insert_with(|| {
+                (
+                    chunk.note_path.clone(),
+                    chunk.note_title.clone(),
+                    chunk.section_index,
+                    chunk.chunk_index,
+                    chunk.start_line,
+                    chunk.end_line,
+                    build_preview_text(&chunk.content, 220),
+                )
+            });
+        }
+
+        let mut ordered_previews: Vec<Option<ChunkPreview>> = vec![None; bundle_count];
+
+        for (bundle_idx, bundle) in bundles.iter().enumerate() {
+            if job.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            while job.paused.load(Ordering::Relaxed) {
+                if job.cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                sleep(Duration::from_millis(PAUSE_POLL_MS)).await;
+            }
+            if job.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+
+            // Determine source chunk context for this bundle from entity chunk_ids
+            let source_chunk_id = bundle
+                .root_point
+                .chunk_id
+                .strip_prefix("chunk-")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+
+            let (note_path, note_title, section_index, chunk_index, start_line, end_line, preview_text) =
+                all_chunks
+                    .get(source_chunk_id)
+                    .map(|c| {
+                        (
+                            c.note_path.clone(),
+                            c.note_title.clone(),
+                            c.section_index,
+                            c.chunk_index,
+                            c.start_line,
+                            c.end_line,
+                            build_preview_text(&c.content, 220),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            String::from("unknown"),
+                            String::from("unknown"),
+                            0,
+                            bundle_idx,
+                            0,
+                            0,
+                            String::new(),
+                        )
+                    });
+
+            let llm_result = if let Some(llm) = llm_arc.as_deref() {
+                match generate_mcq(bundle, llm).await {
+                    Ok(mcq) => {
+                        let correct_answer = match mcq.correct_index {
+                            0 => "A",
+                            1 => "B",
+                            2 => "C",
+                            _ => "D",
+                        };
+                        let options = &mcq.options;
+                        ChunkLlmResult {
+                            status: String::from("ok"),
+                            key_points: vec![bundle.root_point.point.clone()],
+                            questions: vec![ChunkLlmQuestionPreview {
+                                question: mcq.question,
+                                option_a: options.get(0).cloned().unwrap_or_default(),
+                                option_b: options.get(1).cloned().unwrap_or_default(),
+                                option_c: options.get(2).cloned().unwrap_or_default(),
+                                option_d: options.get(3).cloned().unwrap_or_default(),
+                                correct_answer: correct_answer.to_string(),
+                                explanation: mcq.explanation,
+                            }],
+                            error: None,
+                        }
+                    }
+                    Err(err) => ChunkLlmResult {
+                        status: String::from("error_stage_b"),
+                        key_points: vec![bundle.root_point.point.clone()],
+                        questions: Vec::new(),
+                        error: Some(err.to_string()),
+                    },
+                }
+            } else {
+                ChunkLlmResult {
+                    status: String::from("error_init"),
+                    key_points: Vec::new(),
+                    questions: Vec::new(),
+                    error: Some(String::from(
+                        "LLM service could not be initialized from runtime settings or env",
+                    )),
+                }
+            };
+
+            let mcq_count = llm_result.questions.len();
+            ordered_previews[bundle_idx] = Some(ChunkPreview {
+                note_path,
+                note_title,
+                heading: bundle.root_point.point.chars().take(60).collect::<String>(),
+                section_index,
+                chunk_index,
+                start_line,
+                end_line,
+                char_count: bundle.root_point.point.chars().count(),
+                preview_text,
+                llm_result,
+            });
+
+            let mut snapshot = job
+                .snapshot
+                .lock()
+                .expect("preview job snapshot mutex should remain available");
+            snapshot.completed_chunks += 1;
+            snapshot.mcq_generated += mcq_count;
+            // Phase 2 maps to 50–100 %
+            snapshot.progress_percent = two_phase_percent(
+                total_chunks, total_chunks, snapshot.completed_chunks, bundle_count,
+            );
+        }
+
+        let chunk_previews = ordered_previews.into_iter().flatten().collect::<Vec<_>>();
+        let summary = GenerationSummary {
+            total_notes: notes_clone.len(),
+            total_chunks: bundle_count,
+            notes_with_chunks,
+            note_reports,
+            chunk_previews,
+        };
+
+        let mut snapshot = job
+            .snapshot
+            .lock()
+            .expect("preview job snapshot mutex should remain available");
+        snapshot.is_cancelled = job.cancelled.load(Ordering::Relaxed);
+        if !snapshot.is_cancelled {
+            snapshot.summary = Some(summary);
+        }
+        snapshot.is_finished = true;
+        snapshot.is_paused = false;
+        snapshot.progress_percent = 100;
+        snapshot.phase_label = None;
     });
 
     Ok(job_id)

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { ArrowRight, Check, ChevronDown, FolderOpen, Plus, Save, Sparkles } from 'lucide-react'
+import { ArrowRight, Check, ChevronDown, FolderOpen, GitBranch, Plus, Save, Sparkles, Zap } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import arkaLogo from '../assets/arka-logo.svg'
@@ -114,6 +114,7 @@ type GenerationProgress = {
   is_finished: boolean
   error: string | null
   summary: GenerationSummary | null
+  phase_label: string | null
 }
 
 type Question = {
@@ -157,6 +158,21 @@ export function HomePage() {
   const [saveStatusKind, setSaveStatusKind] = useState<'success' | 'error' | ''>('')
   const [hasSavedQuestions, setHasSavedQuestions] = useState(false)
   const [error, setError] = useState('')
+  const [generationMode, setGenerationMode] = useState<'default' | 'graph'>('default')
+  const [showGenerateMenu, setShowGenerateMenu] = useState(false)
+  const generateMenuRef = useRef<HTMLDivElement>(null)
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    if (!showGenerateMenu) return
+    const handler = (e: MouseEvent) => {
+      if (generateMenuRef.current && !generateMenuRef.current.contains(e.target as Node)) {
+        setShowGenerateMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showGenerateMenu])
 
   const generatedQuestionCount =
     generationSummary?.chunk_previews.reduce(
@@ -246,9 +262,11 @@ export function HomePage() {
     setGenerationSummary(null)
     setShowChunks(false)
     setSelectedChunk(null)
+    setShowGenerateMenu(false)
 
+    const command = generationMode === 'graph' ? 'start_graph_generation_job' : 'start_preview_generation'
     try {
-      const jobId = await invoke<string>('start_preview_generation', {
+      const jobId = await invoke<string>(command, {
         vaultPath,
       })
       setGenerationJobId(jobId)
@@ -477,21 +495,74 @@ export function HomePage() {
             </button>
           ) : (
             <>
-              <button
-                type="button"
-                className="btn-primary btn-generate-action"
-                onClick={generatePreview}
-                disabled={isGenerating}
-              >
-                {isGenerating ? (
-                  'Generating...'
-                ) : (
-                  <span className="btn-content">
-                    <Sparkles className="size-4" aria-hidden="true" />
-                    Generate Preview
-                  </span>
+              <div className="generate-split-btn-wrap" ref={generateMenuRef}>
+                <button
+                  type="button"
+                  className="btn-primary btn-generate-action generate-split-main"
+                  onClick={() => generatePreview()}
+                  disabled={isGenerating}
+                >
+                  {isGenerating ? (
+                    'Generating...'
+                  ) : (
+                    <span className="btn-content">
+                      {generationMode === 'graph' ? (
+                        <GitBranch className="size-4" aria-hidden="true" />
+                      ) : (
+                        <Sparkles className="size-4" aria-hidden="true" />
+                      )}
+                      {generationMode === 'graph' ? 'Deep Thinking' : 'Default Generation'}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary btn-generate-action generate-split-chevron"
+                  onClick={() => setShowGenerateMenu((prev) => !prev)}
+                  disabled={isGenerating}
+                  aria-label="Choose generation mode"
+                  aria-expanded={showGenerateMenu}
+                  aria-haspopup="menu"
+                >
+                  <ChevronDown className="size-4" aria-hidden="true" />
+                </button>
+                {showGenerateMenu && (
+                  <div className="generate-mode-menu" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={`generate-mode-item${generationMode === 'default' ? ' is-active' : ''}`}
+                      onClick={() => {
+                        setGenerationMode('default')
+                        setShowGenerateMenu(false)
+                      }}
+                    >
+                      <Zap className="size-4" aria-hidden="true" />
+                      <span>
+                        <strong>Default Generation</strong>
+                        <small>Light reasoning, quick</small>
+                      </span>
+                      {generationMode === 'default' && <Check className="size-3 generate-mode-check" aria-hidden="true" />}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={`generate-mode-item${generationMode === 'graph' ? ' is-active' : ''}`}
+                      onClick={() => {
+                        setGenerationMode('graph')
+                        setShowGenerateMenu(false)
+                      }}
+                    >
+                      <GitBranch className="size-4" aria-hidden="true" />
+                      <span>
+                        <strong>Deep Thinking</strong>
+                        <small>Graph-based understanding, slower</small>
+                      </span>
+                      {generationMode === 'graph' && <Check className="size-3 generate-mode-check" aria-hidden="true" />}
+                    </button>
+                  </div>
                 )}
-              </button>
+              </div>
               <button
                 type="button"
                 className="btn-secondary btn-vault-action"
@@ -514,7 +585,12 @@ export function HomePage() {
       {generationProgress && !generationProgress.is_finished && (
         <section className="generation-progress" aria-live="polite">
           <div className="generation-progress-head">
-            <h2>Generating Preview</h2>
+            <h2>
+              {generationMode === 'graph' ? 'Deep Thinking' : 'Generating'}
+              {generationProgress.phase_label && (
+                <span className="generation-phase-label">{generationProgress.phase_label}…</span>
+              )}
+            </h2>
             <span>{generationProgress.progress_percent}%</span>
           </div>
 
@@ -527,7 +603,7 @@ export function HomePage() {
 
           <div className="summary-grid">
             <p>
-              <span>Chunks Completed</span>
+              <span>{generationMode === 'graph' ? (generationProgress.phase_label === 'Extracting knowledge' ? 'Chunks Extracted' : 'Questions Built') : 'Chunks Completed'}</span>
               <strong>{generationProgress.completed_chunks}/{generationProgress.total_chunks}</strong>
             </p>
             <p>
