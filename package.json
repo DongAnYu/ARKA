@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "eval:aqg": "powershell -ExecutionPolicy Bypass -File ./eval/run-aqg-eval.ps1",
+    "eval:stage-a": "cd src-tauri && cargo run --bin stage_a_eval -- --note ../docs/evaluation_notes/Photosynthesis.md --output-dir ../eval/output",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
