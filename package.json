@@ -11,6 +11,7 @@
 
     "eval:default": "cd src-tauri && cargo run --bin aqg_eval -- --note ../docs/evaluation_notes/Photosynthesis.md --output-dir ../eval/output",
     "eval:graph-stage-a": "cd src-tauri && cargo run --bin graph_stage_a_eval -- --note ../docs/evaluation_notes/Photosynthesis.md --output-dir ../eval/output",
+    "eval:graph-e2e": "cd src-tauri && cargo run --bin graph_e2e_eval -- --note ../docs/evaluation_notes/Photosynthesis.md --output-dir ../eval/output",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
