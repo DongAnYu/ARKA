@@ -20,7 +20,7 @@ const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_MODEL: &str = "qwen3:4b";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
-const GENERATION_MAX_ATTEMPTS: usize = 3;
+const GENERATION_MAX_ATTEMPTS: usize = 5;
 
 static RUNTIME_LLM_CONFIG: OnceLock<RwLock<Option<LlmConfig>>> = OnceLock::new();
 
