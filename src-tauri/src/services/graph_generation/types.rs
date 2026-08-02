@@ -86,7 +86,7 @@ pub struct KnowledgePoint {
     #[serde(default)]
     pub entity_ids: Vec<String>,
     #[serde(default)]
-    pub raw_relations: Vec<RelationRef>,        
+    pub raw_relations: Vec<RelationRef>,
 }
 
 /// Per-chunk Stage A output.

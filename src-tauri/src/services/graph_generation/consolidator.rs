@@ -239,10 +239,7 @@ fn normalize_for_comparison(name: &str) -> String {
     let trimmed = mapped.trim();
 
     // Step 3: Collapse internal runs of whitespace to a single space.
-    let collapsed: String = trimmed
-        .split_whitespace()
-        .collect::<Vec<&str>>()
-        .join(" ");
+    let collapsed: String = trimmed.split_whitespace().collect::<Vec<&str>>().join(" ");
 
     // Step 4: Fold to lowercase.
     collapsed.to_lowercase()
@@ -369,9 +366,7 @@ pub fn validate_graph(graph: &PropositionGraph) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph_generation::types::{
-        KnowledgeType, RawEntityMention, RelationRef,
-    };
+    use crate::services::graph_generation::types::{KnowledgeType, RawEntityMention, RelationRef};
 
     // ── normalize_for_comparison ─────────────────────────────────────────
 
@@ -398,12 +393,18 @@ mod tests {
     #[test]
     fn test_normalize_whitespace() {
         assert_eq!(normalize_for_comparison("  Calvin cycle  "), "calvin cycle");
-        assert_eq!(normalize_for_comparison("light  dependent  reactions"), "light dependent reactions");
+        assert_eq!(
+            normalize_for_comparison("light  dependent  reactions"),
+            "light dependent reactions"
+        );
     }
 
     #[test]
     fn test_normalize_combined() {
-        assert_eq!(normalize_for_comparison("CO₂ concentration"), "co2 concentration");
+        assert_eq!(
+            normalize_for_comparison("CO₂ concentration"),
+            "co2 concentration"
+        );
         assert_eq!(normalize_for_comparison("H⁺ ions"), "h+ ions");
     }
 
@@ -429,12 +430,19 @@ mod tests {
     #[test]
     fn test_entity_id_collapses_consecutive_underscores() {
         // internal spaces become underscores → collapse consecutive
-        assert_eq!(to_entity_id("co2 concentration"), "entity-co2_concentration");
+        assert_eq!(
+            to_entity_id("co2 concentration"),
+            "entity-co2_concentration"
+        );
     }
 
     // ── consolidate ───────────────────────────────────────────────────────
 
-    fn make_chunk(chunk_id: &str, entities: &[&str], points: Vec<KnowledgePoint>) -> ExtractedKnowledge {
+    fn make_chunk(
+        chunk_id: &str,
+        entities: &[&str],
+        points: Vec<KnowledgePoint>,
+    ) -> ExtractedKnowledge {
         ExtractedKnowledge {
             chunk_id: chunk_id.to_string(),
             raw_entities: entities
@@ -492,9 +500,11 @@ mod tests {
 
     #[test]
     fn test_single_chunk_basic() {
-        let chunk = make_chunk("c1", &["chloroplast", "chlorophyll"], vec![
-            make_point("c1-kp-0", "c1", &["chloroplast", "chlorophyll"]),
-        ]);
+        let chunk = make_chunk(
+            "c1",
+            &["chloroplast", "chlorophyll"],
+            vec![make_point("c1-kp-0", "c1", &["chloroplast", "chlorophyll"])],
+        );
         let graph = consolidate(vec![chunk]);
         assert_eq!(graph.entities.len(), 2);
         assert_eq!(graph.knowledge_points.len(), 1);
@@ -523,8 +533,12 @@ mod tests {
         // First-seen raw form is preserved as canonical_name
         assert_eq!(graph.entities[0].canonical_name, "Chloroplast");
         // Both forms in aliases
-        assert!(graph.entities[0].aliases.contains(&"Chloroplast".to_string()));
-        assert!(graph.entities[0].aliases.contains(&"chloroplast".to_string()));
+        assert!(graph.entities[0]
+            .aliases
+            .contains(&"Chloroplast".to_string()));
+        assert!(graph.entities[0]
+            .aliases
+            .contains(&"chloroplast".to_string()));
     }
 
     #[test]
@@ -541,30 +555,37 @@ mod tests {
 
     #[test]
     fn test_entity_ids_populated() {
-        let chunk = make_chunk("c1", &["ATP", "NADPH"], vec![
-            make_point("c1-kp-0", "c1", &["ATP", "NADPH"]),
-        ]);
+        let chunk = make_chunk(
+            "c1",
+            &["ATP", "NADPH"],
+            vec![make_point("c1-kp-0", "c1", &["ATP", "NADPH"])],
+        );
         let graph = consolidate(vec![chunk]);
         let kp = &graph.knowledge_points[0];
         assert_eq!(kp.entity_ids.len(), 2);
         // Verify IDs point to real entities
         let entity_ids: HashSet<&str> = graph.entities.iter().map(|e| e.id.as_str()).collect();
         for id in &kp.entity_ids {
-            assert!(entity_ids.contains(id.as_str()), "entity_id {id} not found in graph");
+            assert!(
+                entity_ids.contains(id.as_str()),
+                "entity_id {id} not found in graph"
+            );
         }
     }
 
     #[test]
     fn test_relation_resolved() {
-        let chunk = make_chunk("c1", &["ATP", "Calvin cycle"], vec![
-            make_point_with_relation(
+        let chunk = make_chunk(
+            "c1",
+            &["ATP", "Calvin cycle"],
+            vec![make_point_with_relation(
                 "c1-kp-0",
                 "c1",
                 &["ATP"],
                 "Calvin cycle",
                 RelationType::Prerequisite,
-            ),
-        ]);
+            )],
+        );
         let graph = consolidate(vec![chunk]);
         assert_eq!(graph.relations.len(), 1);
         let rel = &graph.relations[0];
@@ -577,22 +598,50 @@ mod tests {
     #[test]
     fn test_relation_dedup() {
         // Two chunks each contributing the same source→target→type
-        let c1 = make_chunk("c1", &["ATP", "Calvin cycle"], vec![
-            make_point_with_relation("c1-kp-0", "c1", &["ATP"], "Calvin cycle", RelationType::Prerequisite),
-        ]);
-        let c2 = make_chunk("c2", &["ATP", "Calvin cycle"], vec![
-            make_point_with_relation("c2-kp-0", "c2", &["ATP"], "Calvin cycle", RelationType::Prerequisite),
-        ]);
+        let c1 = make_chunk(
+            "c1",
+            &["ATP", "Calvin cycle"],
+            vec![make_point_with_relation(
+                "c1-kp-0",
+                "c1",
+                &["ATP"],
+                "Calvin cycle",
+                RelationType::Prerequisite,
+            )],
+        );
+        let c2 = make_chunk(
+            "c2",
+            &["ATP", "Calvin cycle"],
+            vec![make_point_with_relation(
+                "c2-kp-0",
+                "c2",
+                &["ATP"],
+                "Calvin cycle",
+                RelationType::Prerequisite,
+            )],
+        );
         let graph = consolidate(vec![c1, c2]);
-        assert_eq!(graph.relations.len(), 1, "duplicate relation should be collapsed");
+        assert_eq!(
+            graph.relations.len(),
+            1,
+            "duplicate relation should be collapsed"
+        );
     }
 
     #[test]
     fn test_unresolvable_relation_skipped() {
         // Relation target "membrane" never declared in entities
-        let chunk = make_chunk("c1", &["chloroplast"], vec![
-            make_point_with_relation("c1-kp-0", "c1", &["chloroplast"], "membrane", RelationType::RelatedTo),
-        ]);
+        let chunk = make_chunk(
+            "c1",
+            &["chloroplast"],
+            vec![make_point_with_relation(
+                "c1-kp-0",
+                "c1",
+                &["chloroplast"],
+                "membrane",
+                RelationType::RelatedTo,
+            )],
+        );
         let graph = consolidate(vec![chunk]);
         // No panic; relation silently dropped
         assert_eq!(graph.relations.len(), 0);
@@ -614,9 +663,11 @@ mod tests {
     #[test]
     fn test_validate_graph_clean_output_is_valid() {
         // Any graph produced by consolidate() must pass validate_graph.
-        let chunk = make_chunk("c1", &["ATP", "NADPH"], vec![
-            make_point("c1-kp-0", "c1", &["ATP", "NADPH"]),
-        ]);
+        let chunk = make_chunk(
+            "c1",
+            &["ATP", "NADPH"],
+            vec![make_point("c1-kp-0", "c1", &["ATP", "NADPH"])],
+        );
         let graph = consolidate(vec![chunk]);
         assert!(validate_graph(&graph).is_empty());
     }
@@ -656,7 +707,9 @@ mod tests {
             }],
         };
         let v = validate_graph(&graph);
-        assert!(v.iter().any(|s| s.contains("source_id") && s.contains("entity-ghost")));
+        assert!(v
+            .iter()
+            .any(|s| s.contains("source_id") && s.contains("entity-ghost")));
     }
 
     #[test]
@@ -676,7 +729,9 @@ mod tests {
             }],
         };
         let v = validate_graph(&graph);
-        assert!(v.iter().any(|s| s.contains("target_id") && s.contains("entity-ghost")));
+        assert!(v
+            .iter()
+            .any(|s| s.contains("target_id") && s.contains("entity-ghost")));
     }
 
     #[test]

@@ -17,11 +17,9 @@ use serde::Serialize;
 use services::chunker::chunk_markdown;
 use services::graph_generation::consolidator::{consolidate, validate_graph};
 use services::graph_generation::stage_a_prompt::format_stage_a_graph_user_prompt;
-use services::graph_generation::stage_a_schema::{
-    parse_stage_a_output, stage_a_format_schema,
-};
+use services::graph_generation::stage_a_schema::{parse_stage_a_output, stage_a_format_schema};
 use services::graph_generation::types::ExtractedKnowledge;
-use services::llm::LlmService;
+use services::llm::{JsonGenerationRequest, LlmService, LlmServiceError};
 
 const DEFAULT_OUTPUT_DIR_NAME: &str = "eval/output";
 const DEFAULT_NOTE_RELATIVE_PATH: &str = "docs/evaluation_notes/Photosynthesis.md";
@@ -175,91 +173,81 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut extracted_chunks: Vec<ExtractedKnowledge> = Vec::new();
 
     for (idx, chunk) in chunks.iter().enumerate() {
-        print!("  Chunk {}/{} [{}]... ", idx + 1, chunks.len(), &chunk.heading);
-
-        let user_prompt = format_stage_a_graph_user_prompt(
-            &chunk.content,
-            "(no index context in eval mode)",
+        print!(
+            "  Chunk {}/{} [{}]... ",
+            idx + 1,
+            chunks.len(),
+            &chunk.heading
         );
 
+        let user_prompt =
+            format_stage_a_graph_user_prompt(&chunk.content, "(no index context in eval mode)");
+
+        let chunk_id = format!("chunk-{}", idx);
+        let request = JsonGenerationRequest {
+            stage_label: "Graph Stage A Eval",
+            system_prompt: STAGE_A_SYSTEM_PROMPT,
+            user_prompt: &user_prompt,
+            format_schema: format_schema.clone(),
+            payload_preview_chars: 800,
+        };
+
         let llm_result = llm
-            .chat_json(
-                STAGE_A_SYSTEM_PROMPT,
-                &user_prompt,
-                format_schema.clone(),
-            )
+            .generate_json_with_retries(request, |raw_json| {
+                parse_stage_a_output(raw_json, chunk_id.clone())
+                    .map_err(|err| LlmServiceError::InvalidOutput(err.to_string()))
+            })
             .await;
 
         let chunk_result = match llm_result {
-            Ok(raw_json) => {
-                let chunk_id = format!("chunk-{}", idx);
-                match parse_stage_a_output(&raw_json, chunk_id) {
-                    Ok(extracted) => {
-                        let point_summaries: Vec<PointSummary> = extracted
-                            .knowledge_points
+            Ok((extracted, raw_json, attempts)) => {
+                let point_summaries: Vec<PointSummary> = extracted
+                    .knowledge_points
+                    .iter()
+                    .map(|kp| PointSummary {
+                        point: kp.point.clone(),
+                        knowledge_type: format!("{:?}", kp.knowledge_type),
+                        raw_entity_names: kp.raw_entity_names.clone(),
+                        relation_count: kp.raw_relations.len(),
+                    })
+                    .collect();
+
+                let total_relations: usize = extracted
+                    .knowledge_points
+                    .iter()
+                    .map(|kp| kp.raw_relations.len())
+                    .sum();
+
+                println!(
+                    "OK ({} entities, {} points, {} relations, {} attempt{})",
+                    extracted.raw_entities.len(),
+                    extracted.knowledge_points.len(),
+                    total_relations,
+                    attempts,
+                    if attempts == 1 { "" } else { "s" }
+                );
+
+                let result = ChunkResult {
+                    chunk_index: idx,
+                    heading: chunk.heading.clone(),
+                    content_preview: truncate(&chunk.content, 200),
+                    status: "success".to_string(),
+                    raw_llm_response: Some(raw_json),
+                    entity_count: Some(extracted.raw_entities.len()),
+                    point_count: Some(extracted.knowledge_points.len()),
+                    relation_count: Some(total_relations),
+                    entities: Some(
+                        extracted
+                            .raw_entities
                             .iter()
-                            .map(|kp| PointSummary {
-                                point: kp.point.clone(),
-                                knowledge_type: format!("{:?}", kp.knowledge_type),
-                                raw_entity_names: kp.raw_entity_names.clone(),
-                                relation_count: kp.raw_relations.len(),
-                            })
-                            .collect();
-
-                        let total_relations: usize = extracted
-                            .knowledge_points
-                            .iter()
-                            .map(|kp| kp.raw_relations.len())
-                            .sum();
-
-                        println!(
-                            "OK ({} entities, {} points, {} relations)",
-                            extracted.raw_entities.len(),
-                            extracted.knowledge_points.len(),
-                            total_relations
-                        );
-
-                        let result = ChunkResult {
-                            chunk_index: idx,
-                            heading: chunk.heading.clone(),
-                            content_preview: truncate(&chunk.content, 200),
-                            status: "success".to_string(),
-                            raw_llm_response: Some(raw_json),
-                            entity_count: Some(extracted.raw_entities.len()),
-                            point_count: Some(extracted.knowledge_points.len()),
-                            relation_count: Some(total_relations),
-                            entities: Some(
-                                extracted
-                                    .raw_entities
-                                    .iter()
-                                    .map(|e| e.name.clone())
-                                    .collect(),
-                            ),
-                            knowledge_points: Some(point_summaries),
-                            error: None,
-                        };
-                        extracted_chunks.push(extracted);
-                        result
-                    }
-                    Err(parse_err) => {
-                        let err_str = format!("{}", parse_err);
-                        println!("VALIDATION ERROR: {}", err_str);
-
-                        ChunkResult {
-                            chunk_index: idx,
-                            heading: chunk.heading.clone(),
-                            content_preview: truncate(&chunk.content, 200),
-                            status: "validation_error".to_string(),
-                            raw_llm_response: Some(raw_json),
-                            entity_count: None,
-                            point_count: None,
-                            relation_count: None,
-                            entities: None,
-                            knowledge_points: None,
-                            error: Some(err_str),
-                        }
-                    }
-                }
+                            .map(|e| e.name.clone())
+                            .collect(),
+                    ),
+                    knowledge_points: Some(point_summaries),
+                    error: None,
+                };
+                extracted_chunks.push(extracted);
+                result
             }
             Err(llm_err) => {
                 let err_str = format!("{}", llm_err);
@@ -344,10 +332,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // ── Consolidation pass ────────────────────────────────────────────────
-    let total_raw_mentions: usize = extracted_chunks
-        .iter()
-        .map(|c| c.raw_entities.len())
-        .sum();
+    let total_raw_mentions: usize = extracted_chunks.iter().map(|c| c.raw_entities.len()).sum();
 
     let graph = consolidate(extracted_chunks);
     let violations = validate_graph(&graph);
@@ -594,7 +579,13 @@ fn write_xlsx(
 
     // ── Entities sheet ───────────────────────────────────────────────────
     let ent_sheet = workbook.add_worksheet().set_name("Entities")?;
-    let ent_headers = ["id", "canonical_name", "aliases", "chunk_count", "chunk_ids"];
+    let ent_headers = [
+        "id",
+        "canonical_name",
+        "aliases",
+        "chunk_count",
+        "chunk_ids",
+    ];
     for (col, header) in ent_headers.iter().enumerate() {
         ent_sheet.write_string(0, col as u16, *header)?;
     }

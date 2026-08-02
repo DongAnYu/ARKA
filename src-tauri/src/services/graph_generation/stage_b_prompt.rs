@@ -122,12 +122,22 @@ pub fn render_bundle_context(bundle: &GraphContextBundle) -> String {
         for rel in &bundle.supporting_relations {
             // Render human-readable relation with canonical names, no internal IDs
             let rel_text = match rel.relation_type {
-                crate::services::graph_generation::types::RelationType::RelatedTo => "is related to",
-                crate::services::graph_generation::types::RelationType::Contrasts => "contrasts with",
-                crate::services::graph_generation::types::RelationType::Prerequisite => "is a prerequisite for",
+                crate::services::graph_generation::types::RelationType::RelatedTo => {
+                    "is related to"
+                }
+                crate::services::graph_generation::types::RelationType::Contrasts => {
+                    "contrasts with"
+                }
+                crate::services::graph_generation::types::RelationType::Prerequisite => {
+                    "is a prerequisite for"
+                }
                 crate::services::graph_generation::types::RelationType::Consequence => "leads to",
-                crate::services::graph_generation::types::RelationType::Example => "is an example of",
-                crate::services::graph_generation::types::RelationType::CounterExample => "is a counter-example to",
+                crate::services::graph_generation::types::RelationType::Example => {
+                    "is an example of"
+                }
+                crate::services::graph_generation::types::RelationType::CounterExample => {
+                    "is a counter-example to"
+                }
             };
             let source_name = entity_lookup
                 .get(&rel.source_id)
@@ -152,7 +162,9 @@ pub fn render_bundle_context(bundle: &GraphContextBundle) -> String {
     }
 
     context.push_str("Generate exactly ONE multiple-choice question.\n");
-    context.push_str("The question must primarily assess understanding of the ROOT KNOWLEDGE POINT.\n");
+    context.push_str(
+        "The question must primarily assess understanding of the ROOT KNOWLEDGE POINT.\n",
+    );
     context.push_str("Use the related knowledge only as supporting context.\n");
     context.push_str("Do not ask about unrelated supporting facts.\n");
 
@@ -182,7 +194,9 @@ pub fn build_user_prompt(bundle: &GraphContextBundle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph_generation::types::{EntityNode, KnowledgePoint, KnowledgeType, Relation, RelationType};
+    use crate::services::graph_generation::types::{
+        EntityNode, KnowledgePoint, KnowledgeType, Relation, RelationType,
+    };
 
     fn make_entity(id: &str, name: &str) -> EntityNode {
         EntityNode {
@@ -263,7 +277,9 @@ mod tests {
 
         // Check new section order: ROOT → RELATED → RELATIONSHIPS → ENTITIES
         let root_pos = context.find("ROOT KNOWLEDGE POINT").unwrap();
-        let related_pos = context.find("RELATED KNOWLEDGE POINTS").unwrap_or(usize::MAX);
+        let related_pos = context
+            .find("RELATED KNOWLEDGE POINTS")
+            .unwrap_or(usize::MAX);
         let relations_pos = context.find("KEY RELATIONSHIPS").unwrap_or(usize::MAX);
         let entities_pos = context.find("SUPPORTING ENTITIES").unwrap_or(usize::MAX);
 

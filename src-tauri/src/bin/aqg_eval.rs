@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use rust_xlsxwriter::Workbook;
 use serde::Serialize;
-use services::generation::{ChunkPreview, ChunkLlmQuestionPreview};
+use services::generation::{ChunkLlmQuestionPreview, ChunkPreview};
 
 const DEFAULT_OUTPUT_DIR_NAME: &str = "eval/output";
 const DEFAULT_NOTE_RELATIVE_PATH: &str = "docs/evaluation_notes/Photosynthesis.md";
@@ -188,7 +188,8 @@ fn load_dotenv_if_present() {
 }
 
 fn required_env(name: &str) -> Result<String, Box<dyn Error>> {
-    let value = env::var(name).map_err(|_| format!("Required environment variable {name} is not set"))?;
+    let value =
+        env::var(name).map_err(|_| format!("Required environment variable {name} is not set"))?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(format!("Required environment variable {name} is empty").into());

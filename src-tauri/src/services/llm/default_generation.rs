@@ -2,7 +2,7 @@ use super::default_generation_schema::{
     parse_stage_a_output, parse_stage_b_output, stage_a_format_schema, stage_b_format_schema,
     StageAKeyPointsOutput, StageBMcqOutput,
 };
-use super::{JsonGenerationRequest, LlmService, LlmServiceError, GENERATION_MAX_ATTEMPTS};
+use super::{JsonGenerationRequest, LlmService, LlmServiceError};
 
 impl LlmService {
     pub async fn generate_stage_a_key_points(
@@ -23,18 +23,9 @@ impl LlmService {
             payload_preview_chars: 600,
         };
 
-        let (parsed, attempts) = self
-            .generate_json_with_retries(request, |json_payload, attempt, preview_chars| {
-                parse_stage_a_output(json_payload).map_err(|err| {
-                    log::warn!(
-                        "LLM Stage A schema validation failed on attempt {}/{}: {} | payload_preview={}",
-                        attempt,
-                        GENERATION_MAX_ATTEMPTS,
-                        err,
-                        super::log_preview(json_payload, preview_chars)
-                    );
-                    LlmServiceError::Schema(err)
-                })
+        let (parsed, _raw_json, attempts) = self
+            .generate_json_with_retries(request, |json_payload| {
+                parse_stage_a_output(json_payload).map_err(LlmServiceError::Schema)
             })
             .await?;
 
@@ -68,18 +59,9 @@ impl LlmService {
             payload_preview_chars: 800,
         };
 
-        let (parsed, attempts) = self
-            .generate_json_with_retries(request, |json_payload, attempt, preview_chars| {
-                parse_stage_b_output(json_payload).map_err(|err| {
-                    log::warn!(
-                        "LLM Stage B schema validation failed on attempt {}/{}: {} | payload_preview={}",
-                        attempt,
-                        GENERATION_MAX_ATTEMPTS,
-                        err,
-                        super::log_preview(json_payload, preview_chars)
-                    );
-                    LlmServiceError::Schema(err)
-                })
+        let (parsed, _raw_json, attempts) = self
+            .generate_json_with_retries(request, |json_payload| {
+                parse_stage_b_output(json_payload).map_err(LlmServiceError::Schema)
             })
             .await?;
 

@@ -12,8 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::types::{
-    ExtractedKnowledge, KnowledgePoint, KnowledgeType, RawEntityMention, RelationRef,
-    RelationType,
+    ExtractedKnowledge, KnowledgePoint, KnowledgeType, RawEntityMention, RelationRef, RelationType,
 };
 
 // =====================================================================
@@ -43,7 +42,10 @@ pub enum GraphStageAValidationError {
     /// Entity name is empty or whitespace-only.
     EmptyEntityName { entity_index: usize },
     /// raw_entity_name is empty or whitespace-only.
-    EmptyRawEntityName { point_index: usize, entity_index: usize },
+    EmptyRawEntityName {
+        point_index: usize,
+        entity_index: usize,
+    },
     /// raw_entity_names contains duplicate names (case-insensitive).
     DuplicateRawEntityNames { point_index: usize },
     /// raw_entity_names array is empty (every point must be about something).
@@ -85,7 +87,10 @@ impl fmt::Display for GraphStageAValidationError {
             Self::EmptyEntityName { entity_index } => {
                 write!(f, "entity at index {entity_index} must be non-empty")
             }
-            Self::EmptyRawEntityName { point_index, entity_index } => {
+            Self::EmptyRawEntityName {
+                point_index,
+                entity_index,
+            } => {
                 write!(
                     f,
                     "raw_entity_name at point {point_index}, entity {entity_index} must be non-empty"
@@ -264,7 +269,6 @@ pub fn stage_a_format_schema() -> Value {
 /// Runs against raw `serde_json::Value` to give indexed error messages before typed deserialization.
 /// Checks: non-empty texts, valid enum values, no duplicates, required collections non-empty.
 fn validate_stage_a_json(value: &Value) -> Result<(), GraphStageAError> {
-
     // Check root is an object
     let obj = value.as_object().ok_or(GraphStageAError::Validation(
         GraphStageAValidationError::MalformedShape,
@@ -293,11 +297,13 @@ fn validate_stage_a_json(value: &Value) -> Result<(), GraphStageAError> {
     }
 
     // Check knowledge_points array exists and is non-empty
-    let points = obj.get("knowledge_points").ok_or(GraphStageAError::Validation(
-        GraphStageAValidationError::MissingField {
-            field: "knowledge_points",
-        },
-    ))?;
+    let points = obj
+        .get("knowledge_points")
+        .ok_or(GraphStageAError::Validation(
+            GraphStageAValidationError::MissingField {
+                field: "knowledge_points",
+            },
+        ))?;
     let points = points.as_array().ok_or(GraphStageAError::Validation(
         GraphStageAValidationError::MalformedShape,
     ))?;
@@ -362,7 +368,9 @@ fn validate_stage_a_json(value: &Value) -> Result<(), GraphStageAError> {
 
         if raw_entity_names.is_empty() {
             return Err(GraphStageAError::Validation(
-                GraphStageAValidationError::NoRawEntityNames { point_index: point_idx },
+                GraphStageAValidationError::NoRawEntityNames {
+                    point_index: point_idx,
+                },
             ));
         }
 
@@ -385,16 +393,16 @@ fn validate_stage_a_json(value: &Value) -> Result<(), GraphStageAError> {
             // Case-insensitive duplicate check
             if !seen_entity_names.insert(entity_name.to_lowercase()) {
                 return Err(GraphStageAError::Validation(
-                    GraphStageAValidationError::DuplicateRawEntityNames { point_index: point_idx },
+                    GraphStageAValidationError::DuplicateRawEntityNames {
+                        point_index: point_idx,
+                    },
                 ));
             }
         }
 
         // Validate raw_relations (defaults to empty if missing)
         let raw_relations_opt = point_obj.get("raw_relations");
-        let raw_relations_array = raw_relations_opt
-            .map(|v| v.as_array())
-            .flatten();
+        let raw_relations_array = raw_relations_opt.map(|v| v.as_array()).flatten();
         let empty_vec = Vec::new();
         let raw_relations = raw_relations_array.unwrap_or(&empty_vec);
 
@@ -832,7 +840,9 @@ mod tests {
             "entity2"
         );
         assert!(
-            extracted.knowledge_points[0].raw_relations[0].source_quote.is_none(),
+            extracted.knowledge_points[0].raw_relations[0]
+                .source_quote
+                .is_none(),
             "source_quote should default to None when key is omitted"
         );
     }
@@ -861,12 +871,26 @@ mod tests {
         }"#;
 
         let result = parse_stage_a_output(json, "chunk_1".to_string());
-        assert!(result.is_ok(), "should succeed via auto-union, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "should succeed via auto-union, got: {:?}",
+            result
+        );
         let extracted = result.unwrap();
-        let entity_names: Vec<&str> = extracted.raw_entities.iter().map(|e| e.name.as_str()).collect();
-        assert!(entity_names.contains(&"thylakoid"), "auto-unioned entity should appear in raw_entities");
+        let entity_names: Vec<&str> = extracted
+            .raw_entities
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(
+            entity_names.contains(&"thylakoid"),
+            "auto-unioned entity should appear in raw_entities"
+        );
         assert!(entity_names.contains(&"chloroplast"));
-        assert_eq!(extracted.knowledge_points[0].raw_entity_names, vec!["thylakoid", "chloroplast"]);
+        assert_eq!(
+            extracted.knowledge_points[0].raw_entity_names,
+            vec!["thylakoid", "chloroplast"]
+        );
     }
 
     #[test]
@@ -892,10 +916,21 @@ mod tests {
         }"#;
 
         let result = parse_stage_a_output(json, "chunk_1".to_string());
-        assert!(result.is_ok(), "should succeed via auto-union, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "should succeed via auto-union, got: {:?}",
+            result
+        );
         let extracted = result.unwrap();
-        let entity_names: Vec<&str> = extracted.raw_entities.iter().map(|e| e.name.as_str()).collect();
-        assert!(entity_names.contains(&"membrane"), "auto-unioned relation target should appear in raw_entities");
+        let entity_names: Vec<&str> = extracted
+            .raw_entities
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(
+            entity_names.contains(&"membrane"),
+            "auto-unioned relation target should appear in raw_entities"
+        );
         assert!(entity_names.contains(&"chloroplast"));
     }
 }

@@ -13,14 +13,13 @@ use tokio::time::sleep;
 
 pub mod default_generation;
 pub mod default_generation_schema;
-
 pub use default_generation_schema::{LlmSchemaError, StageBMcq};
 
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_MODEL: &str = "qwen3:4b";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
-const GENERATION_MAX_ATTEMPTS: usize = 5;
+const GENERATION_MAX_ATTEMPTS: usize = 4;
 
 static RUNTIME_LLM_CONFIG: OnceLock<RwLock<Option<LlmConfig>>> = OnceLock::new();
 
@@ -31,7 +30,6 @@ pub enum LlmProvider {
 }
 
 impl LlmProvider {
-
     fn as_str(&self) -> &'static str {
         match self {
             Self::Ollama => "ollama",
@@ -253,7 +251,7 @@ pub struct LlmService {
 }
 
 pub(crate) struct JsonGenerationRequest<'a> {
-    pub(crate) stage_label: &'static str,
+    pub(crate) stage_label: &'a str,
     pub(crate) system_prompt: &'a str,
     pub(crate) user_prompt: &'a str,
     pub(crate) format_schema: Value,
@@ -435,32 +433,28 @@ impl LlmService {
         &self,
         request: JsonGenerationRequest<'_>,
         parse: Parse,
-    ) -> Result<(T, usize), LlmServiceError>
+    ) -> Result<(T, String, usize), LlmServiceError>
     where
-        Parse: Fn(&str, usize, usize) -> Result<T, LlmServiceError>,
+        Parse: Fn(&str) -> Result<T, LlmServiceError>,
     {
         for attempt in 1..=GENERATION_MAX_ATTEMPTS {
-            let result = self
+            let raw_json = match self
                 .chat_json(
                     request.system_prompt,
                     request.user_prompt,
                     request.format_schema.clone(),
                 )
                 .await
-                .and_then(|json_payload| {
-                    parse(&json_payload, attempt, request.payload_preview_chars)
-                });
-
-            match result {
-                Ok(value) => return Ok((value, attempt)),
+            {
+                Ok(value) => value,
                 Err(err) => {
-                    if attempt >= GENERATION_MAX_ATTEMPTS {
+                    if attempt >= GENERATION_MAX_ATTEMPTS || !is_retryable_error(&err) {
                         return Err(err);
                     }
 
                     let delay = retry_delay(attempt);
                     log::warn!(
-                        "LLM {} attempt {}/{} failed: {}. Retrying in {} ms",
+                        "LLM {} request failed on attempt {}/{}: {}. Retrying in {} ms",
                         request.stage_label,
                         attempt,
                         GENERATION_MAX_ATTEMPTS,
@@ -468,8 +462,30 @@ impl LlmService {
                         delay.as_millis()
                     );
                     sleep(delay).await;
+                    continue;
                 }
-            }
+            };
+
+            match parse(&raw_json) {
+                Ok(value) => return Ok((value, raw_json, attempt)),
+                Err(err) => {
+                    if attempt >= GENERATION_MAX_ATTEMPTS || !is_retryable_error(&err) {
+                        return Err(err);
+                    }
+
+                    let delay = retry_delay(attempt);
+                    log::warn!(
+                        "LLM {} output parsing failed on attempt {}/{}: {} | payload_preview={}. Retrying in {} ms",
+                        request.stage_label,
+                        attempt,
+                        GENERATION_MAX_ATTEMPTS,
+                        err,
+                        log_preview(&raw_json, request.payload_preview_chars),
+                        delay.as_millis()
+                    );
+                    sleep(delay).await;
+                }
+            };
         }
 
         unreachable!("retry loop must return success or error")
@@ -667,6 +683,7 @@ pub enum LlmServiceError {
     Serialize(serde_json::Error),
     EmptyModelResponse,
     Schema(LlmSchemaError),
+    InvalidOutput(String),
 }
 
 impl fmt::Display for LlmServiceError {
@@ -694,6 +711,7 @@ impl fmt::Display for LlmServiceError {
             Self::Serialize(err) => write!(f, "Failed to serialize LLM request context: {err}"),
             Self::EmptyModelResponse => write!(f, "LLM returned an empty response message"),
             Self::Schema(err) => write!(f, "{err}"),
+            Self::InvalidOutput(err) => write!(f, "LLM returned invalid output: {err}"),
         }
     }
 }
@@ -716,6 +734,27 @@ fn retry_delay(attempt: usize) -> Duration {
     let base_ms: u64 = 300;
     let exponent = attempt.saturating_sub(1).min(10) as u32;
     Duration::from_millis(base_ms.saturating_mul(2u64.saturating_pow(exponent)))
+}
+
+fn is_retryable_error(err: &LlmServiceError) -> bool {
+    match err {
+        LlmServiceError::Connect { .. } => true,
+        LlmServiceError::Http(source) => source.is_timeout() || source.is_connect(),
+        LlmServiceError::HttpStatus { status, .. } => {
+            *status == StatusCode::TOO_MANY_REQUESTS
+                || *status == StatusCode::INTERNAL_SERVER_ERROR
+                || *status == StatusCode::BAD_GATEWAY
+                || *status == StatusCode::SERVICE_UNAVAILABLE
+                || *status == StatusCode::GATEWAY_TIMEOUT
+        }
+        LlmServiceError::ResponseDecode(_)
+        | LlmServiceError::EmptyModelResponse
+        | LlmServiceError::Schema(_)
+        | LlmServiceError::InvalidOutput(_) => true,
+        LlmServiceError::ModelNotFound { .. }
+        | LlmServiceError::MissingApiKey
+        | LlmServiceError::Serialize(_) => false,
+    }
 }
 
 fn strip_markdown_fences(raw: &str) -> String {
