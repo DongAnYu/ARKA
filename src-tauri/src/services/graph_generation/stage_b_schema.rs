@@ -175,7 +175,9 @@ mod tests {
         mcq.options[2] = "".to_string();
         let errors = validate_mcq(&mcq);
         assert!(!errors.is_empty());
-        assert!(errors.iter().any(|e| e.contains("option") && e.contains("empty")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("option") && e.contains("empty")));
     }
 
     #[test]
@@ -258,6 +260,10 @@ mod tests {
         mcq.question = "Short".to_string();
         mcq.explanation = "Bad".to_string();
         let errors = validate_mcq(&mcq);
-        assert!(errors.len() > 1, "Expected multiple errors, got: {:?}", errors);
+        assert!(
+            errors.len() > 1,
+            "Expected multiple errors, got: {:?}",
+            errors
+        );
     }
 }

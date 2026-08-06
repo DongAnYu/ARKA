@@ -40,12 +40,14 @@ pub fn assemble_bundles(graph: &PropositionGraph, index: &GraphIndex) -> Vec<Gra
 
         // ── Collect supporting entities and relations ────────────────────
         // Supporting relations: all relations where source OR target is in root's entities
-        let mut supporting_entity_ids: HashSet<String> = root_point.entity_ids.iter().cloned().collect();
+        let mut supporting_entity_ids: HashSet<String> =
+            root_point.entity_ids.iter().cloned().collect();
         let mut supporting_relations: Vec<Relation> = graph
             .relations
             .iter()
             .filter(|rel| {
-                supporting_entity_ids.contains(&rel.source_id) || supporting_entity_ids.contains(&rel.target_id)
+                supporting_entity_ids.contains(&rel.source_id)
+                    || supporting_entity_ids.contains(&rel.target_id)
             })
             .cloned()
             .collect();
@@ -165,7 +167,9 @@ fn find_related_points(
 mod tests {
     use super::*;
     use crate::services::graph_generation::graph_index::build_index;
-    use crate::services::graph_generation::types::{EntityNode, KnowledgeType, Relation, RelationType};
+    use crate::services::graph_generation::types::{
+        EntityNode, KnowledgeType, Relation, RelationType,
+    };
 
     fn make_entity(id: &str, name: &str) -> EntityNode {
         EntityNode {
@@ -217,14 +221,8 @@ mod tests {
     fn test_one_neighbour() {
         // Two points sharing one entity
         let graph = PropositionGraph {
-            entities: vec![
-                make_entity("e1", "JWT"),
-                make_entity("e2", "Token"),
-            ],
-            knowledge_points: vec![
-                make_point("kp1", &["e1"]),
-                make_point("kp2", &["e1", "e2"]),
-            ],
+            entities: vec![make_entity("e1", "JWT"), make_entity("e2", "Token")],
+            knowledge_points: vec![make_point("kp1", &["e1"]), make_point("kp2", &["e1", "e2"])],
             relations: vec![],
         };
         let index = build_index(&graph);
@@ -319,14 +317,8 @@ mod tests {
     fn test_question_type_relational_on_supporting_relations() {
         // Bundle with supporting relations → Relational
         let graph = PropositionGraph {
-            entities: vec![
-                make_entity("e1", "JWT"),
-                make_entity("e2", "Cookie"),
-            ],
-            knowledge_points: vec![
-                make_point("kp1", &["e1"]),
-                make_point("kp2", &["e2"]),
-            ],
+            entities: vec![make_entity("e1", "JWT"), make_entity("e2", "Cookie")],
+            knowledge_points: vec![make_point("kp1", &["e1"]), make_point("kp2", &["e2"])],
             relations: vec![make_relation("e1", "e2")],
         };
         let index = build_index(&graph);
@@ -341,14 +333,8 @@ mod tests {
     fn test_incoming_relations_captured() {
         // Bundle should capture relations where root's entity is the TARGET
         let graph = PropositionGraph {
-            entities: vec![
-                make_entity("e1", "JWT"),
-                make_entity("e2", "Cookie"),
-            ],
-            knowledge_points: vec![
-                make_point("kp1", &["e1"]),
-                make_point("kp2", &["e2"]),
-            ],
+            entities: vec![make_entity("e1", "JWT"), make_entity("e2", "Cookie")],
+            knowledge_points: vec![make_point("kp1", &["e1"]), make_point("kp2", &["e2"])],
             relations: vec![make_relation("e2", "e1")], // e2 → e1 (incoming to root)
         };
         let index = build_index(&graph);
@@ -396,10 +382,7 @@ mod tests {
     fn test_incoming_relation_neighbours_captured() {
         // Root = Cookies should find JWT via incoming edge (JWT → Cookies)
         let graph = PropositionGraph {
-            entities: vec![
-                make_entity("e1", "JWT"),
-                make_entity("e2", "Cookies"),
-            ],
+            entities: vec![make_entity("e1", "JWT"), make_entity("e2", "Cookies")],
             knowledge_points: vec![
                 make_point("kp_jwt", &["e1"]),
                 make_point("kp_cookies", &["e2"]),
@@ -410,7 +393,10 @@ mod tests {
         let bundles = assemble_bundles(&graph, &index);
 
         // Cookies bundle should include JWT as a relation neighbor
-        let cookies_bundle = bundles.iter().find(|b| b.root_point.id == "kp_cookies").unwrap();
+        let cookies_bundle = bundles
+            .iter()
+            .find(|b| b.root_point.id == "kp_cookies")
+            .unwrap();
         assert_eq!(cookies_bundle.related_points.len(), 1);
         assert_eq!(cookies_bundle.related_points[0].id, "kp_jwt");
     }
@@ -426,7 +412,7 @@ mod tests {
             ],
             knowledge_points: vec![
                 make_point("root", &["e1", "e2"]),
-                make_point("c1", &["e1"]), // score 1
+                make_point("c1", &["e1"]),       // score 1
                 make_point("c2", &["e1", "e2"]), // score 2 → should rank first
                 make_point("c3", &["e2", "e3"]), // score 1
             ],

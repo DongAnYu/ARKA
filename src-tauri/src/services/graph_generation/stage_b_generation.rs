@@ -31,7 +31,7 @@ use super::types::{GraphContextBundle, QuestionType};
 /// - Validates against MCQ requirements
 /// - Returns GeneratedMCQ or LlmServiceError
 ///
-/// Retry logic (3 attempts with exponential backoff) is handled internally
+/// Retry logic with exponential backoff is handled internally
 /// by LlmService.generate_json_with_retries().
 ///
 /// # Arguments
@@ -68,15 +68,9 @@ pub async fn generate_mcq(
         payload_preview_chars: 200,
     };
 
-    // Call LLM with built-in retry logic (3 attempts)
-    let (mcq, attempt) = llm_client
-        .generate_json_with_retries(request, |json_payload, attempt, preview_chars| {
-            parse_and_validate_mcq(
-                json_payload,
-                attempt,
-                preview_chars,
-                bundle.question_type,
-            )
+    let (mcq, _raw_json, attempt) = llm_client
+        .generate_json_with_retries(request, |json_payload| {
+            parse_and_validate_mcq(json_payload, bundle.question_type)
         })
         .await?;
 
@@ -171,27 +165,16 @@ struct WireGeneratedMCQ {
 ///
 /// # Arguments
 /// - `json_payload` — Raw JSON string from LLM response
-/// - `attempt` — Retry attempt number (1-3)
-/// - `preview_chars` — Characters to show in log (for debugging)
-///
 /// # Returns
 /// - Ok(GeneratedMCQ) if parse and validation succeed
 /// - Err(LlmServiceError) if parse or validation fails
 fn parse_and_validate_mcq(
     json_payload: &str,
-    attempt: usize,
-    preview_chars: usize,
     question_type: QuestionType,
 ) -> Result<GeneratedMCQ, LlmServiceError> {
     // Deserialize only the LLM-owned fields. `question_type` is computed from
     // the bundle and should never be supplied by the model.
     let wire_mcq: WireGeneratedMCQ = serde_json::from_str(json_payload).map_err(|err| {
-        log::error!(
-            "Stage B attempt {} JSON parse failed: {} (payload preview: {}...)",
-            attempt,
-            err,
-            &json_payload[..json_payload.len().min(preview_chars)]
-        );
         LlmServiceError::Schema(
             crate::services::llm::default_generation_schema::LlmSchemaError::Parse(err),
         )
@@ -209,20 +192,7 @@ fn parse_and_validate_mcq(
     let validation_errors = validate_mcq(&mcq);
     if !validation_errors.is_empty() {
         let error_msg = validation_errors.join("; ");
-        log::warn!(
-            "Stage B attempt {} MCQ validation failed: {}",
-            attempt,
-            error_msg
-        );
-        // LLM returned valid JSON but MCQ structure is invalid
-        return Err(LlmServiceError::Schema(
-            crate::services::llm::default_generation_schema::LlmSchemaError::Validation(
-                crate::services::llm::default_generation_schema::LlmValidationError::EmptyField {
-                    index: 0,
-                    field: "mcq",
-                },
-            ),
-        ));
+        return Err(LlmServiceError::InvalidOutput(error_msg));
     }
 
     Ok(mcq)
@@ -262,34 +232,40 @@ mod tests {
 
     fn make_bundle_recall() -> GraphContextBundle {
         GraphContextBundle {
-            root_point: make_point("p1", "JWT is a self-contained token for stateless authentication"),
-            related_points: vec![
-                make_point("p2", "Tokens eliminate server-side session storage"),
-            ],
+            root_point: make_point(
+                "p1",
+                "JWT is a self-contained token for stateless authentication",
+            ),
+            related_points: vec![make_point(
+                "p2",
+                "Tokens eliminate server-side session storage",
+            )],
             question_type: QuestionType::Recall,
-            supporting_entities: vec![make_entity("e1", "JWT"), make_entity("e2", "Authentication")],
+            supporting_entities: vec![
+                make_entity("e1", "JWT"),
+                make_entity("e2", "Authentication"),
+            ],
             supporting_relations: vec![],
         }
     }
 
     fn make_bundle_relational() -> GraphContextBundle {
         GraphContextBundle {
-            root_point: make_point("p1", "JWT is a self-contained token for stateless authentication"),
-            related_points: vec![
-                make_point("p2", "Cookies require server-side session storage"),
-            ],
+            root_point: make_point(
+                "p1",
+                "JWT is a self-contained token for stateless authentication",
+            ),
+            related_points: vec![make_point(
+                "p2",
+                "Cookies require server-side session storage",
+            )],
             question_type: QuestionType::Relational,
-            supporting_entities: vec![
-                make_entity("e1", "JWT"),
-                make_entity("e2", "Cookies"),
-            ],
-            supporting_relations: vec![
-                Relation {
-                    source_id: "e1".to_string(),
-                    target_id: "e2".to_string(),
-                    relation_type: RelationType::Contrasts,
-                },
-            ],
+            supporting_entities: vec![make_entity("e1", "JWT"), make_entity("e2", "Cookies")],
+            supporting_relations: vec![Relation {
+                source_id: "e1".to_string(),
+                target_id: "e2".to_string(),
+                relation_type: RelationType::Contrasts,
+            }],
         }
     }
 
@@ -325,7 +301,7 @@ mod tests {
             "explanation": "JWT tokens are self-contained and used for stateless authentication"
         }"#;
 
-        let result = parse_and_validate_mcq(json, 1, 100, QuestionType::Recall);
+        let result = parse_and_validate_mcq(json, QuestionType::Recall);
         assert!(result.is_ok());
         let mcq = result.unwrap();
         assert_eq!(mcq.question, "What is JWT used for?");
@@ -336,7 +312,7 @@ mod tests {
     #[test]
     fn test_parse_and_validate_invalid_json() {
         let json = r#"{ "question": "What is JWT?" }"#;
-        let result = parse_and_validate_mcq(json, 1, 100, QuestionType::Recall);
+        let result = parse_and_validate_mcq(json, QuestionType::Recall);
         assert!(result.is_err());
         match result.unwrap_err() {
             LlmServiceError::Schema(_) => {}
@@ -353,7 +329,7 @@ mod tests {
             "explanation": "JWT is a token format for stateless authentication"
         }"#;
 
-        let result = parse_and_validate_mcq(json, 1, 100, QuestionType::Recall);
+        let result = parse_and_validate_mcq(json, QuestionType::Recall);
         assert!(result.is_err());
     }
 
@@ -366,7 +342,7 @@ mod tests {
             "explanation": "JWT is a token format for stateless authentication"
         }"#;
 
-        let result = parse_and_validate_mcq(json, 1, 100, QuestionType::Recall);
+        let result = parse_and_validate_mcq(json, QuestionType::Recall);
         assert!(result.is_err());
     }
 
@@ -379,7 +355,7 @@ mod tests {
             "explanation": "JWT is a token format for stateless authentication"
         }"#;
 
-        let result = parse_and_validate_mcq(json, 1, 100, QuestionType::Recall);
+        let result = parse_and_validate_mcq(json, QuestionType::Recall);
         assert!(result.is_err());
     }
 
@@ -392,7 +368,7 @@ mod tests {
             "explanation": "Stateless"
         }"#;
 
-        let result = parse_and_validate_mcq(json, 1, 100, QuestionType::Recall);
+        let result = parse_and_validate_mcq(json, QuestionType::Recall);
         assert!(result.is_err());
     }
 

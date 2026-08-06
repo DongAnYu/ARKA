@@ -82,10 +82,18 @@ pub fn build_index(graph: &PropositionGraph) -> GraphIndex {
 
     // ── Pass 3: Entity and Point lookups (O(1) access) ────────────────
     let entity_lookup: HashMap<String, crate::services::graph_generation::types::EntityNode> =
-        graph.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
+        graph
+            .entities
+            .iter()
+            .map(|e| (e.id.clone(), e.clone()))
+            .collect();
 
     let point_lookup: HashMap<String, crate::services::graph_generation::types::KnowledgePoint> =
-        graph.knowledge_points.iter().map(|p| (p.id.clone(), p.clone())).collect();
+        graph
+            .knowledge_points
+            .iter()
+            .map(|p| (p.id.clone(), p.clone()))
+            .collect();
 
     GraphIndex {
         entity_to_points,
@@ -131,12 +139,18 @@ impl GraphIndex {
     }
 
     /// O(1) lookup for an entity by ID. Returns None if not found.
-    pub fn entity(&self, entity_id: &str) -> Option<&crate::services::graph_generation::types::EntityNode> {
+    pub fn entity(
+        &self,
+        entity_id: &str,
+    ) -> Option<&crate::services::graph_generation::types::EntityNode> {
         self.entity_lookup.get(entity_id)
     }
 
     /// O(1) lookup for a knowledge point by ID. Returns None if not found.
-    pub fn point(&self, point_id: &str) -> Option<&crate::services::graph_generation::types::KnowledgePoint> {
+    pub fn point(
+        &self,
+        point_id: &str,
+    ) -> Option<&crate::services::graph_generation::types::KnowledgePoint> {
         self.point_lookup.get(point_id)
     }
 }
@@ -172,11 +186,7 @@ mod tests {
         }
     }
 
-    fn make_relation(
-        source_id: &str,
-        target_id: &str,
-        relation_type: RelationType,
-    ) -> Relation {
+    fn make_relation(source_id: &str, target_id: &str, relation_type: RelationType) -> Relation {
         Relation {
             source_id: source_id.to_string(),
             target_id: target_id.to_string(),
@@ -204,16 +214,16 @@ mod tests {
         };
         let index = build_index(&graph);
         assert_eq!(index.points_for_entity("e1"), vec!["p1"]);
-        assert_eq!(index.points_for_entity("e_nonexistent"), Vec::<String>::new());
+        assert_eq!(
+            index.points_for_entity("e_nonexistent"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn test_entity_to_points_multiple() {
         let graph = PropositionGraph {
-            entities: vec![
-                make_entity("e1", "ATP"),
-                make_entity("e2", "Chloroplast"),
-            ],
+            entities: vec![make_entity("e1", "ATP"), make_entity("e2", "Chloroplast")],
             knowledge_points: vec![
                 make_point("p1", &["e1", "e2"]), // mentions both
                 make_point("p2", &["e1"]),       // mentions e1 only
@@ -280,10 +290,7 @@ mod tests {
                 make_entity("e2", "Chloroplast"),
                 make_entity("e3", "Light"),
             ],
-            knowledge_points: vec![
-                make_point("p1", &["e1", "e2"]),
-                make_point("p2", &["e3"]),
-            ],
+            knowledge_points: vec![make_point("p1", &["e1", "e2"]), make_point("p2", &["e3"])],
             relations: vec![make_relation("e1", "e2", RelationType::RelatedTo)],
         };
         let index = build_index(&graph);

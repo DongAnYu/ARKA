@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-#[path = "../models/mod.rs"]
+#[path = "../../../src-tauri/src/models/mod.rs"]
 mod models;
-#[path = "../services/mod.rs"]
+#[path = "../../../src-tauri/src/services/mod.rs"]
 mod services;
 
 use std::env;
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use rust_xlsxwriter::Workbook;
 use serde::Serialize;
-use services::generation::{ChunkPreview, ChunkLlmQuestionPreview};
+use services::generation::{ChunkLlmQuestionPreview, ChunkPreview};
 
 const DEFAULT_OUTPUT_DIR_NAME: &str = "eval/output";
 const DEFAULT_NOTE_RELATIVE_PATH: &str = "docs/evaluation_notes/Photosynthesis.md";
@@ -172,7 +172,7 @@ fn parse_args() -> Result<CliArgs, Box<dyn Error>> {
 }
 
 fn print_usage() {
-    println!("Usage: cargo run --bin aqg_eval -- [--note <markdown-file>] [--output-dir <dir>]");
+    println!("Usage: cargo run --manifest-path eval/Cargo.toml --bin aqg_eval -- [--note <markdown-file>] [--output-dir <dir>]");
 }
 
 fn repo_root() -> PathBuf {
@@ -183,12 +183,13 @@ fn repo_root() -> PathBuf {
 }
 
 fn load_dotenv_if_present() {
-    let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env");
+    let env_path = repo_root().join("src-tauri/.env");
     let _ = dotenvy::from_path(env_path);
 }
 
 fn required_env(name: &str) -> Result<String, Box<dyn Error>> {
-    let value = env::var(name).map_err(|_| format!("Required environment variable {name} is not set"))?;
+    let value =
+        env::var(name).map_err(|_| format!("Required environment variable {name} is not set"))?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(format!("Required environment variable {name} is empty").into());

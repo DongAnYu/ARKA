@@ -207,10 +207,7 @@ mod tests {
 
     #[test]
     fn test_prompt_states_entity_consistency_rule() {
-        let prompt = format_stage_a_graph_user_prompt(
-            "Sample chunk",
-            "Context about other chunks",
-        );
+        let prompt = format_stage_a_graph_user_prompt("Sample chunk", "Context about other chunks");
 
         // Verify the prompt explicitly states the entity consistency rule
         assert!(
@@ -222,28 +219,25 @@ mod tests {
 
     #[test]
     fn test_prompt_contains_closed_guest_list_concept() {
-        let prompt = format_stage_a_graph_user_prompt(
-            "Sample chunk",
-            "Context",
-        );
+        let prompt = format_stage_a_graph_user_prompt("Sample chunk", "Context");
 
         // Verify the concept of a "guest list" or similar is explained
         assert!(
-            prompt.contains("guest list") || prompt.contains("closed list") || prompt.contains("declare"),
+            prompt.contains("guest list")
+                || prompt.contains("closed list")
+                || prompt.contains("declare"),
             "Prompt should explain the closed guest list concept"
         );
     }
 
     #[test]
     fn test_prompt_warns_about_undeclared_entities_mistake() {
-        let prompt = format_stage_a_graph_user_prompt(
-            "Sample chunk",
-            "Context",
-        );
+        let prompt = format_stage_a_graph_user_prompt("Sample chunk", "Context");
 
         // Verify the specific failure mode is warned about
         assert!(
-            prompt.contains("Common Mistake") || prompt.contains("common mistake")
+            prompt.contains("Common Mistake")
+                || prompt.contains("common mistake")
                 || prompt.contains("WRONG") && prompt.contains("thylakoid"),
             "Prompt should explicitly warn about undeclared entity mistake"
         );
@@ -251,31 +245,49 @@ mod tests {
 
     #[test]
     fn test_prompt_includes_all_four_knowledge_types() {
-        let prompt = format_stage_a_graph_user_prompt(
-            "Sample chunk",
-            "Context",
-        );
+        let prompt = format_stage_a_graph_user_prompt("Sample chunk", "Context");
 
         // Verify all four knowledge types are described
-        assert!(prompt.contains("Definition"), "Prompt should describe Definition type");
+        assert!(
+            prompt.contains("Definition"),
+            "Prompt should describe Definition type"
+        );
         assert!(prompt.contains("Fact"), "Prompt should describe Fact type");
-        assert!(prompt.contains("Procedural"), "Prompt should describe Procedural type");
-        assert!(prompt.contains("Conceptual"), "Prompt should describe Conceptual type");
+        assert!(
+            prompt.contains("Procedural"),
+            "Prompt should describe Procedural type"
+        );
+        assert!(
+            prompt.contains("Conceptual"),
+            "Prompt should describe Conceptual type"
+        );
     }
 
     #[test]
     fn test_prompt_includes_all_six_relation_types() {
-        let prompt = format_stage_a_graph_user_prompt(
-            "Sample chunk",
-            "Context",
-        );
+        let prompt = format_stage_a_graph_user_prompt("Sample chunk", "Context");
 
         // Verify all six relation types are described
-        assert!(prompt.contains("related_to"), "Prompt should describe related_to");
-        assert!(prompt.contains("contrasts"), "Prompt should describe contrasts");
-        assert!(prompt.contains("prerequisite"), "Prompt should describe prerequisite");
-        assert!(prompt.contains("consequence"), "Prompt should describe consequence");
-        assert!(prompt.contains("example"), "Prompt should describe example type");
+        assert!(
+            prompt.contains("related_to"),
+            "Prompt should describe related_to"
+        );
+        assert!(
+            prompt.contains("contrasts"),
+            "Prompt should describe contrasts"
+        );
+        assert!(
+            prompt.contains("prerequisite"),
+            "Prompt should describe prerequisite"
+        );
+        assert!(
+            prompt.contains("consequence"),
+            "Prompt should describe consequence"
+        );
+        assert!(
+            prompt.contains("example"),
+            "Prompt should describe example type"
+        );
         assert!(
             prompt.contains("counter_example"),
             "Prompt should describe counter_example"
@@ -284,10 +296,7 @@ mod tests {
 
     #[test]
     fn test_prompt_includes_example_json_shape() {
-        let prompt = format_stage_a_graph_user_prompt(
-            "Sample chunk",
-            "Context",
-        );
+        let prompt = format_stage_a_graph_user_prompt("Sample chunk", "Context");
 
         // Verify the JSON structure is shown in the prompt
         assert!(
@@ -322,10 +331,7 @@ mod tests {
 
     #[test]
     fn test_prompt_front_loads_entity_enumeration() {
-        let prompt = format_stage_a_graph_user_prompt(
-            "Sample chunk",
-            "Context",
-        );
+        let prompt = format_stage_a_graph_user_prompt("Sample chunk", "Context");
 
         // Verify entity enumeration is presented as Step 1 before point extraction
         let step1_pos = prompt.find("Step 1");

@@ -18,7 +18,7 @@ use super::graph_generation::{
     stage_b_generation::generate_mcq,
     types::ExtractedKnowledge,
 };
-use super::llm::{LlmService, StageBMcq};
+use super::llm::{JsonGenerationRequest, LlmService, LlmServiceError, StageBMcq};
 
 const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
 const PAUSE_POLL_MS: u64 = 250;
@@ -133,7 +133,12 @@ fn set_progress_percent(snapshot: &mut GenerationProgressSnapshot) {
 
 /// Compute a non-regressing two-phase progress percent.
 /// Phase 1 maps to 0–50 %, Phase 2 maps to 50–100 %.
-fn two_phase_percent(phase1_done: usize, phase1_total: usize, phase2_done: usize, phase2_total: usize) -> u8 {
+fn two_phase_percent(
+    phase1_done: usize,
+    phase1_total: usize,
+    phase2_done: usize,
+    phase2_total: usize,
+) -> u8 {
     let p1 = if phase1_total == 0 {
         50.0
     } else {
@@ -351,14 +356,23 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 let user_prompt =
                     format_stage_a_graph_user_prompt(&chunk.content, "(graph pipeline)");
                 let chunk_id = format!("chunk-{}", order);
+                let request = JsonGenerationRequest {
+                    stage_label: "Graph Stage A",
+                    system_prompt: GRAPH_STAGE_A_SYSTEM_PROMPT,
+                    user_prompt: &user_prompt,
+                    format_schema: format_schema.clone(),
+                    payload_preview_chars: 800,
+                };
+
                 match llm
-                    .chat_json(GRAPH_STAGE_A_SYSTEM_PROMPT, &user_prompt, format_schema.clone())
+                    .generate_json_with_retries(request, |raw_json| {
+                        parse_stage_a_output(raw_json, chunk_id.clone())
+                            .map_err(|err| LlmServiceError::InvalidOutput(err.to_string()))
+                    })
                     .await
                 {
-                    Ok(raw_json) => {
-                        if let Ok(extracted) = parse_stage_a_output(&raw_json, chunk_id) {
-                            extracted_chunks.push(extracted);
-                        }
+                    Ok((extracted, _raw_json, _attempts)) => {
+                        extracted_chunks.push(extracted);
                     }
                     Err(err) => {
                         log::warn!("Graph Stage A failed for chunk {}: {}", order, err);
@@ -372,9 +386,8 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 .expect("preview job snapshot mutex should remain available");
             snapshot.completed_chunks += 1;
             // Phase 1 maps to 0–50 % (bundle_count unknown, so phase2 = 0)
-            snapshot.progress_percent = two_phase_percent(
-                snapshot.completed_chunks, total_chunks, 0, 0,
-            );
+            snapshot.progress_percent =
+                two_phase_percent(snapshot.completed_chunks, total_chunks, 0, 0);
         }
 
         if job.cancelled.load(Ordering::Relaxed) {
@@ -403,7 +416,8 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             snapshot.phase_label = Some(String::from("Generating questions"));
             snapshot.total_chunks = bundle_count;
             snapshot.completed_chunks = 0;
-            snapshot.progress_percent = two_phase_percent(total_chunks, total_chunks, 0, bundle_count);
+            snapshot.progress_percent =
+                two_phase_percent(total_chunks, total_chunks, 0, bundle_count);
         }
 
         // ── Phase 2: MCQ generation per bundle ────────────────────────────
@@ -449,31 +463,38 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(0);
 
-            let (note_path, note_title, section_index, chunk_index, start_line, end_line, preview_text) =
-                all_chunks
-                    .get(source_chunk_id)
-                    .map(|c| {
-                        (
-                            c.note_path.clone(),
-                            c.note_title.clone(),
-                            c.section_index,
-                            c.chunk_index,
-                            c.start_line,
-                            c.end_line,
-                            build_preview_text(&c.content, 220),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        (
-                            String::from("unknown"),
-                            String::from("unknown"),
-                            0,
-                            bundle_idx,
-                            0,
-                            0,
-                            String::new(),
-                        )
-                    });
+            let (
+                note_path,
+                note_title,
+                section_index,
+                chunk_index,
+                start_line,
+                end_line,
+                preview_text,
+            ) = all_chunks
+                .get(source_chunk_id)
+                .map(|c| {
+                    (
+                        c.note_path.clone(),
+                        c.note_title.clone(),
+                        c.section_index,
+                        c.chunk_index,
+                        c.start_line,
+                        c.end_line,
+                        build_preview_text(&c.content, 220),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    (
+                        String::from("unknown"),
+                        String::from("unknown"),
+                        0,
+                        bundle_idx,
+                        0,
+                        0,
+                        String::new(),
+                    )
+                });
 
             let llm_result = if let Some(llm) = llm_arc.as_deref() {
                 match generate_mcq(bundle, llm).await {
@@ -540,7 +561,10 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             snapshot.mcq_generated += mcq_count;
             // Phase 2 maps to 50–100 %
             snapshot.progress_percent = two_phase_percent(
-                total_chunks, total_chunks, snapshot.completed_chunks, bundle_count,
+                total_chunks,
+                total_chunks,
+                snapshot.completed_chunks,
+                bundle_count,
             );
         }
 

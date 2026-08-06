@@ -1,9 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { ArrowRight, Check, ChevronDown, FolderOpen, GitBranch, Plus, Save, Sparkles, Zap } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import {
+  ArrowRight,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  FolderOpen,
+  GitBranch,
+  Pause,
+  Play,
+  Plus,
+  Save,
+  Sparkles,
+  X,
+  Zap,
+} from 'lucide-react'
 import arkaLogo from '../assets/arka-logo.svg'
 
 const getWelcomeMessage = (date = new Date()) => {
@@ -47,7 +60,7 @@ const getWelcomeMessage = (date = new Date()) => {
     </>
   )
 }
-type ViewMode = 'reader' | 'raw'
+type GenerationMode = 'default' | 'graph'
 
 type Note = {
   id: number | null
@@ -140,7 +153,6 @@ export function HomePage() {
   const [vaultPath, setVaultPath] = useState('')
   const [notes, setNotes] = useState<Note[]>([])
   const [selectedNote, setSelectedNote] = useState<Note | null>(null)
-  const [viewMode, setViewMode] = useState<ViewMode>('reader')
   const [isLoading, setIsLoading] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [isSavingQuestions, setIsSavingQuestions] = useState(false)
@@ -158,21 +170,7 @@ export function HomePage() {
   const [saveStatusKind, setSaveStatusKind] = useState<'success' | 'error' | ''>('')
   const [hasSavedQuestions, setHasSavedQuestions] = useState(false)
   const [error, setError] = useState('')
-  const [generationMode, setGenerationMode] = useState<'default' | 'graph'>('default')
-  const [showGenerateMenu, setShowGenerateMenu] = useState(false)
-  const generateMenuRef = useRef<HTMLDivElement>(null)
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    if (!showGenerateMenu) return
-    const handler = (e: MouseEvent) => {
-      if (generateMenuRef.current && !generateMenuRef.current.contains(e.target as Node)) {
-        setShowGenerateMenu(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showGenerateMenu])
+  const [generationMode, setGenerationMode] = useState<GenerationMode | null>(null)
 
   const generatedQuestionCount =
     generationSummary?.chunk_previews.reduce(
@@ -181,6 +179,14 @@ export function HomePage() {
     ) ?? 0
 
   const selectedSpace = recallSpaces.find((space) => space.id === selectedSpaceId)
+
+  const noteBreadcrumbs = selectedNote
+    ? selectedNote.path
+        .split(/[\\/]+/)
+        .slice(0, -1)
+        .filter((part) => part && !/^[A-Za-z]:$/.test(part))
+        .slice(-3)
+    : []
 
   const loadRecallSpaces = async () => {
     try {
@@ -238,10 +244,14 @@ export function HomePage() {
     setSaveStatus('')
     setSaveStatusKind('')
     setHasSavedQuestions(false)
+    setGenerationMode(null)
 
     try {
       const data = await invoke<Note[]>('get_notes', { vaultPath: path })
       setNotes(data)
+      if (data.length === 1) {
+        setSelectedNote(data[0])
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load notes'
       setError(message)
@@ -251,8 +261,13 @@ export function HomePage() {
   }
 
   const generatePreview = async () => {
-    if (!vaultPath) {
-      setError('Choose a vault first before generating preview.')
+    if (!vaultPath || !selectedNote) {
+      setError('Choose a note before generating questions.')
+      return
+    }
+
+    if (!generationMode) {
+      setError('Choose a generation mode first.')
       return
     }
 
@@ -262,7 +277,6 @@ export function HomePage() {
     setGenerationSummary(null)
     setShowChunks(false)
     setSelectedChunk(null)
-    setShowGenerateMenu(false)
 
     const command = generationMode === 'graph' ? 'start_graph_generation_job' : 'start_preview_generation'
     try {
@@ -465,175 +479,257 @@ export function HomePage() {
   }
 
   return (
-    <div className="app-container home-page">
-      <div className="app-header">
-        <div className="brand-title">
-          <img src={arkaLogo} alt="ARKA logo" className="brand-logo" />
-          <h1>{welcomeMessage}</h1>
-        </div>
-        <p className="welcome-description">
-          Recall reads your notes and generates thoughtful flashcards or
-          multiple-choice questions, so you can turn what you&apos;ve written into
-          what you actually remember.
-        </p>
-        <div className="header-actions">
-          {!vaultPath ? (
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={chooseVault}
-              disabled={isLoading}
-            >
-              {isLoading ? (
-                'Loading...'
-              ) : (
-                <span className="btn-content">
-                  Choose Markdown File
-                  <ArrowRight className="size-4" aria-hidden="true" />
-                </span>
-              )}
-            </button>
-          ) : (
-            <>
-              <div className="generate-split-btn-wrap" ref={generateMenuRef}>
-                <button
-                  type="button"
-                  className="btn-primary btn-generate-action generate-split-main"
-                  onClick={() => generatePreview()}
-                  disabled={isGenerating}
-                >
-                  {isGenerating ? (
-                    'Generating...'
-                  ) : (
-                    <span className="btn-content">
-                      {generationMode === 'graph' ? (
-                        <GitBranch className="size-4" aria-hidden="true" />
-                      ) : (
-                        <Sparkles className="size-4" aria-hidden="true" />
-                      )}
-                      {generationMode === 'graph' ? 'Deep Thinking' : 'Default Generation'}
-                    </span>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary btn-generate-action generate-split-chevron"
-                  onClick={() => setShowGenerateMenu((prev) => !prev)}
-                  disabled={isGenerating}
-                  aria-label="Choose generation mode"
-                  aria-expanded={showGenerateMenu}
-                  aria-haspopup="menu"
-                >
-                  <ChevronDown className="size-4" aria-hidden="true" />
-                </button>
-                {showGenerateMenu && (
-                  <div className="generate-mode-menu" role="menu">
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className={`generate-mode-item${generationMode === 'default' ? ' is-active' : ''}`}
-                      onClick={() => {
-                        setGenerationMode('default')
-                        setShowGenerateMenu(false)
-                      }}
-                    >
-                      <Zap className="size-4" aria-hidden="true" />
-                      <span>
-                        <strong>Default Generation</strong>
-                        <small>Light reasoning, quick</small>
-                      </span>
-                      {generationMode === 'default' && <Check className="size-3 generate-mode-check" aria-hidden="true" />}
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className={`generate-mode-item${generationMode === 'graph' ? ' is-active' : ''}`}
-                      onClick={() => {
-                        setGenerationMode('graph')
-                        setShowGenerateMenu(false)
-                      }}
-                    >
-                      <GitBranch className="size-4" aria-hidden="true" />
-                      <span>
-                        <strong>Deep Thinking</strong>
-                        <small>Graph-based understanding, slower</small>
-                      </span>
-                      {generationMode === 'graph' && <Check className="size-3 generate-mode-check" aria-hidden="true" />}
-                    </button>
-                  </div>
+    <div className={`app-container home-page${selectedNote ? ' has-selected-note' : ''}`}>
+      {!selectedNote ? (
+        <>
+          <div className="app-header">
+            <div className="brand-title">
+              <img src={arkaLogo} alt="ARKA logo" className="brand-logo" />
+              <h1>{welcomeMessage}</h1>
+            </div>
+            <p className="welcome-description">
+              Recall reads your notes and generates thoughtful flashcards or
+              multiple-choice questions, so you can turn what you&apos;ve written into
+              what you actually remember.
+            </p>
+            <div className="header-actions">
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={chooseVault}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  'Loading note…'
+                ) : (
+                  <span className="btn-content">
+                    Choose Markdown File
+                    <ArrowRight className="size-4" aria-hidden="true" />
+                  </span>
                 )}
+              </button>
+            </div>
+          </div>
+
+          {error && <div className="error-banner">{error}</div>}
+
+          <div className="notes-container" aria-live="polite">
+            {notes.length > 1 && (
+              <>
+                <p className="notes-count">Choose one of {notes.length} notes</p>
+                <ul className="note-list">
+                  {notes.map((note) => (
+                    <li key={note.path}>
+                      <button
+                        type="button"
+                        className="note-item"
+                        onClick={() => {
+                          setGenerationMode(null)
+                          setSelectedNote(note)
+                        }}
+                      >
+                        {note.title}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        </>
+      ) : (
+        <main className="generation-workspace">
+          <header className="selected-note-header">
+            {noteBreadcrumbs.length > 0 && (
+              <nav className="note-breadcrumbs" aria-label="Note location">
+                {noteBreadcrumbs.map((part, index) => (
+                  <span key={`${part}-${index}`}>
+                    {index > 0 && <ChevronRight aria-hidden="true" />}
+                    <span>{part}</span>
+                  </span>
+                ))}
+              </nav>
+            )}
+
+            <div className="selected-note-row">
+              <div className="selected-note-title-wrap">
+                <FileText className="selected-note-icon" aria-hidden="true" />
+                <div>
+                  <h1>{selectedNote.title}</h1>
+                  <p>Ready to turn this note into active recall.</p>
+                </div>
               </div>
               <button
                 type="button"
-                className="btn-secondary btn-vault-action"
+                className="btn-secondary btn-change-note"
                 onClick={chooseVault}
                 disabled={isLoading || isGenerating}
               >
-                <span className="btn-content">
-                  <FolderOpen className="size-4" aria-hidden="true" />
-                  Change File
-                </span>
+                <FolderOpen className="size-4" aria-hidden="true" />
+                {isLoading ? 'Loading…' : 'Change note'}
               </button>
-            </>
-          )}
-        </div>
-      </div>
+            </div>
+          </header>
 
-      {vaultPath && <p className="vault-path">{vaultPath}</p>}
-      {error && <div className="error-banner">{error}</div>}
+          {error && <div className="error-banner">{error}</div>}
 
-      {generationProgress && !generationProgress.is_finished && (
-        <section className="generation-progress" aria-live="polite">
-          <div className="generation-progress-head">
-            <h2>
-              {generationMode === 'graph' ? 'Deep Thinking' : 'Generating'}
-              {generationProgress.phase_label && (
-                <span className="generation-phase-label">{generationProgress.phase_label}…</span>
+          {!isGenerating && !generationSummary && (
+            <section className="generation-setup" aria-labelledby="generation-depth-title">
+              <div className="generation-setup-heading">
+                <h2 id="generation-depth-title">Choose how deep to go</h2>
+                <p>Pick the reasoning approach that fits this study session.</p>
+              </div>
+
+              <div className="generation-mode-grid" role="radiogroup" aria-label="Generation mode">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={generationMode === 'default'}
+                  className={`generation-mode-card${generationMode === 'default' ? ' is-selected' : ''}`}
+                  onClick={() => {
+                    setError('')
+                    setGenerationMode('default')
+                  }}
+                >
+                  <span className="generation-mode-icon">
+                    <Zap aria-hidden="true" />
+                  </span>
+                  <span className="generation-mode-copy">
+                    <strong>Default generation</strong>
+                    <span>Light reasoning. Extracts focused questions straight from the note.</span>
+                  </span>
+                  <span className="generation-mode-meta">Faster</span>
+                  {generationMode === 'default' && (
+                    <span className="generation-mode-check" aria-hidden="true">
+                      <Check />
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={generationMode === 'graph'}
+                  className={`generation-mode-card${generationMode === 'graph' ? ' is-selected' : ''}`}
+                  onClick={() => {
+                    setError('')
+                    setGenerationMode('graph')
+                  }}
+                >
+                  <span className="generation-mode-icon">
+                    <GitBranch aria-hidden="true" />
+                  </span>
+                  <span className="generation-mode-copy">
+                    <strong>Deep thinking</strong>
+                    <span>Builds a knowledge graph to generate more connected, reasoning-focused questions.</span>
+                  </span>
+                  <span className="generation-mode-meta">More thorough</span>
+                  {generationMode === 'graph' && (
+                    <span className="generation-mode-check" aria-hidden="true">
+                      <Check />
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {generationMode && (
+                <div className="generation-commit">
+                  <p>
+                    <strong>{generationMode === 'graph' ? 'Deep thinking' : 'Default generation'}</strong>
+                    <span>{generationMode === 'graph' ? 'Best for connected, concept-heavy notes.' : 'Best for a quick, focused study set.'}</span>
+                  </p>
+                  <button
+                    type="button"
+                    className="btn-primary btn-start-generation"
+                    onClick={generatePreview}
+                  >
+                    <span className="btn-content">
+                      <Sparkles className="size-4" aria-hidden="true" />
+                      Generate questions
+                    </span>
+                  </button>
+                </div>
               )}
-            </h2>
-            <span>{generationProgress.progress_percent}%</span>
-          </div>
+            </section>
+          )}
 
-          <div className="generation-bar-track">
-            <div
-              className="generation-bar-fill"
-              style={{ width: `${generationProgress.progress_percent}%` }}
-            />
-          </div>
+          {isGenerating && (
+            <section className="generation-progress generation-progress-focused" aria-live="polite">
+              <div className="generation-progress-intro">
+                <span className="generation-progress-symbol" aria-hidden="true">
+                  {generationMode === 'graph' ? <GitBranch /> : <Sparkles />}
+                </span>
+                <div>
+                  <h2>{generationProgress?.is_paused ? 'Generation paused' : 'Building your questions'}</h2>
+                  <p>
+                    {generationProgress?.phase_label
+                      ? `${generationProgress.phase_label}…`
+                      : 'Preparing your note…'}
+                  </p>
+                </div>
+                <strong>{generationProgress?.progress_percent ?? 0}%</strong>
+              </div>
 
-          <div className="summary-grid">
-            <p>
-              <span>{generationMode === 'graph' ? (generationProgress.phase_label === 'Extracting knowledge' ? 'Chunks Extracted' : 'Questions Built') : 'Chunks Completed'}</span>
-              <strong>{generationProgress.completed_chunks}/{generationProgress.total_chunks}</strong>
-            </p>
-            <p>
-              <span>MCQs Generated</span>
-              <strong>{generationProgress.mcq_generated}</strong>
-            </p>
-            <p>
-              <span>Status</span>
-              <strong>{generationProgress.is_paused ? 'Paused' : 'Running'}</strong>
-            </p>
-          </div>
+              <div
+                className="generation-bar-track"
+                role="progressbar"
+                aria-label="Question generation progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={generationProgress?.progress_percent ?? 0}
+              >
+                <div
+                  className="generation-bar-fill"
+                  style={{
+                    transform: `scaleX(${(generationProgress?.progress_percent ?? 0) / 100})`,
+                  }}
+                />
+              </div>
 
-          <div className="generation-actions">
-            <button
-              type="button"
-              className="btn-pause"
-              onClick={togglePauseGeneration}
-            >
-              {generationProgress.is_paused ? '▶ Resume' : '⏸ Pause'}
-            </button>
-            <button
-              type="button"
-              className="btn-cancel"
-              onClick={cancelGeneration}
-            >
-              ✕ Cancel
-            </button>
-          </div>
-        </section>
-      )}
+              <dl className="generation-progress-stats">
+                <div>
+                  <dt>{generationMode === 'graph' ? 'Knowledge processed' : 'Chunks completed'}</dt>
+                  <dd>{generationProgress ? `${generationProgress.completed_chunks} / ${generationProgress.total_chunks}` : '—'}</dd>
+                </div>
+                <div>
+                  <dt>Questions generated</dt>
+                  <dd>{generationProgress?.mcq_generated ?? 0}</dd>
+                </div>
+                <div>
+                  <dt>Status</dt>
+                  <dd>{generationProgress?.is_paused ? 'Paused' : 'Running'}</dd>
+                </div>
+              </dl>
+
+              <div className="generation-actions">
+                <button
+                  type="button"
+                  className="btn-pause"
+                  onClick={togglePauseGeneration}
+                  disabled={!generationProgress}
+                >
+                  <span
+                    className="generation-control-icon"
+                    data-state={generationProgress?.is_paused ? 'paused' : 'running'}
+                    aria-hidden="true"
+                  >
+                    <Pause data-icon="running" />
+                    <Play data-icon="paused" />
+                  </span>
+                  <span>{generationProgress?.is_paused ? 'Resume' : 'Pause'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn-cancel"
+                  onClick={cancelGeneration}
+                  disabled={!generationProgress}
+                >
+                  <X aria-hidden="true" />
+                  Cancel
+                </button>
+              </div>
+            </section>
+          )}
 
       {generationSummary && (
         <section className="generation-summary" aria-live="polite">
@@ -855,98 +951,7 @@ export function HomePage() {
         </section>
       )}
 
-      {selectedNote ? (
-        <article className="note-detail">
-          <button
-            type="button"
-            className="btn-back"
-            onClick={() => setSelectedNote(null)}
-          >
-            ← Back to notes
-          </button>
-          <div className="note-detail-header">
-            <h2 className="note-detail-title">{selectedNote.title}</h2>
-            <div className="view-toggle" role="group" aria-label="View mode">
-              <button
-                type="button"
-                className={`view-toggle-btn${viewMode === 'reader' ? ' is-active' : ''}`}
-                onClick={() => setViewMode('reader')}
-                aria-pressed={viewMode === 'reader'}
-                aria-label="Reading view"
-                title="Reading view"
-              >
-                <svg
-                  className="view-toggle-icon"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M12 7v14" />
-                  <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className={`view-toggle-btn${viewMode === 'raw' ? ' is-active' : ''}`}
-                onClick={() => setViewMode('raw')}
-                aria-pressed={viewMode === 'raw'}
-                aria-label="Source view"
-                title="Source view"
-              >
-                <svg
-                  className="view-toggle-icon"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="m16 18 6-6-6-6" />
-                  <path d="m8 6-6 6 6 6" />
-                </svg>
-              </button>
-            </div>
-          </div>
-          {viewMode === 'reader' ? (
-            <div className="note-reader">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {selectedNote.content}
-              </ReactMarkdown>
-            </div>
-          ) : (
-            <pre className="note-detail-content">{selectedNote.content}</pre>
-          )}
-        </article>
-      ) : (
-        <div className="notes-container" aria-live="polite">
-          {notes.length === 0 ? null : (
-            <>
-              <p className="notes-count">Found {notes.length} Notes</p>
-              <ul className="note-list">
-                {notes.map((note) => (
-                  <li key={note.path}>
-                    <button
-                      type="button"
-                      className="note-item"
-                      onClick={() => {
-                        setViewMode('reader')
-                        setSelectedNote(note)
-                      }}
-                    >
-                      {note.title}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </div>
+        </main>
       )}
     </div>
   )
