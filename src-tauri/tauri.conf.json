@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Active Recall Knowledge Assistance",
+  "productName": "Active Recall Knowledge Assistant",
   "version": "0.1.0",
   "identifier": "com.donganyu.arka",
   "mainBinaryName": "arka",

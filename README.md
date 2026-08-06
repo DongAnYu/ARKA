@@ -1,6 +1,6 @@
 # A.R.K.A
 
-**Active Recall Knowledge Assistance**
+**Active Recall Knowledge Assistant**
 
 [![Version](https://img.shields.io/badge/version-0.1.0-2563eb)](https://github.com/DongAnYu/A.R.K.A./releases)
 [![License: PUL 1.0](https://img.shields.io/badge/license-PUL%201.0-7c3aed.svg)](LICENSE)
