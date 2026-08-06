@@ -9,7 +9,7 @@
 ## Recommended module layout (next step)
 
 ```text
-obsidian-active-recall/
+arka/
   src/
     app/
     features/

@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-#[path = "../models/mod.rs"]
+#[path = "../../../src-tauri/src/models/mod.rs"]
 mod models;
-#[path = "../services/mod.rs"]
+#[path = "../../../src-tauri/src/services/mod.rs"]
 mod services;
 
 use std::env;
@@ -172,7 +172,7 @@ fn parse_args() -> Result<CliArgs, Box<dyn Error>> {
 }
 
 fn print_usage() {
-    println!("Usage: cargo run --bin aqg_eval -- [--note <markdown-file>] [--output-dir <dir>]");
+    println!("Usage: cargo run --manifest-path eval/Cargo.toml --bin aqg_eval -- [--note <markdown-file>] [--output-dir <dir>]");
 }
 
 fn repo_root() -> PathBuf {
@@ -183,7 +183,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn load_dotenv_if_present() {
-    let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env");
+    let env_path = repo_root().join("src-tauri/.env");
     let _ = dotenvy::from_path(env_path);
 }
 

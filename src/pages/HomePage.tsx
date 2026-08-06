@@ -621,7 +621,7 @@ export function HomePage() {
                   </span>
                   <span className="generation-mode-copy">
                     <strong>Deep thinking</strong>
-                    <span>Builds a concept graph across the note for sharper distractors.</span>
+                    <span>Builds a knowledge graph to generate more connected, reasoning-focused questions.</span>
                   </span>
                   <span className="generation-mode-meta">More thorough</span>
                   {generationMode === 'graph' && (

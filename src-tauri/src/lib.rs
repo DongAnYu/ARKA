@@ -2,6 +2,7 @@
 mod models;
 mod services;
 
+#[cfg(debug_assertions)]
 use std::path::PathBuf;
 
 use models::model_settings::ModelConfig;
@@ -193,14 +194,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env");
-            match dotenvy::from_path(&env_path) {
-                Ok(_) => log::info!("Loaded environment from {}", env_path.display()),
-                Err(err) => log::warn!(
-          "Could not load .env from {}: {} (falling back to process environment/defaults)",
-          env_path.display(),
-          err
-        ),
+            #[cfg(debug_assertions)]
+            {
+                let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env");
+                match dotenvy::from_path(&env_path) {
+                    Ok(_) => log::info!("Loaded environment from {}", env_path.display()),
+                    Err(err) => log::warn!(
+                        "Could not load .env from {}: {} (falling back to process environment/defaults)",
+                        env_path.display(),
+                        err
+                    ),
+                }
             }
 
             tauri::async_runtime::block_on(async { services::database::run_smoke_test().await })

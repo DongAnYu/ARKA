@@ -393,7 +393,14 @@ pub async fn save_model_config(config: ModelConfig) -> Result<(), sqlx::Error> {
 pub async fn run_smoke_test() -> Result<(), sqlx::Error> {
     let pool = open_pool().await?;
 
+    #[cfg(not(feature = "eval-package"))]
     sqlx::migrate!("./migrations").run(&pool).await?;
+
+    #[cfg(feature = "eval-package")]
+    sqlx::migrate!("../src-tauri/migrations")
+        .run(&pool)
+        .await?;
+
     ensure_default_space(&pool).await?;
 
     Ok(())
@@ -422,7 +429,7 @@ mod tests {
             .expect("system clock should be after unix epoch")
             .as_nanos();
         let db_path = std::env::temp_dir().join(format!(
-            "obsidian-active-recall-scheduler-{unique_id}.sqlite"
+            "arka-scheduler-{unique_id}.sqlite"
         ));
 
         std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
@@ -473,7 +480,7 @@ mod tests {
             .expect("system clock should be after unix epoch")
             .as_nanos();
         let db_path = std::env::temp_dir().join(format!(
-            "obsidian-active-recall-due-questions-{unique_id}.sqlite"
+            "arka-due-questions-{unique_id}.sqlite"
         ));
 
         std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
@@ -555,7 +562,7 @@ mod tests {
             .expect("system clock should be after unix epoch")
             .as_nanos();
         let db_path = std::env::temp_dir().join(format!(
-            "obsidian-active-recall-review-question-{unique_id}.sqlite"
+            "arka-review-question-{unique_id}.sqlite"
         ));
 
         std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));

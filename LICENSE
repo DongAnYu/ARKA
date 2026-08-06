@@ -1,0 +1,110 @@
+# A.R.K.A. Personal Use Licence
+
+**Version 1.0**
+
+Copyright © 2026 Dongan Yu. All rights reserved.
+
+## Plain-language summary
+
+You may download, compile, install, run, and privately modify A.R.K.A. for personal and other non-commercial purposes.
+
+Non-commercial study, teaching, academic research, charitable work, volunteer work, evaluation, and informal study groups are allowed. Receiving a salary or stipend does not by itself make those activities commercial.
+
+You may fork A.R.K.A. and publish changes through that fork when preparing and submitting a contribution to the official A.R.K.A. repository.
+
+You may not use A.R.K.A. commercially, include it in a commercial product or service, or distribute a modified version as an independent project without separate written permission.
+
+This summary is for convenience. The terms below govern use of the Software.
+
+## 1. Definitions
+
+**Software** means A.R.K.A., including its source code, compiled binaries, installers, documentation, assets, and accompanying files, excluding separately licensed third-party components.
+
+**Copyright Holder** means Dongan Yu or a successor who legally owns the relevant copyright in the Software.
+
+**Official Repository** means the official A.R.K.A. repository at https://github.com/DongAnYu/A.R.K.A. or a replacement repository identified by the Copyright Holder.
+
+**Commercial Use** means use primarily intended for commercial advantage, revenue generation, monetary compensation from the Software itself, business operations, professional services, or the development, provision, marketing, or support of a product or service.
+
+## 2. Non-Commercial Use Grant
+
+Subject to this Licence, the Copyright Holder grants You a worldwide, royalty-free, non-exclusive, non-transferable, and non-sublicensable licence to:
+
+1. view, download, and copy the Software;
+2. compile, install, and run the Software on any device You own, control, or are authorised to use;
+3. make private modifications for Your own non-commercial use;
+4. use the Software for personal study, learning, teaching, non-commercial academic research, charitable or volunteer activity, evaluation, experimentation, and informal group study; and
+5. share unmodified copies for non-commercial purposes, provided that this Licence and all copyright and attribution notices remain included.
+
+These permissions are available to individuals and organisations only for the non-commercial activities listed above. Receiving an ordinary salary, wage, scholarship, or research stipend does not by itself make an otherwise permitted activity Commercial Use.
+
+Each recipient of a shared unmodified copy receives their rights directly from the Copyright Holder under this Licence. You may not charge a licence fee or access fee for the Software.
+
+## 3. Forks and Contributions
+
+You may fork the Official Repository, modify the Software, test and discuss those modifications, and submit them to the Official Repository through a pull request or another contribution process approved by the Copyright Holder.
+
+A contribution fork may remain publicly visible on its repository-hosting platform. You may not present it as an official or independent version of A.R.K.A., or distribute releases, binaries, installers, or packages built from the modified fork.
+
+By intentionally submitting a contribution, You represent that You have the right to submit it and grant the Copyright Holder a perpetual, worldwide, non-exclusive, irrevocable, royalty-free, transferable, and sublicensable licence to use, reproduce, modify, distribute, relicense, and commercially exploit the contribution in any form.
+
+You retain copyright ownership of Your original contribution. To the extent permitted by law, You waive and agree not to assert moral rights that would prevent exercise of the rights granted above.
+
+## 4. No Commercial Use
+
+Without a separate written licence from the Copyright Holder, You may not:
+
+1. sell, rent, license, sublicense, or otherwise monetise the Software;
+2. charge for access to the Software;
+3. use the Software as part of a commercial product, service, hosted offering, software-as-a-service offering, or paid professional service;
+4. use the Software for the internal business operations of a for-profit organisation;
+5. repackage, rebrand, or white-label the Software for commercial purposes; or
+6. use the Software to develop, operate, or support a competing commercial product or service.
+
+Non-commercial teaching, study, research, charity, and volunteer activity permitted by Section 2 do not become Commercial Use merely because a participant receives a salary, wage, scholarship, or stipend.
+
+Commercial permission exists only through a separate written agreement authorised by the Copyright Holder.
+
+## 5. Modified Versions
+
+You may keep private modifications for permitted non-commercial use and may publish modifications through the contribution workflow in Section 3.
+
+You may not distribute a modified version, independent release, installer, package, mirror, or derivative project outside that contribution workflow without separate written permission.
+
+## 6. Ownership and Third-Party Components
+
+The Copyright Holder retains ownership of the Software, excluding separately licensed third-party components and independently owned contributions. All rights not expressly granted are reserved.
+
+Third-party libraries, frameworks, assets, and other components remain governed by their own licence terms. If this Licence conflicts with a third-party licence for a third-party component, that third-party licence governs that component.
+
+This Licence grants no rights in A.R.K.A. trademarks except as necessary to identify an unmodified copy or prepare a contribution.
+
+## 7. Termination
+
+This Licence terminates automatically if You breach its terms. If the breach was unintentional, Your rights are restored when You correct the breach within 30 days after discovering it.
+
+After termination, You must stop using and distributing the Software, except where applicable law gives You a right that cannot be excluded.
+
+Rights already granted to the Copyright Holder in a submitted contribution survive termination.
+
+## 8. No Warranty and Limitation of Liability
+
+THE SOFTWARE IS PROVIDED “AS IS” AND “AS AVAILABLE,” WITHOUT WARRANTY OF ANY KIND, TO THE MAXIMUM EXTENT PERMITTED BY LAW.
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER AND CONTRIBUTORS WILL NOT BE LIABLE FOR LOSS OR DAMAGE ARISING FROM THE SOFTWARE OR ITS USE, INCLUDING LOSS OF DATA, PROFITS, REVENUE, OPPORTUNITY, OR GOODWILL.
+
+Nothing in this Licence excludes or limits liability for fraud, fraudulent misrepresentation, death or personal injury caused by negligence, or any liability or mandatory right that applicable law does not permit the parties to exclude or limit.
+
+## 9. General Terms
+
+This Licence is a source-available, non-commercial licence. It is not an open-source licence as defined by the Open Source Initiative.
+
+Nothing in this Licence restricts backup, observation, study, testing, interoperability, or other rights that applicable law does not permit a contract to restrict.
+
+If part of this Licence is unenforceable, it will be limited or removed only to the minimum extent necessary, and the remaining terms will continue in effect.
+
+This Licence and disputes arising from it are governed by the laws of England and Wales. Subject to mandatory rights under applicable law, the courts of England and Wales have exclusive jurisdiction.
+
+This version applies to copies of the Software released under it. Future releases may use different terms, but new terms do not retroactively change the licence for an earlier copy.
+
+By exercising permissions granted by this Licence, You acknowledge that You have read and agree to its terms.
