@@ -147,6 +147,10 @@ type RecallSpace = {
   description: string | null
 }
 
+type ModelConfig = {
+  selected_model: string
+}
+
 export function HomePage() {
   const welcomeMessage = getWelcomeMessage()
   const saveInFlightRef = useRef(false)
@@ -161,6 +165,7 @@ export function HomePage() {
   const [generationSummary, setGenerationSummary] = useState<GenerationSummary | null>(null)
   const [showChunks, setShowChunks] = useState(false)
   const [selectedChunk, setSelectedChunk] = useState<ChunkPreview | null>(null)
+  const [isLoadingRecallSpaces, setIsLoadingRecallSpaces] = useState(true)
   const [recallSpaces, setRecallSpaces] = useState<RecallSpace[]>([])
   const [selectedSpaceId, setSelectedSpaceId] = useState(1)
   const [saveDestinationMode, setSaveDestinationMode] = useState<'existing' | 'new'>('existing')
@@ -203,7 +208,38 @@ export function HomePage() {
   }
 
   useEffect(() => {
-    loadRecallSpaces()
+    let cancelled = false
+
+    void invoke<RecallSpace[]>('get_spaces')
+      .then((spaces) => {
+        if (cancelled) {
+          return
+        }
+
+        setRecallSpaces(spaces)
+        if (spaces.length > 0) {
+          setSelectedSpaceId((currentId) =>
+            spaces.some((space) => space.id === currentId) ? currentId : spaces[0].id,
+          )
+        }
+      })
+      .catch((err) => {
+        if (cancelled) {
+          return
+        }
+
+        const message = err instanceof Error ? err.message : 'Failed to load recall spaces'
+        setError(message)
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingRecallSpaces(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const chooseVault = async () => {
@@ -450,7 +486,7 @@ export function HomePage() {
       })
 
       // Load current model config to get model name
-      const modelConfig = await invoke<any>('load_model_config')
+      const modelConfig = await invoke<ModelConfig>('load_model_config')
       const modelName = modelConfig.selected_model || 'unknown'
 
       // Save to database
@@ -801,12 +837,17 @@ export function HomePage() {
 
               {saveDestinationMode === 'existing' ? (
                 <label className="recall-space-select-wrap">
-                  <span>Recall space</span>
+                  <span>{isLoadingRecallSpaces ? 'Loading recall spaces…' : 'Recall space'}</span>
                   <select
                     className="recall-space-select"
                     value={selectedSpaceId}
                     onChange={(event) => setSelectedSpaceId(Number(event.target.value))}
-                    disabled={isSavingQuestions || hasSavedQuestions || recallSpaces.length === 0}
+                    disabled={
+                      isLoadingRecallSpaces ||
+                      isSavingQuestions ||
+                      hasSavedQuestions ||
+                      recallSpaces.length === 0
+                    }
                   >
                     {recallSpaces.map((space) => (
                       <option key={space.id} value={space.id}>
