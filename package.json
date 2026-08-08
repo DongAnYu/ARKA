@@ -8,7 +8,6 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-
     "eval:default": "cargo run --manifest-path eval/Cargo.toml --bin aqg_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",
     "eval:graph-stage-a": "cargo run --manifest-path eval/Cargo.toml --bin graph_stage_a_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",
     "eval:graph-e2e": "cargo run --manifest-path eval/Cargo.toml --bin graph_e2e_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",
@@ -19,7 +18,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
-    "@tauri-apps/plugin-log": "^2.8.0",
+    "@tauri-apps/plugin-log": "2.8.0",
     "lucide-react": "^1.23.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
