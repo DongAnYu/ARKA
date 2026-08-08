@@ -2,7 +2,7 @@
 
 **Active Recall Knowledge Assistant**
 
-[![Version](https://img.shields.io/badge/version-0.1.0-2563eb)](https://github.com/DongAnYu/A.R.K.A./releases)
+[![Version](https://img.shields.io/badge/version-0.1.0-2563eb)](https://github.com/DongAnYu/ARKA/releases)
 [![License: PUL 1.0](https://img.shields.io/badge/license-PUL%201.0-7c3aed.svg)](LICENSE)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-24c8db.svg)](https://tauri.app/)
 
@@ -37,7 +37,7 @@ A.R.K.A is source-available under the [A.R.K.A Personal Use Licence 1.0](LICENSE
 
 ### Download a release
 
-Packaged installers are published on the [GitHub Releases](https://github.com/DongAnYu/A.R.K.A./releases) page. Windows is the primary supported platform for the MVP.
+Packaged installers are published on the [GitHub Releases](https://github.com/DongAnYu/ARKA/releases) page. Windows is the primary supported platform for the MVP.
 
 ### Build from source
 
@@ -51,7 +51,7 @@ Prerequisites:
 Clone and run the application:
 
 ```bash
-git clone https://github.com/DongAnYu/A.R.K.A..git arka
+git clone https://github.com/DongAnYu/ARKA.git arka
 cd arka
 npm install
 npm run tauri:dev

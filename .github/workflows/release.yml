@@ -1,0 +1,61 @@
+# .github/workflows/release.yml
+name: Release Desktop App
+
+on:
+  workflow_dispatch:
+    
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-windows:
+    # Prevent accidentally releasing a feature branch.
+    if: github.ref == 'refs/heads/main'
+
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Test Rust
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build and create draft release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: ARKA v__VERSION__
+          releaseBody: |
+            First desktop release of ARKA.
+
+            Download the Windows installer from the assets below.
+          releaseDraft: true
+          prerelease: false

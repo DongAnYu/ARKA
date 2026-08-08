@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 
 type ProviderId = 'ollama' | 'openrouter'
@@ -71,20 +71,20 @@ const writeModelHistory = (history: ModelHistoryMap) => {
 }
 
 export function ModelsPage() {
-  const isInitialLoadDone = useRef(false)
   const [savedConfig, setSavedConfig] = useState<DbModelConfig | null>(null)
   const [provider, setProvider] = useState<ProviderId>('ollama')
   const [baseUrl, setBaseUrl] = useState(findProvider('ollama').defaultBaseUrl)
   const [openRouterApiKey, setOpenRouterApiKey] = useState('')
   const [timeoutSecs, setTimeoutSecs] = useState('60')
   const [modelId, setModelId] = useState('')
-  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [modelHistory, setModelHistory] = useState<ModelHistoryMap>(() => readModelHistory())
   const [isFetchingModels, setIsFetchingModels] = useState(false)
   const [fetchStatus, setFetchStatus] = useState('')
   const [saveStatus, setSaveStatus] = useState('')
   const [isSaving, setIsSaving] = useState(false)
 
   const activeProvider = useMemo(() => findProvider(provider), [provider])
+  const availableModels = modelHistory[getHistoryKey(provider, baseUrl)] ?? []
 
   // Load saved config from DB on mount
   useEffect(() => {
@@ -97,25 +97,11 @@ export function ModelsPage() {
         setTimeoutSecs(String(config.timeout_secs))
         setModelId(config.selected_model)
         setOpenRouterApiKey(config.api_key ?? '')
-        isInitialLoadDone.current = true
       })
       .catch((err) => {
         console.error('Failed to load model config from DB:', err)
-        isInitialLoadDone.current = true
       })
   }, [])
-
-  // Restore fetched model list when provider/baseUrl changes.
-  // Only clear selectedModel after the initial DB load, so the restored selection is preserved.
-  useEffect(() => {
-    const history = readModelHistory()
-    const key = getHistoryKey(provider, baseUrl)
-    const models = history[key] ?? []
-    setAvailableModels(models)
-    if (isInitialLoadDone.current && provider === 'ollama') {
-      setModelId((current) => (models.includes(current) ? current : ''))
-    }
-  }, [provider, baseUrl])
 
   const saveModelSettings = async () => {
     setSaveStatus('')
@@ -174,12 +160,19 @@ export function ModelsPage() {
 
   const persistHistory = (models: string[]) => {
     const normalized = dedupeModels(models)
-    setAvailableModels(normalized)
-
-    const history = readModelHistory()
     const key = getHistoryKey(provider, baseUrl)
-    history[key] = normalized
-    writeModelHistory(history)
+    const nextHistory = { ...modelHistory, [key]: normalized }
+    setModelHistory(nextHistory)
+    writeModelHistory(nextHistory)
+  }
+
+  const changeBaseUrl = (nextBaseUrl: string) => {
+    setBaseUrl(nextBaseUrl)
+
+    if (provider === 'ollama') {
+      const models = modelHistory[getHistoryKey(provider, nextBaseUrl)] ?? []
+      setModelId((current) => (models.includes(current) ? current : ''))
+    }
   }
 
   const selectProvider = (nextProvider: ProviderId) => {
@@ -300,7 +293,7 @@ export function ModelsPage() {
                 className="settings-input"
                 type="url"
                 value={baseUrl}
-                onChange={(event) => setBaseUrl(event.target.value)}
+                onChange={(event) => changeBaseUrl(event.target.value)}
                 placeholder={activeProvider.defaultBaseUrl}
               />
             </div>
