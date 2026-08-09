@@ -58,4 +58,4 @@ jobs:
 
             Download the Windows installer from the assets below.
           releaseDraft: true
-          prerelease: false
+          prerelease: true

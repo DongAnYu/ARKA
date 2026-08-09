@@ -1,13 +1,14 @@
 {
   "name": "arka",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "version:set": "node scripts/set-version.mjs",
     "eval:default": "cargo run --manifest-path eval/Cargo.toml --bin aqg_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",
     "eval:graph-stage-a": "cargo run --manifest-path eval/Cargo.toml --bin graph_stage_a_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",
     "eval:graph-e2e": "cargo run --manifest-path eval/Cargo.toml --bin graph_e2e_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",

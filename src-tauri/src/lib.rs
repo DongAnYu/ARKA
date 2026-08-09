@@ -11,6 +11,9 @@ use models::question::{Question, QuestionInput};
 use models::recall_space::RecallSpace;
 use services::generation::{GenerationProgressSnapshot, GenerationSummary};
 use services::scheduler::Rating;
+use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
 #[tauri::command]
 async fn get_questions() -> Result<Vec<Question>, String> {
@@ -192,8 +195,38 @@ async fn start_graph_generation_job(vault_path: String) -> Result<String, String
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .clear_targets()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("arka".into()),
+                    }),
+                ])
+                .level(log::LevelFilter::Info)
+                .max_file_size(1_000_000)
+                .rotation_strategy(RotationStrategy::KeepSome(5))
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            log::info!(
+                "Starting ARKA v{} on {}",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS
+            );
+
+            let log_path = app
+                .path()
+                .app_log_dir()
+                .map(|path| path.join("arka.log"));
+
+            match &log_path {
+                Ok(path) => log::info!("Persistent log file: {}", path.display()),
+                Err(err) => log::warn!("Could not resolve persistent log file: {err}"),
+            }
+
             #[cfg(debug_assertions)]
             {
                 let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env");
@@ -207,16 +240,34 @@ pub fn run() {
                 }
             }
 
-            tauri::async_runtime::block_on(async { services::database::run_smoke_test().await })
-                .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
+            log::info!("Running database startup checks");
+            if let Err(err) =
+                tauri::async_runtime::block_on(services::database::run_smoke_test())
+            {
+                log::error!("Database startup failed: {err}");
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+                let log_location = log_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| "the ARKA application log directory".to_string());
+                let message = format!(
+                    "ARKA could not start because its database could not be prepared.\n\n\
+                     Error: {err}\n\n\
+                     Diagnostic log:\n{log_location}\n\n\
+                     If you need help, please report this bug and include the log file:\n\
+                     https://github.com/DongAnYu/ARKA/issues"
+                );
+
+                app.dialog()
+                    .message(message)
+                    .title("ARKA could not start")
+                    .kind(MessageDialogKind::Error)
+                    .blocking_show();
+
+                return Err(Box::new(err));
             }
+
+            log::info!("Database startup checks completed successfully");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -245,5 +296,9 @@ pub fn run() {
             delete_space
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|err| {
+            log::error!("Application terminated with a fatal startup/runtime error: {err}");
+            eprintln!("Application terminated with a fatal startup/runtime error: {err}");
+            std::process::exit(1);
+        });
 }

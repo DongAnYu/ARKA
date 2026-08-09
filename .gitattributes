@@ -1,0 +1,2 @@
+# SQLx migration files must have identical bytes on every OS
+*.sql text eol=lf
