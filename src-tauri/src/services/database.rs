@@ -391,17 +391,31 @@ pub async fn save_model_config(config: ModelConfig) -> Result<(), sqlx::Error> {
 }
 
 pub async fn run_smoke_test() -> Result<(), sqlx::Error> {
-    let pool = open_pool().await?;
+    let pool = open_pool().await.map_err(|err| {
+        log::error!("Failed to open the application database: {err}");
+        err
+    })?;
+
+    log::info!("Applying database migrations");
 
     #[cfg(not(feature = "eval-package"))]
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    if let Err(err) = sqlx::migrate!("./migrations").run(&pool).await {
+        log::error!("Database migration failed: {err}");
+        return Err(err.into());
+    }
 
     #[cfg(feature = "eval-package")]
-    sqlx::migrate!("../src-tauri/migrations")
-        .run(&pool)
-        .await?;
+    if let Err(err) = sqlx::migrate!("../src-tauri/migrations").run(&pool).await {
+        log::error!("Database migration failed: {err}");
+        return Err(err.into());
+    }
 
-    ensure_default_space(&pool).await?;
+    log::info!("Database migrations completed successfully");
+
+    ensure_default_space(&pool).await.map_err(|err| {
+        log::error!("Failed to ensure the default recall space exists: {err}");
+        err
+    })?;
 
     Ok(())
 }
