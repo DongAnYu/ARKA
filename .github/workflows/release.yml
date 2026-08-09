@@ -54,8 +54,8 @@ jobs:
           tagName: v__VERSION__
           releaseName: ARKA v__VERSION__
           releaseBody: |
-            First desktop release of ARKA.
-
             Download the Windows installer from the assets below.
+            Report problems at https://github.com/DongAnYu/ARKA/issues.
+          generateReleaseNotes: true
           releaseDraft: true
           prerelease: true
