@@ -12,6 +12,7 @@ use models::recall_space::RecallSpace;
 use services::generation::{GenerationProgressSnapshot, GenerationSummary};
 use services::scheduler::Rating;
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
 #[tauri::command]
@@ -216,9 +217,14 @@ pub fn run() {
                 std::env::consts::OS
             );
 
-            match app.path().app_log_dir() {
-                Ok(path) => log::info!("Persistent logs directory: {}", path.display()),
-                Err(err) => log::warn!("Could not resolve persistent logs directory: {err}"),
+            let log_path = app
+                .path()
+                .app_log_dir()
+                .map(|path| path.join("arka.log"));
+
+            match &log_path {
+                Ok(path) => log::info!("Persistent log file: {}", path.display()),
+                Err(err) => log::warn!("Could not resolve persistent log file: {err}"),
             }
 
             #[cfg(debug_assertions)]
@@ -239,6 +245,25 @@ pub fn run() {
                 tauri::async_runtime::block_on(services::database::run_smoke_test())
             {
                 log::error!("Database startup failed: {err}");
+
+                let log_location = log_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| "the ARKA application log directory".to_string());
+                let message = format!(
+                    "ARKA could not start because its database could not be prepared.\n\n\
+                     Error: {err}\n\n\
+                     Diagnostic log:\n{log_location}\n\n\
+                     If you need help, please report this bug and include the log file:\n\
+                     https://github.com/DongAnYu/ARKA/issues"
+                );
+
+                app.dialog()
+                    .message(message)
+                    .title("ARKA could not start")
+                    .kind(MessageDialogKind::Error)
+                    .blocking_show();
+
                 return Err(Box::new(err));
             }
 
