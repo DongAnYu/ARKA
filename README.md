@@ -2,7 +2,7 @@
 
 **Active Recall Knowledge Assistant**
 
-[![Version](https://img.shields.io/badge/version-0.1.0-2563eb)](https://github.com/DongAnYu/ARKA/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/DongAnYu/ARKA?include_prereleases)](https://github.com/DongAnYu/ARKA/releases)
 [![License: PUL 1.0](https://img.shields.io/badge/license-PUL%201.0-7c3aed.svg)](LICENSE)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-24c8db.svg)](https://tauri.app/)
 
