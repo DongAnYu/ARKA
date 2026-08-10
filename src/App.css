@@ -1587,6 +1587,13 @@ body {
   line-height: 1.5;
 }
 
+.error-text {
+  color: var(--color-error-red);
+  margin: 0 0 24px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .vault-path {
   font-size: 13px;
   color: var(--color-muted-gray);
@@ -2590,7 +2597,7 @@ body {
   }
 }
 
-.generation-workspace > .error-banner {
+.generation-workspace > .error-text {
   margin-top: 20px;
 }
 

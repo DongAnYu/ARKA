@@ -17,7 +17,6 @@ pub use default_generation_schema::{LlmSchemaError, StageBMcq};
 
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
-const DEFAULT_MODEL: &str = "qwen3:4b";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const GENERATION_MAX_ATTEMPTS: usize = 4;
 
@@ -107,7 +106,7 @@ impl LlmConfig {
     /// - LLM_TIMEOUT_SECS: request timeout in seconds
     pub fn from_env() -> Result<Self, LlmConfigError> {
         let provider = LlmProvider::from_str(
-            &env::var("LLM_PROVIDER").unwrap_or_else(|_| String::from("ollama")),
+            &env::var("LLM_PROVIDER").map_err(|_| LlmConfigError::NotConfigured)?,
         )?;
         let profile = provider_profile(provider);
 
@@ -119,7 +118,10 @@ impl LlmConfig {
                 .or_else(|_| env::var("LLM_BASE_URL"))
                 .unwrap_or_else(|_| profile.default_base_url.to_string()),
         };
-        let model = env::var("LLM_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        let model = env::var("LLM_MODEL").map_err(|_| LlmConfigError::NotConfigured)?;
+        if model.trim().is_empty() {
+            return Err(LlmConfigError::NotConfigured);
+        }
         let timeout_secs = parse_u64_env("LLM_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS)?;
         let api_key = match provider {
             LlmProvider::Ollama => None,
@@ -640,6 +642,7 @@ impl LlmService {
 
 #[derive(Debug)]
 pub enum LlmConfigError {
+    NotConfigured,
     InvalidInteger {
         key: String,
         value: String,
@@ -656,6 +659,7 @@ pub enum LlmConfigError {
 impl fmt::Display for LlmConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotConfigured => write!(f, "No LLM provider and model have been configured"),
             Self::InvalidInteger { key, value } => {
                 write!(f, "Invalid integer for {key}: {value}")
             }

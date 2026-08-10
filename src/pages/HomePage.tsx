@@ -322,7 +322,11 @@ export function HomePage() {
       setGenerationJobId(jobId)
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : 'Failed to generate chunk preview'
+        typeof err === 'string'
+          ? err
+          : err instanceof Error
+            ? err.message
+            : 'Failed to start question generation'
       setError(message)
       setIsGenerating(false)
     }
@@ -547,7 +551,7 @@ export function HomePage() {
             </div>
           </div>
 
-          {error && <div className="error-banner">{error}</div>}
+          {error && <p className="error-text" role="alert">{error}</p>}
 
           <div className="notes-container" aria-live="polite">
             {notes.length > 1 && (
@@ -607,7 +611,7 @@ export function HomePage() {
             </div>
           </header>
 
-          {error && <div className="error-banner">{error}</div>}
+          {error && <p className="error-text" role="alert">{error}</p>}
 
           {!isGenerating && !generationSummary && (
             <section className="generation-setup" aria-labelledby="generation-depth-title">

@@ -22,6 +22,17 @@ use super::llm::{JsonGenerationRequest, LlmService, LlmServiceError, StageBMcq};
 
 const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
 const PAUSE_POLL_MS: u64 = 250;
+const MODEL_SETUP_REQUIRED: &str =
+    "Choose an LLM provider and model in Models, then save your settings before generating questions.";
+
+fn configured_llm_service() -> Result<Arc<LlmService>, String> {
+    LlmService::from_runtime_or_env()
+        .map(Arc::new)
+        .map_err(|err| {
+            log::warn!("Generation cannot start because LLM configuration is unavailable: {err}");
+            MODEL_SETUP_REQUIRED.to_string()
+        })
+}
 
 static PREVIEW_JOBS: OnceLock<Mutex<HashMap<String, Arc<PreviewJob>>>> = OnceLock::new();
 static NEXT_PREVIEW_JOB_ID: AtomicU64 = AtomicU64::new(1);
@@ -153,6 +164,7 @@ fn two_phase_percent(
 }
 
 pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, String> {
+    let llm_service = configured_llm_service()?;
     let notes = filesystem::load_vault_notes(vault_path)?;
     let mut note_reports = Vec::new();
     let mut all_chunks = Vec::new();
@@ -202,7 +214,7 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         .insert(job_id.clone(), Arc::clone(&job));
 
     tauri::async_runtime::spawn(async move {
-        let processor = ChunkProcessor::new(LlmService::from_runtime_or_env().ok().map(Arc::new));
+        let processor = ChunkProcessor::new(Some(llm_service));
         let total_chunks = all_chunks.len();
         let mut ordered_previews = vec![None; total_chunks];
 
@@ -273,6 +285,7 @@ const GRAPH_STAGE_A_SYSTEM_PROMPT: &str =
 /// Progress is reported through the shared PreviewJob snapshot and is
 /// compatible with `get_preview_generation_progress` / pause / cancel.
 pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, String> {
+    let llm_service = configured_llm_service()?;
     let notes = filesystem::load_vault_notes(vault_path)?;
     let mut note_reports = Vec::new();
     let mut all_chunks: Vec<MarkdownChunk> = Vec::new();
@@ -323,7 +336,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
 
     let notes_clone = notes.clone();
     tauri::async_runtime::spawn(async move {
-        let llm_arc = LlmService::from_runtime_or_env().ok().map(Arc::new);
+        let llm_arc = Some(llm_service);
 
         // ── Phase 1: Graph Stage A extraction per chunk ───────────────────
         let format_schema = stage_a_format_schema();
