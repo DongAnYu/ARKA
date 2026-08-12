@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
+  AlertTriangle,
   ArrowRight,
   Check,
   ChevronDown,
@@ -114,6 +115,23 @@ type GenerationSummary = {
   chunk_previews: ChunkPreview[]
 }
 
+type LlmFailureCode =
+  | 'setup'
+  | 'account'
+  | 'connection'
+  | 'rate_limited'
+  | 'provider_unavailable'
+  | 'request_rejected'
+  | 'invalid_response'
+  | 'unknown'
+
+type LlmFailure = {
+  code: LlmFailureCode
+  message: string
+  retryable: boolean
+  retry_after_secs: number | null
+}
+
 type GenerationProgress = {
   job_id: string
   total_notes: number
@@ -122,10 +140,14 @@ type GenerationProgress = {
   completed_chunks: number
   mcq_generated: number
   progress_percent: number
+  failed_chunks: number
+  warnings: LlmFailure[]
+  current_chunk: number | null
+  activity: string | null
   is_paused: boolean
   is_cancelled: boolean
   is_finished: boolean
-  error: string | null
+  error: LlmFailure | null
   summary: GenerationSummary | null
   phase_label: string | null
 }
@@ -351,10 +373,6 @@ export function HomePage() {
 
         setGenerationProgress(progress)
         setIsGenerating(!progress.is_finished)
-
-        if (progress.error) {
-          setError(progress.error)
-        }
 
         if (progress.is_finished) {
           if (progress.summary) {
@@ -702,9 +720,14 @@ export function HomePage() {
                 <div>
                   <h2>{generationProgress?.is_paused ? 'Generation paused' : 'Building your questions'}</h2>
                   <p>
-                    {generationProgress?.phase_label
-                      ? `${generationProgress.phase_label}…`
-                      : 'Preparing your note…'}
+                    {generationProgress?.is_paused
+                      ? generationProgress.activity
+                        ? `Paused · ${generationProgress.activity}`
+                        : 'Generation is paused'
+                      : generationProgress?.activity ??
+                        (generationProgress?.phase_label
+                          ? `${generationProgress.phase_label}…`
+                          : 'Preparing your note…')}
                   </p>
                 </div>
                 <strong>{generationProgress?.progress_percent ?? 0}%</strong>
@@ -736,10 +759,19 @@ export function HomePage() {
                   <dd>{generationProgress?.mcq_generated ?? 0}</dd>
                 </div>
                 <div>
-                  <dt>Status</dt>
-                  <dd>{generationProgress?.is_paused ? 'Paused' : 'Running'}</dd>
+                  <dt>Skipped chunks</dt>
+                  <dd>{generationProgress?.failed_chunks ?? 0}</dd>
                 </div>
               </dl>
+
+              {(generationProgress?.failed_chunks ?? 0) > 0 && (
+                <p className="generation-inline-warning" role="status">
+                  <AlertTriangle aria-hidden="true" />
+                  {generationProgress?.failed_chunks === 1
+                    ? '1 chunk could not be generated and was skipped. Continuing with the rest.'
+                    : `${generationProgress?.failed_chunks} chunks could not be generated and were skipped. Continuing with the rest.`}
+                </p>
+              )}
 
               <div className="generation-actions">
                 <button
@@ -774,29 +806,61 @@ export function HomePage() {
       {generationSummary && (
         <section className="generation-summary" aria-live="polite">
           <div className="generation-summary-head">
-            <h2>Chunk Preview Summary</h2>
-            <button
-              type="button"
-              className="view-chunks-btn"
-              onClick={() => setShowChunks((prev) => !prev)}
-              aria-expanded={showChunks}
-            >
-              <svg
-                className="view-chunks-icon"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+            <h2>Questions ready for review</h2>
+            <div className="generation-summary-head-actions">
+              {generationProgress?.error && (
+                <button type="button" className="view-chunks-btn" onClick={generatePreview}>
+                  Try again
+                </button>
+              )}
+              <button
+                type="button"
+                className="view-chunks-btn"
+                onClick={() => setShowChunks((prev) => !prev)}
+                aria-expanded={showChunks}
               >
-                <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-              {showChunks ? 'Hide Chunks' : 'View Chunks'}
-            </button>
+                <svg
+                  className="view-chunks-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                {showChunks ? 'Hide chunks' : 'View chunks'}
+              </button>
+            </div>
           </div>
+
+          {generationProgress?.error ? (
+            <div className="generation-result-notice is-error" role="alert">
+              <AlertTriangle aria-hidden="true" />
+              <div>
+                <strong>Generation stopped early</strong>
+                <p>
+                  {generationProgress.error.message}
+                  {generatedQuestionCount > 0 &&
+                    ` ${generatedQuestionCount} ${generatedQuestionCount === 1 ? 'question is' : 'questions are'} still ready to review and save.`}
+                </p>
+              </div>
+            </div>
+          ) : (generationProgress?.failed_chunks ?? 0) > 0 ? (
+            <div className="generation-result-notice is-warning" role="status">
+              <AlertTriangle aria-hidden="true" />
+              <div>
+                <strong>
+                  Completed with {generationProgress?.failed_chunks}{' '}
+                  {generationProgress?.failed_chunks === 1 ? 'skipped chunk' : 'skipped chunks'}
+                </strong>
+                <p>Questions from the remaining chunks are ready to review and save.</p>
+              </div>
+            </div>
+          ) : null}
           <div className="summary-grid">
             <p>
               <span>Total Notes</span>
