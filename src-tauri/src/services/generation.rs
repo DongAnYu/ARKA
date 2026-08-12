@@ -16,7 +16,7 @@ use super::graph_generation::{
     stage_a_prompt::format_stage_a_graph_user_prompt,
     stage_a_schema::{parse_stage_a_output, stage_a_format_schema},
     stage_b_generation::generate_mcq,
-    types::ExtractedKnowledge,
+    types::{ExtractedKnowledge, QuestionType},
 };
 use super::llm::{
     JsonGenerationRequest, LlmFailure, LlmFailureCode, LlmService, LlmServiceError, StageBMcq,
@@ -105,6 +105,10 @@ pub struct GenerationProgressSnapshot {
     /// Chunks or graph bundles skipped after their LLM retries were exhausted.
     pub failed_chunks: usize,
     pub mcq_generated: usize,
+    /// Recall questions completed by the graph generation pipeline.
+    pub recall_mcq_generated: usize,
+    /// Relational questions completed by the graph generation pipeline.
+    pub relational_mcq_generated: usize,
     pub progress_percent: u8,
     pub is_paused: bool,
     pub is_cancelled: bool,
@@ -279,6 +283,8 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         completed_chunks: 0,
         failed_chunks: 0,
         mcq_generated: 0,
+        recall_mcq_generated: 0,
+        relational_mcq_generated: 0,
         progress_percent: 0,
         is_paused: false,
         is_cancelled: false,
@@ -433,6 +439,8 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
         completed_chunks: 0,
         failed_chunks: 0,
         mcq_generated: 0,
+        recall_mcq_generated: 0,
+        relational_mcq_generated: 0,
         progress_percent: 0,
         is_paused: false,
         is_cancelled: false,
@@ -566,6 +574,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 .lock()
                 .expect("preview job snapshot mutex should remain available");
             snapshot.current_chunk = None;
+            snapshot.phase_label = Some(String::from("Building knowledge graph"));
             snapshot.activity = Some(String::from("Building the knowledge graph"));
         }
         let graph = consolidator::consolidate(extracted_chunks);
@@ -626,7 +635,14 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             set_job_activity(
                 &job,
                 bundle_idx + 1,
-                format!("Generating question {} of {bundle_count}", bundle_idx + 1),
+                format!(
+                    "Generating {} question {} of {bundle_count}",
+                    match bundle.question_type {
+                        QuestionType::Recall => "recall",
+                        QuestionType::Relational => "relational",
+                    },
+                    bundle_idx + 1
+                ),
             );
 
             // Determine source chunk context for this bundle from entity chunk_ids
@@ -748,6 +764,10 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 .expect("preview job snapshot mutex should remain available");
             snapshot.completed_chunks += 1;
             snapshot.mcq_generated += mcq_count;
+            match bundle.question_type {
+                QuestionType::Recall => snapshot.recall_mcq_generated += mcq_count,
+                QuestionType::Relational => snapshot.relational_mcq_generated += mcq_count,
+            }
             // Phase 2 maps to 50–100 %
             snapshot.progress_percent = two_phase_percent(
                 total_chunks,
@@ -1034,6 +1054,8 @@ mod tests {
             completed_chunks: 0,
             failed_chunks: 0,
             mcq_generated: 0,
+            recall_mcq_generated: 0,
+            relational_mcq_generated: 0,
             progress_percent: 0,
             is_paused: false,
             is_cancelled: false,
@@ -1058,6 +1080,8 @@ mod tests {
         assert_eq!(json["error"]["retryable"], true);
         assert!(json["error"]["retry_after_secs"].is_null());
         assert_eq!(json["failed_chunks"], 0);
+        assert_eq!(json["recall_mcq_generated"], 0);
+        assert_eq!(json["relational_mcq_generated"], 0);
         assert!(json["warnings"].is_array());
         assert!(json["current_chunk"].is_null());
         assert!(json["activity"].is_null());
@@ -1076,6 +1100,8 @@ mod tests {
                 completed_chunks: 1,
                 failed_chunks: 0,
                 mcq_generated: 0,
+                recall_mcq_generated: 0,
+                relational_mcq_generated: 0,
                 progress_percent: 50,
                 is_paused: true,
                 is_cancelled: false,
@@ -1127,6 +1153,8 @@ mod tests {
                 completed_chunks: 0,
                 failed_chunks: 0,
                 mcq_generated: 0,
+                recall_mcq_generated: 0,
+                relational_mcq_generated: 0,
                 progress_percent: 0,
                 is_paused: false,
                 is_cancelled: false,
