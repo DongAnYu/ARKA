@@ -19,7 +19,8 @@ use super::graph_generation::{
     types::{ExtractedKnowledge, QuestionType},
 };
 use super::llm::{
-    JsonGenerationRequest, LlmFailure, LlmFailureCode, LlmService, LlmServiceError, StageBMcq,
+    JsonGenerationRequest, LlmFailure, LlmFailureCode, LlmRetryEvent, LlmRetryState, LlmService,
+    LlmServiceError, StageBMcq,
 };
 
 const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
@@ -198,6 +199,41 @@ fn set_job_activity(job: &PreviewJob, current_chunk: usize, activity: String) {
     snapshot.activity = Some(activity);
 }
 
+/// Attaches live retry activity to one job without sharing progress state globally.
+fn llm_with_job_retry_activity(llm_service: &LlmService, job: &Arc<PreviewJob>) -> Arc<LlmService> {
+    let retry_job = Arc::clone(job);
+    Arc::new(llm_service.with_retry_observer(move |event| {
+        let mut snapshot = retry_job
+            .snapshot
+            .lock()
+            .expect("preview job snapshot mutex should remain available");
+        if snapshot.is_finished || snapshot.is_cancelled {
+            return;
+        }
+        snapshot.activity = Some(retry_activity(&event));
+    }))
+}
+
+/// Formats retry state as concise progress-dashboard activity.
+fn retry_activity(event: &LlmRetryEvent) -> String {
+    if event.state == LlmRetryState::Retrying {
+        return format!(
+            "Retrying LLM request — attempt {} of {}",
+            event.next_attempt, event.max_attempts
+        );
+    }
+
+    let reason = match event.failure.code {
+        LlmFailureCode::RateLimited => "Rate limited",
+        LlmFailureCode::ProviderUnavailable => "Provider unavailable",
+        LlmFailureCode::Connection => "Connection interrupted",
+        LlmFailureCode::InvalidResponse => "Invalid model response",
+        _ => "LLM request failed",
+    };
+    let seconds = event.delay.as_secs();
+    format!("{reason} — retrying in {seconds} seconds")
+}
+
 /// Records a non-terminal LLM failure while allowing the job to continue.
 fn record_skipped_chunk(job: &PreviewJob, error: &LlmServiceError) {
     log::warn!("Skipping generation unit after exhausted LLM retries: {error}");
@@ -309,6 +345,7 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         .insert(job_id.clone(), Arc::clone(&job));
 
     tauri::async_runtime::spawn(async move {
+        let llm_service = llm_with_job_retry_activity(&llm_service, &job);
         let processor = ChunkProcessor::new(Some(llm_service));
         let total_chunks = all_chunks.len();
         let mut ordered_previews = vec![None; total_chunks];
@@ -466,7 +503,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
 
     let notes_clone = notes.clone();
     tauri::async_runtime::spawn(async move {
-        let llm_arc = Some(llm_service);
+        let llm_arc = Some(llm_with_job_retry_activity(&llm_service, &job));
 
         // ── Phase 1: Graph Stage A extraction per chunk ───────────────────
         let format_schema = stage_a_format_schema();
@@ -1043,6 +1080,27 @@ fn build_preview_text(content: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::services::llm::LlmFailureCode;
+
+    #[test]
+    fn retry_activity_shows_rate_limit_countdown() {
+        let event = LlmRetryEvent {
+            failure: LlmFailure {
+                code: LlmFailureCode::RateLimited,
+                message: String::from("Provider request failed"),
+                retryable: true,
+                retry_after_secs: None,
+            },
+            delay: Duration::from_secs(12),
+            next_attempt: 2,
+            max_attempts: 5,
+            state: LlmRetryState::Waiting,
+        };
+
+        assert_eq!(
+            retry_activity(&event),
+            "Rate limited — retrying in 12 seconds"
+        );
+    }
 
     #[test]
     fn generation_progress_serializes_structured_llm_failure() {
