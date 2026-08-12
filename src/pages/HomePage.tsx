@@ -555,6 +555,11 @@ export function HomePage() {
     ? generationProgress.progress_percent
     : 100
   const finalSkippedWork = generationProgress?.failed_chunks ?? 0
+  const skippedWarningMessages = Array.from(
+    new Set((generationProgress?.warnings ?? []).map((warning) => warning.message)),
+  )
+  const visibleSkippedWarnings = skippedWarningMessages.slice(0, 3)
+  const additionalSkippedWarnings = skippedWarningMessages.length - visibleSkippedWarnings.length
   const finalCompletedWork = Math.max(
     (generationSummary?.total_chunks ?? 0) - finalSkippedWork,
     0,
@@ -1068,6 +1073,21 @@ export function HomePage() {
                       {finalSkippedWork === 1 ? 'skipped chunk' : 'skipped chunks'}
                     </strong>
                     <p>Questions from the remaining work are ready to save.</p>
+                    {visibleSkippedWarnings.length > 0 && (
+                      <div className="generation-result-details">
+                        <ul>
+                          {visibleSkippedWarnings.map((message) => (
+                            <li key={message}>{message}</li>
+                          ))}
+                        </ul>
+                        {additionalSkippedWarnings > 0 && (
+                          <small>
+                            {additionalSkippedWarnings} more distinct{' '}
+                            {additionalSkippedWarnings === 1 ? 'issue' : 'issues'}
+                          </small>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : null}

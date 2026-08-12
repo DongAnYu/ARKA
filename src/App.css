@@ -1775,6 +1775,33 @@ body {
   line-height: 1.55;
 }
 
+.generation-result-details {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(250, 204, 21, 0.16);
+}
+
+.generation-result-details > small {
+  display: block;
+  color: #fde68a;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.generation-result-details ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 17px;
+  color: var(--color-medium-gray);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.generation-result-details > small {
+  margin-top: 5px;
+}
+
 .generation-result-notice.is-warning {
   background-color: rgba(250, 204, 21, 0.07);
   color: var(--color-warning-yellow);
