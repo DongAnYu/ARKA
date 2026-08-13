@@ -442,9 +442,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
             .as_nanos();
-        let db_path = std::env::temp_dir().join(format!(
-            "arka-scheduler-{unique_id}.sqlite"
-        ));
+        let db_path = std::env::temp_dir().join(format!("arka-scheduler-{unique_id}.sqlite"));
 
         std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
 
@@ -493,9 +491,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
             .as_nanos();
-        let db_path = std::env::temp_dir().join(format!(
-            "arka-due-questions-{unique_id}.sqlite"
-        ));
+        let db_path = std::env::temp_dir().join(format!("arka-due-questions-{unique_id}.sqlite"));
 
         std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
 
@@ -575,9 +571,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
             .as_nanos();
-        let db_path = std::env::temp_dir().join(format!(
-            "arka-review-question-{unique_id}.sqlite"
-        ));
+        let db_path = std::env::temp_dir().join(format!("arka-review-question-{unique_id}.sqlite"));
 
         std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
 

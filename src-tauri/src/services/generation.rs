@@ -16,12 +16,24 @@ use super::graph_generation::{
     stage_a_prompt::format_stage_a_graph_user_prompt,
     stage_a_schema::{parse_stage_a_output, stage_a_format_schema},
     stage_b_generation::generate_mcq,
-    types::ExtractedKnowledge,
+    types::{ExtractedKnowledge, QuestionType},
 };
-use super::llm::{JsonGenerationRequest, LlmService, LlmServiceError, StageBMcq};
+use super::llm::{
+    JsonGenerationRequest, LlmFailure, LlmFailureCode, LlmRetryEvent, LlmRetryState, LlmService,
+    LlmServiceError, StageBMcq,
+};
 
 const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
 const PAUSE_POLL_MS: u64 = 250;
+
+fn configured_llm_service() -> Result<Arc<LlmService>, String> {
+    LlmService::from_runtime_or_env()
+        .map(Arc::new)
+        .map_err(|err| {
+            log::warn!("Generation cannot start because LLM configuration is unavailable: {err}");
+            err.to_failure().message
+        })
+}
 
 static PREVIEW_JOBS: OnceLock<Mutex<HashMap<String, Arc<PreviewJob>>>> = OnceLock::new();
 static NEXT_PREVIEW_JOB_ID: AtomicU64 = AtomicU64::new(1);
@@ -91,16 +103,29 @@ pub struct GenerationProgressSnapshot {
     pub total_chunks: usize,
     pub notes_with_chunks: usize,
     pub completed_chunks: usize,
+    /// Chunks or graph bundles skipped after their LLM retries were exhausted.
+    pub failed_chunks: usize,
     pub mcq_generated: usize,
+    /// Recall questions completed by the graph generation pipeline.
+    pub recall_mcq_generated: usize,
+    /// Relational questions completed by the graph generation pipeline.
+    pub relational_mcq_generated: usize,
     pub progress_percent: u8,
     pub is_paused: bool,
     pub is_cancelled: bool,
     pub is_finished: bool,
-    pub error: Option<String>,
+    /// Structured, user-facing failure for a terminal generation error.
+    pub error: Option<LlmFailure>,
+    /// Non-terminal failures for chunks that were skipped while the job continued.
+    pub warnings: Vec<LlmFailure>,
     pub summary: Option<GenerationSummary>,
     /// Human-readable phase description (e.g. "Extracting knowledge" / "Generating questions").
     /// None for the default single-phase pipeline.
     pub phase_label: Option<String>,
+    /// One-based index of the chunk or bundle currently being processed.
+    pub current_chunk: Option<usize>,
+    /// Human-readable description of the work currently happening in the background.
+    pub activity: Option<String>,
 }
 
 #[derive(Debug)]
@@ -131,6 +156,117 @@ fn set_progress_percent(snapshot: &mut GenerationProgressSnapshot) {
     };
 }
 
+/// Records an exhausted or non-retryable LLM error as a terminal job failure.
+///
+/// Request-level retries have already completed inside `LlmService` before an
+/// error reaches this boundary. The detailed error is logged for diagnostics,
+/// while the progress snapshot receives its frontend-facing [`LlmFailure`].
+fn finish_job_with_llm_error(
+    job: &PreviewJob,
+    error: &LlmServiceError,
+    partial_summary: Option<GenerationSummary>,
+) {
+    log::error!("Generation stopped after terminal LLM failure: {error}");
+
+    let mut snapshot = job
+        .snapshot
+        .lock()
+        .expect("preview job snapshot mutex should remain available");
+    snapshot.error = Some(error.to_failure());
+    snapshot.summary = partial_summary;
+    snapshot.is_finished = true;
+    snapshot.is_paused = false;
+    snapshot.phase_label = None;
+    snapshot.current_chunk = None;
+    snapshot.activity = None;
+}
+
+/// Returns whether a terminal request result is local to one chunk and can be skipped.
+fn is_skippable_chunk_error(error: &LlmServiceError) -> bool {
+    matches!(
+        error.to_failure().code,
+        LlmFailureCode::InvalidResponse | LlmFailureCode::RequestRejected
+    )
+}
+
+/// Updates the progress snapshot before starting work on a chunk or graph bundle.
+fn set_job_activity(job: &PreviewJob, current_chunk: usize, activity: String) {
+    let mut snapshot = job
+        .snapshot
+        .lock()
+        .expect("preview job snapshot mutex should remain available");
+    snapshot.current_chunk = Some(current_chunk);
+    snapshot.activity = Some(activity);
+}
+
+/// Attaches live retry activity to one job without sharing progress state globally.
+fn llm_with_job_retry_activity(llm_service: &LlmService, job: &Arc<PreviewJob>) -> Arc<LlmService> {
+    let retry_job = Arc::clone(job);
+    Arc::new(llm_service.with_retry_observer(move |event| {
+        let mut snapshot = retry_job
+            .snapshot
+            .lock()
+            .expect("preview job snapshot mutex should remain available");
+        if snapshot.is_finished || snapshot.is_cancelled {
+            return;
+        }
+        snapshot.activity = Some(retry_activity(&event));
+    }))
+}
+
+/// Formats retry state as concise progress-dashboard activity.
+fn retry_activity(event: &LlmRetryEvent) -> String {
+    if event.state == LlmRetryState::Retrying {
+        return format!(
+            "Retrying LLM request — attempt {} of {}",
+            event.next_attempt, event.max_attempts
+        );
+    }
+
+    let reason = match event.failure.code {
+        LlmFailureCode::RateLimited => "Rate limited",
+        LlmFailureCode::ProviderUnavailable => "Provider unavailable",
+        LlmFailureCode::Connection => "Connection interrupted",
+        LlmFailureCode::InvalidResponse => "Invalid model response",
+        _ => "LLM request failed",
+    };
+    let seconds = event.delay.as_secs();
+    format!("{reason} — retrying in {seconds} seconds")
+}
+
+/// Records a non-terminal LLM failure while allowing the job to continue.
+fn record_skipped_chunk(job: &PreviewJob, error: &LlmServiceError) {
+    log::warn!("Skipping generation unit after exhausted LLM retries: {error}");
+
+    let mut snapshot = job
+        .snapshot
+        .lock()
+        .expect("preview job snapshot mutex should remain available");
+    snapshot.failed_chunks += 1;
+    snapshot.warnings.push(error.to_failure());
+}
+
+/// Builds a diagnostic preview for a skipped markdown chunk without any questions.
+fn skipped_chunk_preview(chunk: &MarkdownChunk, error: &LlmServiceError) -> ChunkPreview {
+    ChunkPreview {
+        note_path: chunk.note_path.clone(),
+        note_title: chunk.note_title.clone(),
+        heading: chunk.heading.clone(),
+        section_index: chunk.section_index,
+        chunk_index: chunk.chunk_index,
+        start_line: chunk.start_line,
+        end_line: chunk.end_line,
+        char_count: chunk.content.chars().count(),
+        preview_text: build_preview_text(&chunk.content, 220),
+        llm_result: ChunkLlmResult {
+            status: String::from("skipped"),
+            key_points: Vec::new(),
+            questions: Vec::new(),
+            error: Some(error.to_failure().message),
+        },
+    }
+}
+
 /// Compute a non-regressing two-phase progress percent.
 /// Phase 1 maps to 0–50 %, Phase 2 maps to 50–100 %.
 fn two_phase_percent(
@@ -153,6 +289,7 @@ fn two_phase_percent(
 }
 
 pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, String> {
+    let llm_service = configured_llm_service()?;
     let notes = filesystem::load_vault_notes(vault_path)?;
     let mut note_reports = Vec::new();
     let mut all_chunks = Vec::new();
@@ -180,14 +317,20 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         total_chunks: all_chunks.len(),
         notes_with_chunks,
         completed_chunks: 0,
+        failed_chunks: 0,
         mcq_generated: 0,
+        recall_mcq_generated: 0,
+        relational_mcq_generated: 0,
         progress_percent: 0,
         is_paused: false,
         is_cancelled: false,
         is_finished: false,
         error: None,
+        warnings: Vec::new(),
         summary: None,
         phase_label: None,
+        current_chunk: None,
+        activity: Some(String::from("Preparing generation")),
     };
 
     let job = Arc::new(PreviewJob {
@@ -202,7 +345,8 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         .insert(job_id.clone(), Arc::clone(&job));
 
     tauri::async_runtime::spawn(async move {
-        let processor = ChunkProcessor::new(LlmService::from_runtime_or_env().ok().map(Arc::new));
+        let llm_service = llm_with_job_retry_activity(&llm_service, &job);
+        let processor = ChunkProcessor::new(Some(llm_service));
         let total_chunks = all_chunks.len();
         let mut ordered_previews = vec![None; total_chunks];
 
@@ -222,7 +366,34 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
                 break;
             }
 
-            let preview = processor.process(&chunk).await;
+            set_job_activity(
+                &job,
+                order + 1,
+                format!(
+                    "Generating questions for chunk {} of {total_chunks}",
+                    order + 1
+                ),
+            );
+
+            let preview = match processor.process(&chunk).await {
+                Ok(preview) => preview,
+                Err(err) => {
+                    if is_skippable_chunk_error(&err) {
+                        record_skipped_chunk(&job, &err);
+                        skipped_chunk_preview(&chunk, &err)
+                    } else {
+                        let partial_summary = GenerationSummary {
+                            total_notes: notes.len(),
+                            total_chunks,
+                            notes_with_chunks,
+                            note_reports,
+                            chunk_previews: ordered_previews.into_iter().flatten().collect(),
+                        };
+                        finish_job_with_llm_error(&job, &err, Some(partial_summary));
+                        return;
+                    }
+                }
+            };
             let mcq_count = preview.llm_result.questions.len();
             ordered_previews[order] = Some(preview);
 
@@ -254,6 +425,8 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         }
         snapshot.is_finished = true;
         snapshot.is_paused = false;
+        snapshot.current_chunk = None;
+        snapshot.activity = None;
         set_progress_percent(&mut snapshot);
     });
 
@@ -273,6 +446,7 @@ const GRAPH_STAGE_A_SYSTEM_PROMPT: &str =
 /// Progress is reported through the shared PreviewJob snapshot and is
 /// compatible with `get_preview_generation_progress` / pause / cancel.
 pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, String> {
+    let llm_service = configured_llm_service()?;
     let notes = filesystem::load_vault_notes(vault_path)?;
     let mut note_reports = Vec::new();
     let mut all_chunks: Vec<MarkdownChunk> = Vec::new();
@@ -300,14 +474,20 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
         total_chunks,
         notes_with_chunks,
         completed_chunks: 0,
+        failed_chunks: 0,
         mcq_generated: 0,
+        recall_mcq_generated: 0,
+        relational_mcq_generated: 0,
         progress_percent: 0,
         is_paused: false,
         is_cancelled: false,
         is_finished: false,
         error: None,
+        warnings: Vec::new(),
         summary: None,
         phase_label: Some(String::from("Extracting knowledge")),
+        current_chunk: None,
+        activity: Some(String::from("Preparing knowledge extraction")),
     };
 
     let job = Arc::new(PreviewJob {
@@ -323,7 +503,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
 
     let notes_clone = notes.clone();
     tauri::async_runtime::spawn(async move {
-        let llm_arc = LlmService::from_runtime_or_env().ok().map(Arc::new);
+        let llm_arc = Some(llm_with_job_retry_activity(&llm_service, &job));
 
         // ── Phase 1: Graph Stage A extraction per chunk ───────────────────
         let format_schema = stage_a_format_schema();
@@ -344,6 +524,15 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             if job.cancelled.load(Ordering::Relaxed) {
                 break;
             }
+
+            set_job_activity(
+                &job,
+                order + 1,
+                format!(
+                    "Extracting knowledge from chunk {} of {total_chunks}",
+                    order + 1
+                ),
+            );
 
             chunk_previews_phase1.push((
                 order,
@@ -375,7 +564,19 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                         extracted_chunks.push(extracted);
                     }
                     Err(err) => {
-                        log::warn!("Graph Stage A failed for chunk {}: {}", order, err);
+                        if is_skippable_chunk_error(&err) {
+                            record_skipped_chunk(&job, &err);
+                        } else {
+                            let partial_summary = GenerationSummary {
+                                total_notes: notes_clone.len(),
+                                total_chunks,
+                                notes_with_chunks,
+                                note_reports,
+                                chunk_previews: Vec::new(),
+                            };
+                            finish_job_with_llm_error(&job, &err, Some(partial_summary));
+                            return;
+                        }
                     }
                 }
             }
@@ -398,10 +599,21 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             snapshot.is_cancelled = true;
             snapshot.is_finished = true;
             snapshot.is_paused = false;
+            snapshot.current_chunk = None;
+            snapshot.activity = None;
             return;
         }
 
         // ── Consolidation: merge extracted chunks into PropositionGraph ───
+        {
+            let mut snapshot = job
+                .snapshot
+                .lock()
+                .expect("preview job snapshot mutex should remain available");
+            snapshot.current_chunk = None;
+            snapshot.phase_label = Some(String::from("Building knowledge graph"));
+            snapshot.activity = Some(String::from("Building the knowledge graph"));
+        }
         let graph = consolidator::consolidate(extracted_chunks);
         let index = graph_index::build_index(&graph);
         let bundles = bundle_builder::assemble_bundles(&graph, &index);
@@ -416,6 +628,8 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             snapshot.phase_label = Some(String::from("Generating questions"));
             snapshot.total_chunks = bundle_count;
             snapshot.completed_chunks = 0;
+            snapshot.current_chunk = None;
+            snapshot.activity = Some(String::from("Preparing question generation"));
             snapshot.progress_percent =
                 two_phase_percent(total_chunks, total_chunks, 0, bundle_count);
         }
@@ -454,6 +668,19 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             if job.cancelled.load(Ordering::Relaxed) {
                 break;
             }
+
+            set_job_activity(
+                &job,
+                bundle_idx + 1,
+                format!(
+                    "Generating {} question {} of {bundle_count}",
+                    match bundle.question_type {
+                        QuestionType::Recall => "recall",
+                        QuestionType::Relational => "relational",
+                    },
+                    bundle_idx + 1
+                ),
+            );
 
             // Determine source chunk context for this bundle from entity chunk_ids
             let source_chunk_id = bundle
@@ -521,12 +748,27 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                             error: None,
                         }
                     }
-                    Err(err) => ChunkLlmResult {
-                        status: String::from("error_stage_b"),
-                        key_points: vec![bundle.root_point.point.clone()],
-                        questions: Vec::new(),
-                        error: Some(err.to_string()),
-                    },
+                    Err(err) => {
+                        if is_skippable_chunk_error(&err) {
+                            record_skipped_chunk(&job, &err);
+                            ChunkLlmResult {
+                                status: String::from("skipped"),
+                                key_points: vec![bundle.root_point.point.clone()],
+                                questions: Vec::new(),
+                                error: Some(err.to_failure().message),
+                            }
+                        } else {
+                            let partial_summary = GenerationSummary {
+                                total_notes: notes_clone.len(),
+                                total_chunks: bundle_count,
+                                notes_with_chunks,
+                                note_reports,
+                                chunk_previews: ordered_previews.into_iter().flatten().collect(),
+                            };
+                            finish_job_with_llm_error(&job, &err, Some(partial_summary));
+                            return;
+                        }
+                    }
                 }
             } else {
                 ChunkLlmResult {
@@ -559,6 +801,10 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 .expect("preview job snapshot mutex should remain available");
             snapshot.completed_chunks += 1;
             snapshot.mcq_generated += mcq_count;
+            match bundle.question_type {
+                QuestionType::Recall => snapshot.recall_mcq_generated += mcq_count,
+                QuestionType::Relational => snapshot.relational_mcq_generated += mcq_count,
+            }
             // Phase 2 maps to 50–100 %
             snapshot.progress_percent = two_phase_percent(
                 total_chunks,
@@ -589,6 +835,8 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
         snapshot.is_paused = false;
         snapshot.progress_percent = 100;
         snapshot.phase_label = None;
+        snapshot.current_chunk = None;
+        snapshot.activity = None;
     });
 
     Ok(job_id)
@@ -657,8 +905,8 @@ impl ChunkProcessor {
         Self { llm_service }
     }
 
-    async fn process(&self, chunk: &MarkdownChunk) -> ChunkPreview {
-        ChunkPreview {
+    async fn process(&self, chunk: &MarkdownChunk) -> Result<ChunkPreview, LlmServiceError> {
+        Ok(ChunkPreview {
             note_path: chunk.note_path.clone(),
             note_title: chunk.note_title.clone(),
             heading: chunk.heading.clone(),
@@ -668,33 +916,21 @@ impl ChunkProcessor {
             end_line: chunk.end_line,
             char_count: chunk.content.chars().count(),
             preview_text: build_preview_text(&chunk.content, 220),
-            llm_result: self.run_llm_pipeline(chunk).await,
-        }
+            llm_result: self.run_llm_pipeline(chunk).await?,
+        })
     }
 
-    async fn run_llm_pipeline(&self, chunk: &MarkdownChunk) -> ChunkLlmResult {
+    async fn run_llm_pipeline(
+        &self,
+        chunk: &MarkdownChunk,
+    ) -> Result<ChunkLlmResult, LlmServiceError> {
         let Some(service) = self.llm_service.as_deref() else {
-            return ChunkLlmResult {
-                status: String::from("error_init"),
-                key_points: Vec::new(),
-                questions: Vec::new(),
-                error: Some(String::from(
-                    "LLM service could not be initialized from runtime settings or env",
-                )),
-            };
+            return Err(LlmServiceError::InvalidOutput(String::from(
+                "LLM service could not be initialized from runtime settings or env",
+            )));
         };
 
-        let stage_a = match service.generate_stage_a_key_points(&chunk.content).await {
-            Ok(value) => value,
-            Err(err) => {
-                return ChunkLlmResult {
-                    status: String::from("error_stage_a"),
-                    key_points: Vec::new(),
-                    questions: Vec::new(),
-                    error: Some(err.to_string()),
-                };
-            }
-        };
+        let stage_a = service.generate_stage_a_key_points(&chunk.content).await?;
 
         let key_points = stage_a
             .key_points
@@ -703,35 +939,24 @@ impl ChunkProcessor {
             .collect::<Vec<_>>();
 
         if key_points.is_empty() {
-            return ChunkLlmResult {
+            return Ok(ChunkLlmResult {
                 status: String::from("no_content"),
                 key_points,
                 questions: Vec::new(),
                 error: None,
-            };
+            });
         }
 
-        let stage_b = match service
+        let stage_b = service
             .generate_stage_b_mcqs(&chunk.content, &key_points)
-            .await
-        {
-            Ok(value) => value,
-            Err(err) => {
-                return ChunkLlmResult {
-                    status: String::from("error_stage_b"),
-                    key_points,
-                    questions: Vec::new(),
-                    error: Some(err.to_string()),
-                };
-            }
-        };
+            .await?;
 
-        ChunkLlmResult {
+        Ok(ChunkLlmResult {
             status: String::from("ok"),
             key_points,
             questions: stage_b.questions.into_iter().map(mcq_to_preview).collect(),
             error: None,
-        }
+        })
     }
 }
 
@@ -785,7 +1010,10 @@ pub async fn orchestrate_notes(notes: &[Note]) -> GenerationSummary {
 
         while let Some(job_result) = jobs.join_next().await {
             match job_result {
-                Ok((order, preview)) => ordered_previews[order] = Some(preview),
+                Ok((order, Ok(preview))) => ordered_previews[order] = Some(preview),
+                Ok((_, Err(err))) => {
+                    log::error!("Chunk generation failed: {err}");
+                }
                 Err(err) => {
                     log::error!("Chunk generation task failed: {err}");
                 }
@@ -851,6 +1079,168 @@ fn build_preview_text(content: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::llm::LlmFailureCode;
+
+    #[test]
+    fn retry_activity_shows_rate_limit_countdown() {
+        let event = LlmRetryEvent {
+            failure: LlmFailure {
+                code: LlmFailureCode::RateLimited,
+                message: String::from("Provider request failed"),
+                retryable: true,
+                retry_after_secs: None,
+            },
+            delay: Duration::from_secs(12),
+            next_attempt: 2,
+            max_attempts: 5,
+            state: LlmRetryState::Waiting,
+        };
+
+        assert_eq!(
+            retry_activity(&event),
+            "Rate limited — retrying in 12 seconds"
+        );
+    }
+
+    #[test]
+    fn generation_progress_serializes_structured_llm_failure() {
+        let snapshot = GenerationProgressSnapshot {
+            job_id: String::from("preview-1"),
+            total_notes: 1,
+            total_chunks: 1,
+            notes_with_chunks: 1,
+            completed_chunks: 0,
+            failed_chunks: 0,
+            mcq_generated: 0,
+            recall_mcq_generated: 0,
+            relational_mcq_generated: 0,
+            progress_percent: 0,
+            is_paused: false,
+            is_cancelled: false,
+            is_finished: true,
+            error: Some(LlmFailure {
+                code: LlmFailureCode::Connection,
+                message: String::from("The LLM connection failed."),
+                retryable: true,
+                retry_after_secs: None,
+            }),
+            warnings: Vec::new(),
+            summary: None,
+            phase_label: None,
+            current_chunk: None,
+            activity: None,
+        };
+
+        let json = serde_json::to_value(snapshot).expect("generation progress should serialize");
+
+        assert_eq!(json["error"]["code"], "connection");
+        assert_eq!(json["error"]["message"], "The LLM connection failed.");
+        assert_eq!(json["error"]["retryable"], true);
+        assert!(json["error"]["retry_after_secs"].is_null());
+        assert_eq!(json["failed_chunks"], 0);
+        assert_eq!(json["recall_mcq_generated"], 0);
+        assert_eq!(json["relational_mcq_generated"], 0);
+        assert!(json["warnings"].is_array());
+        assert!(json["current_chunk"].is_null());
+        assert!(json["activity"].is_null());
+    }
+
+    #[test]
+    fn terminal_llm_error_finishes_job_and_records_failure() {
+        let job = PreviewJob {
+            paused: AtomicBool::new(true),
+            cancelled: AtomicBool::new(false),
+            snapshot: Mutex::new(GenerationProgressSnapshot {
+                job_id: String::from("preview-terminal-error"),
+                total_notes: 1,
+                total_chunks: 2,
+                notes_with_chunks: 1,
+                completed_chunks: 1,
+                failed_chunks: 0,
+                mcq_generated: 0,
+                recall_mcq_generated: 0,
+                relational_mcq_generated: 0,
+                progress_percent: 50,
+                is_paused: true,
+                is_cancelled: false,
+                is_finished: false,
+                error: None,
+                warnings: Vec::new(),
+                summary: None,
+                phase_label: Some(String::from("Generating questions")),
+                current_chunk: Some(2),
+                activity: Some(String::from("Generating question 2 of 2")),
+            }),
+        };
+
+        finish_job_with_llm_error(&job, &LlmServiceError::MissingApiKey, None);
+
+        let snapshot = job
+            .snapshot
+            .lock()
+            .expect("test snapshot should be available");
+        let failure = snapshot.error.as_ref().expect("failure should be recorded");
+        assert_eq!(failure.code, LlmFailureCode::Account);
+        assert!(snapshot.is_finished);
+        assert!(!snapshot.is_paused);
+        assert!(snapshot.phase_label.is_none());
+        assert!(snapshot.current_chunk.is_none());
+        assert!(snapshot.activity.is_none());
+        assert_eq!(snapshot.progress_percent, 50);
+        assert!(snapshot.summary.is_none());
+    }
+
+    #[test]
+    fn invalid_output_is_skippable_but_account_failure_is_terminal() {
+        assert!(is_skippable_chunk_error(&LlmServiceError::InvalidOutput(
+            String::from("invalid MCQ")
+        )));
+        assert!(!is_skippable_chunk_error(&LlmServiceError::MissingApiKey));
+    }
+
+    #[test]
+    fn skipped_chunk_records_warning_without_finishing_job() {
+        let job = PreviewJob {
+            paused: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+            snapshot: Mutex::new(GenerationProgressSnapshot {
+                job_id: String::from("preview-skipped-error"),
+                total_notes: 1,
+                total_chunks: 2,
+                notes_with_chunks: 1,
+                completed_chunks: 0,
+                failed_chunks: 0,
+                mcq_generated: 0,
+                recall_mcq_generated: 0,
+                relational_mcq_generated: 0,
+                progress_percent: 0,
+                is_paused: false,
+                is_cancelled: false,
+                is_finished: false,
+                error: None,
+                warnings: Vec::new(),
+                summary: None,
+                phase_label: None,
+                current_chunk: Some(1),
+                activity: Some(String::from("Generating questions for chunk 1 of 2")),
+            }),
+        };
+
+        record_skipped_chunk(
+            &job,
+            &LlmServiceError::InvalidOutput(String::from("invalid MCQ")),
+        );
+
+        let snapshot = job
+            .snapshot
+            .lock()
+            .expect("test snapshot should be available");
+        assert_eq!(snapshot.failed_chunks, 1);
+        assert_eq!(snapshot.warnings.len(), 1);
+        assert_eq!(snapshot.warnings[0].code, LlmFailureCode::InvalidResponse);
+        assert!(!snapshot.is_finished);
+        assert!(snapshot.error.is_none());
+    }
 
     #[test]
     fn orchestrator_counts_chunks_across_multiple_notes() {

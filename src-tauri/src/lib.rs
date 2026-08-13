@@ -128,6 +128,20 @@ async fn save_model_config(config: ModelConfig) -> Result<(), String> {
         .map_err(|err| format!("Failed to save model config: {err}"))
 }
 
+fn apply_persisted_llm_config(config: &ModelConfig) -> Result<(), String> {
+    let timeout_secs = u64::try_from(config.timeout_secs)
+        .map_err(|_| "Persisted LLM timeout must be greater than 0 seconds.".to_string())?;
+
+    services::llm::set_runtime_llm_config(
+        &config.provider,
+        &config.base_url,
+        &config.selected_model,
+        timeout_secs,
+        config.api_key.as_deref(),
+    )
+    .map_err(|err| format!("Failed to apply persisted LLM settings: {err}"))
+}
+
 #[tauri::command]
 fn set_runtime_llm_settings(
     provider: String,
@@ -233,7 +247,7 @@ pub fn run() {
                 match dotenvy::from_path(&env_path) {
                     Ok(_) => log::info!("Loaded environment from {}", env_path.display()),
                     Err(err) => log::warn!(
-                        "Could not load .env from {}: {} (falling back to process environment/defaults)",
+                        "Could not load .env from {}: {} (falling back to process environment)",
                         env_path.display(),
                         err
                     ),
@@ -268,6 +282,30 @@ pub fn run() {
             }
 
             log::info!("Database startup checks completed successfully");
+
+            match tauri::async_runtime::block_on(services::database::load_model_config()) {
+                Ok(config) if config.selected_model.trim().is_empty() => {
+                    log::info!(
+                        "No persisted LLM model is configured; generation requires explicit model settings or environment configuration"
+                    );
+                }
+                Ok(config) => match apply_persisted_llm_config(&config) {
+                    Ok(()) => log::info!(
+                        "Restored persisted LLM config (provider={}, base_url={}, model={}, timeout_secs={})",
+                        config.provider,
+                        config.base_url,
+                        config.selected_model,
+                        config.timeout_secs
+                    ),
+                    Err(err) => log::warn!(
+                        "Could not restore persisted LLM config: {err}; generation requires valid model settings or environment configuration"
+                    ),
+                },
+                Err(err) => log::warn!(
+                    "Could not load persisted LLM config: {err}; generation requires valid model settings or environment configuration"
+                ),
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

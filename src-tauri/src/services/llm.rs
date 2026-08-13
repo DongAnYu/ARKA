@@ -1,25 +1,27 @@
 use std::collections::HashMap;
 use std::env;
-use std::error::Error;
 use std::fmt;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use reqwest::Client;
-use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::time::sleep;
 
 pub mod default_generation;
 pub mod default_generation_schema;
+mod error;
 pub use default_generation_schema::{LlmSchemaError, StageBMcq};
+pub use error::{LlmConfigError, LlmFailure, LlmFailureCode, LlmServiceError};
+
+use error::{classify_provider_error, is_retryable_error};
 
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
-const DEFAULT_MODEL: &str = "qwen3:4b";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
-const GENERATION_MAX_ATTEMPTS: usize = 4;
+// One initial request plus four retries: 2s + 4s + 8s + 16s = 30s total waiting.
+const GENERATION_MAX_ATTEMPTS: usize = 5;
 
 static RUNTIME_LLM_CONFIG: OnceLock<RwLock<Option<LlmConfig>>> = OnceLock::new();
 
@@ -107,7 +109,7 @@ impl LlmConfig {
     /// - LLM_TIMEOUT_SECS: request timeout in seconds
     pub fn from_env() -> Result<Self, LlmConfigError> {
         let provider = LlmProvider::from_str(
-            &env::var("LLM_PROVIDER").unwrap_or_else(|_| String::from("ollama")),
+            &env::var("LLM_PROVIDER").map_err(|_| LlmConfigError::NotConfigured)?,
         )?;
         let profile = provider_profile(provider);
 
@@ -119,7 +121,10 @@ impl LlmConfig {
                 .or_else(|_| env::var("LLM_BASE_URL"))
                 .unwrap_or_else(|_| profile.default_base_url.to_string()),
         };
-        let model = env::var("LLM_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        let model = env::var("LLM_MODEL").map_err(|_| LlmConfigError::NotConfigured)?;
+        if model.trim().is_empty() {
+            return Err(LlmConfigError::NotConfigured);
+        }
         let timeout_secs = parse_u64_env("LLM_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS)?;
         let api_key = match provider {
             LlmProvider::Ollama => None,
@@ -244,10 +249,40 @@ pub fn resolve_llm_config() -> Result<LlmConfig, LlmConfigError> {
     LlmConfig::from_env()
 }
 
-#[derive(Debug)]
 pub struct LlmService {
     client: Client,
     config: LlmConfig,
+    retry_observer: Option<Arc<dyn Fn(LlmRetryEvent) + Send + Sync>>,
+}
+
+impl fmt::Debug for LlmService {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LlmService")
+            .field("provider", &self.config.provider)
+            .field("base_url", &self.config.base_url)
+            .field("model", &self.config.model)
+            .field("timeout_secs", &self.config.timeout_secs)
+            .field("has_retry_observer", &self.retry_observer.is_some())
+            .finish()
+    }
+}
+
+/// Retry lifecycle state published to a generation job's progress snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LlmRetryState {
+    Waiting,
+    Retrying,
+}
+
+/// Job-scoped retry information used to show live background activity.
+#[derive(Debug, Clone)]
+pub(crate) struct LlmRetryEvent {
+    pub(crate) failure: LlmFailure,
+    pub(crate) delay: Duration,
+    pub(crate) next_attempt: usize,
+    pub(crate) max_attempts: usize,
+    pub(crate) state: LlmRetryState,
 }
 
 pub(crate) struct JsonGenerationRequest<'a> {
@@ -336,7 +371,7 @@ pub async fn fetch_ollama_models(
     let status = response.status();
     let body = response.text().await.map_err(LlmServiceError::Http)?;
     if !status.is_success() {
-        return Err(LlmServiceError::HttpStatus { status, body });
+        return Err(classify_provider_error(LlmProvider::Ollama, status, &body));
     }
 
     let parsed: OllamaTagsResponse =
@@ -394,7 +429,29 @@ impl LlmService {
         }
         let client = builder.build()?;
 
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            retry_observer: None,
+        })
+    }
+
+    /// Returns a service clone that publishes retries only to the supplied job observer.
+    pub(crate) fn with_retry_observer<F>(&self, observer: F) -> Self
+    where
+        F: Fn(LlmRetryEvent) + Send + Sync + 'static,
+    {
+        Self {
+            client: self.client.clone(),
+            config: self.config.clone(),
+            retry_observer: Some(Arc::new(observer)),
+        }
+    }
+
+    fn notify_retry(&self, event: LlmRetryEvent) {
+        if let Some(observer) = &self.retry_observer {
+            observer(event);
+        }
     }
 
     pub fn from_env() -> Result<Self, LlmConfigError> {
@@ -453,6 +510,7 @@ impl LlmService {
                     }
 
                     let delay = retry_delay(attempt);
+                    let failure = err.to_failure();
                     log::warn!(
                         "LLM {} request failed on attempt {}/{}: {}. Retrying in {} ms",
                         request.stage_label,
@@ -461,7 +519,21 @@ impl LlmService {
                         err,
                         delay.as_millis()
                     );
+                    self.notify_retry(LlmRetryEvent {
+                        failure: failure.clone(),
+                        delay,
+                        next_attempt: attempt + 1,
+                        max_attempts: GENERATION_MAX_ATTEMPTS,
+                        state: LlmRetryState::Waiting,
+                    });
                     sleep(delay).await;
+                    self.notify_retry(LlmRetryEvent {
+                        failure,
+                        delay,
+                        next_attempt: attempt + 1,
+                        max_attempts: GENERATION_MAX_ATTEMPTS,
+                        state: LlmRetryState::Retrying,
+                    });
                     continue;
                 }
             };
@@ -474,6 +546,7 @@ impl LlmService {
                     }
 
                     let delay = retry_delay(attempt);
+                    let failure = err.to_failure();
                     log::warn!(
                         "LLM {} output parsing failed on attempt {}/{}: {} | payload_preview={}. Retrying in {} ms",
                         request.stage_label,
@@ -483,7 +556,21 @@ impl LlmService {
                         log_preview(&raw_json, request.payload_preview_chars),
                         delay.as_millis()
                     );
+                    self.notify_retry(LlmRetryEvent {
+                        failure: failure.clone(),
+                        delay,
+                        next_attempt: attempt + 1,
+                        max_attempts: GENERATION_MAX_ATTEMPTS,
+                        state: LlmRetryState::Waiting,
+                    });
                     sleep(delay).await;
+                    self.notify_retry(LlmRetryEvent {
+                        failure,
+                        delay,
+                        next_attempt: attempt + 1,
+                        max_attempts: GENERATION_MAX_ATTEMPTS,
+                        state: LlmRetryState::Retrying,
+                    });
                 }
             };
         }
@@ -546,7 +633,7 @@ impl LlmService {
         let status = response.status();
         let body = response.text().await.map_err(LlmServiceError::Http)?;
         if !status.is_success() {
-            return Err(LlmServiceError::HttpStatus { status, body });
+            return Err(classify_provider_error(LlmProvider::Ollama, status, &body));
         }
 
         let parsed: OllamaChatResponse =
@@ -616,7 +703,11 @@ impl LlmService {
         let status = response.status();
         let body = response.text().await.map_err(LlmServiceError::Http)?;
         if !status.is_success() {
-            return Err(LlmServiceError::HttpStatus { status, body });
+            return Err(classify_provider_error(
+                LlmProvider::OpenRouter,
+                status,
+                &body,
+            ));
         }
 
         let parsed: OpenRouterChatResponse =
@@ -638,86 +729,6 @@ impl LlmService {
     }
 }
 
-#[derive(Debug)]
-pub enum LlmConfigError {
-    InvalidInteger {
-        key: String,
-        value: String,
-    },
-    InvalidValue {
-        key: String,
-        value: String,
-        reason: String,
-    },
-    RuntimeConfigPoisoned,
-    HttpClientBuild(reqwest::Error),
-}
-
-impl fmt::Display for LlmConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidInteger { key, value } => {
-                write!(f, "Invalid integer for {key}: {value}")
-            }
-            Self::InvalidValue { key, value, reason } => {
-                write!(f, "Invalid value for {key} ('{value}'): {reason}")
-            }
-            Self::RuntimeConfigPoisoned => {
-                write!(f, "Runtime LLM config state is unavailable")
-            }
-            Self::HttpClientBuild(err) => write!(f, "Failed to build HTTP client: {err}"),
-        }
-    }
-}
-
-impl Error for LlmConfigError {}
-
-#[derive(Debug)]
-pub enum LlmServiceError {
-    Connect { url: String, source: reqwest::Error },
-    Http(reqwest::Error),
-    HttpStatus { status: StatusCode, body: String },
-    ResponseDecode(serde_json::Error),
-    ModelNotFound { model: String },
-    MissingApiKey,
-    Serialize(serde_json::Error),
-    EmptyModelResponse,
-    Schema(LlmSchemaError),
-    InvalidOutput(String),
-}
-
-impl fmt::Display for LlmServiceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Connect { url, source } => {
-                write!(
-                    f,
-                    "Cannot reach LLM endpoint at {url}: {source}. Ensure the provider endpoint is reachable and credentials are valid."
-                )
-            }
-            Self::Http(err) => write!(f, "LLM request failed: {err}"),
-            Self::HttpStatus { status, body } => {
-                write!(f, "LLM endpoint returned HTTP {status}: {body}")
-            }
-            Self::ResponseDecode(err) => write!(f, "Failed to decode LLM response envelope: {err}"),
-            Self::ModelNotFound { model } => write!(
-                f,
-                "Model '{model}' was not found on this provider URL. Try fetching all models first."
-            ),
-            Self::MissingApiKey => write!(
-                f,
-                "Missing API key for provider request. Set OPENROUTER_API_KEY in your environment."
-            ),
-            Self::Serialize(err) => write!(f, "Failed to serialize LLM request context: {err}"),
-            Self::EmptyModelResponse => write!(f, "LLM returned an empty response message"),
-            Self::Schema(err) => write!(f, "{err}"),
-            Self::InvalidOutput(err) => write!(f, "LLM returned invalid output: {err}"),
-        }
-    }
-}
-
-impl Error for LlmServiceError {}
-
 fn parse_u64_env(key: &str, default_value: u64) -> Result<u64, LlmConfigError> {
     match env::var(key) {
         Ok(value) => value
@@ -731,30 +742,8 @@ fn parse_u64_env(key: &str, default_value: u64) -> Result<u64, LlmConfigError> {
 }
 
 fn retry_delay(attempt: usize) -> Duration {
-    let base_ms: u64 = 300;
-    let exponent = attempt.saturating_sub(1).min(10) as u32;
-    Duration::from_millis(base_ms.saturating_mul(2u64.saturating_pow(exponent)))
-}
-
-fn is_retryable_error(err: &LlmServiceError) -> bool {
-    match err {
-        LlmServiceError::Connect { .. } => true,
-        LlmServiceError::Http(source) => source.is_timeout() || source.is_connect(),
-        LlmServiceError::HttpStatus { status, .. } => {
-            *status == StatusCode::TOO_MANY_REQUESTS
-                || *status == StatusCode::INTERNAL_SERVER_ERROR
-                || *status == StatusCode::BAD_GATEWAY
-                || *status == StatusCode::SERVICE_UNAVAILABLE
-                || *status == StatusCode::GATEWAY_TIMEOUT
-        }
-        LlmServiceError::ResponseDecode(_)
-        | LlmServiceError::EmptyModelResponse
-        | LlmServiceError::Schema(_)
-        | LlmServiceError::InvalidOutput(_) => true,
-        LlmServiceError::ModelNotFound { .. }
-        | LlmServiceError::MissingApiKey
-        | LlmServiceError::Serialize(_) => false,
-    }
+    let exponent = attempt.saturating_sub(1).min(3) as u32;
+    Duration::from_secs(2u64.saturating_pow(exponent + 1))
 }
 
 fn strip_markdown_fences(raw: &str) -> String {
@@ -831,4 +820,30 @@ fn log_preview(raw: &str, max_chars: usize) -> String {
     let mut preview = pretty.chars().take(max_chars).collect::<String>();
     preview.push_str("\n...<truncated>");
     preview
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_schedule_waits_thirty_seconds_in_total() {
+        let delays = (1..GENERATION_MAX_ATTEMPTS)
+            .map(retry_delay)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            delays,
+            vec![
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(8),
+                Duration::from_secs(16),
+            ]
+        );
+        assert_eq!(
+            delays.into_iter().sum::<Duration>(),
+            Duration::from_secs(30)
+        );
+    }
 }

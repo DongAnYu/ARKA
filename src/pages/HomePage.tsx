@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
+  AlertTriangle,
   ArrowRight,
   Check,
   ChevronDown,
@@ -114,6 +115,23 @@ type GenerationSummary = {
   chunk_previews: ChunkPreview[]
 }
 
+type LlmFailureCode =
+  | 'setup'
+  | 'account'
+  | 'connection'
+  | 'rate_limited'
+  | 'provider_unavailable'
+  | 'request_rejected'
+  | 'invalid_response'
+  | 'unknown'
+
+type LlmFailure = {
+  code: LlmFailureCode
+  message: string
+  retryable: boolean
+  retry_after_secs: number | null
+}
+
 type GenerationProgress = {
   job_id: string
   total_notes: number
@@ -122,10 +140,16 @@ type GenerationProgress = {
   completed_chunks: number
   mcq_generated: number
   progress_percent: number
+  failed_chunks: number
+  warnings: LlmFailure[]
+  recall_mcq_generated: number
+  relational_mcq_generated: number
+  current_chunk: number | null
+  activity: string | null
   is_paused: boolean
   is_cancelled: boolean
   is_finished: boolean
-  error: string | null
+  error: LlmFailure | null
   summary: GenerationSummary | null
   phase_label: string | null
 }
@@ -322,7 +346,11 @@ export function HomePage() {
       setGenerationJobId(jobId)
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : 'Failed to generate chunk preview'
+        typeof err === 'string'
+          ? err
+          : err instanceof Error
+            ? err.message
+            : 'Failed to start question generation'
       setError(message)
       setIsGenerating(false)
     }
@@ -347,10 +375,6 @@ export function HomePage() {
 
         setGenerationProgress(progress)
         setIsGenerating(!progress.is_finished)
-
-        if (progress.error) {
-          setError(progress.error)
-        }
 
         if (progress.is_finished) {
           if (progress.summary) {
@@ -514,6 +538,33 @@ export function HomePage() {
     }
   }
 
+  const generationPercent = generationProgress?.progress_percent ?? 0
+  const completedWork = generationProgress?.completed_chunks ?? 0
+  const totalWork = generationProgress?.total_chunks ?? 0
+  const skippedWork = generationProgress?.failed_chunks ?? 0
+  const successfulWork = Math.max(completedWork - skippedWork, 0)
+  const questionsGenerated = generationProgress?.mcq_generated ?? 0
+  const recallQuestions = generationProgress?.recall_mcq_generated ?? 0
+  const relationalQuestions = generationProgress?.relational_mcq_generated ?? 0
+  const workScale = Math.max(totalWork, 1)
+  const questionScale = Math.max(questionsGenerated, 1)
+  const graphPhases = ['Extracting knowledge', 'Building knowledge graph', 'Generating questions']
+  const currentGraphPhase = generationProgress?.phase_label ?? graphPhases[0]
+  const currentGraphPhaseIndex = Math.max(graphPhases.indexOf(currentGraphPhase), 0)
+  const finalCompletionPercent = generationProgress?.error
+    ? generationProgress.progress_percent
+    : 100
+  const finalSkippedWork = generationProgress?.failed_chunks ?? 0
+  const skippedWarningMessages = Array.from(
+    new Set((generationProgress?.warnings ?? []).map((warning) => warning.message)),
+  )
+  const visibleSkippedWarnings = skippedWarningMessages.slice(0, 3)
+  const additionalSkippedWarnings = skippedWarningMessages.length - visibleSkippedWarnings.length
+  const finalCompletedWork = Math.max(
+    (generationSummary?.total_chunks ?? 0) - finalSkippedWork,
+    0,
+  )
+
   return (
     <div className={`app-container home-page${selectedNote ? ' has-selected-note' : ''}`}>
       {!selectedNote ? (
@@ -547,7 +598,7 @@ export function HomePage() {
             </div>
           </div>
 
-          {error && <div className="error-banner">{error}</div>}
+          {error && <p className="error-text" role="alert">{error}</p>}
 
           <div className="notes-container" aria-live="polite">
             {notes.length > 1 && (
@@ -607,7 +658,7 @@ export function HomePage() {
             </div>
           </header>
 
-          {error && <div className="error-banner">{error}</div>}
+          {error && <p className="error-text" role="alert">{error}</p>}
 
           {!isGenerating && !generationSummary && (
             <section className="generation-setup" aria-labelledby="generation-depth-title">
@@ -691,53 +742,150 @@ export function HomePage() {
 
           {isGenerating && (
             <section className="generation-progress generation-progress-focused" aria-live="polite">
-              <div className="generation-progress-intro">
-                <span className="generation-progress-symbol" aria-hidden="true">
+              <header className="generation-live-banner">
+                <span
+                  className={`generation-live-pulse${generationProgress?.is_paused ? ' is-paused' : ''}`}
+                  aria-hidden="true"
+                >
                   {generationMode === 'graph' ? <GitBranch /> : <Sparkles />}
                 </span>
-                <div>
-                  <h2>{generationProgress?.is_paused ? 'Generation paused' : 'Building your questions'}</h2>
-                  <p>
-                    {generationProgress?.phase_label
-                      ? `${generationProgress.phase_label}…`
-                      : 'Preparing your note…'}
-                  </p>
+                <div className="generation-live-copy">
+                  <span className="generation-live-kicker">
+                    {generationProgress?.is_paused ? 'Background activity paused' : 'AI working in background'}
+                  </span>
+                  <h2 key={generationProgress?.activity ?? 'preparing'}>
+                    {generationProgress?.is_paused
+                      ? generationProgress.activity
+                        ? `Paused · ${generationProgress.activity}`
+                        : 'Generation is paused'
+                      : generationProgress?.activity ?? 'Preparing your note'}
+                  </h2>
                 </div>
-                <strong>{generationProgress?.progress_percent ?? 0}%</strong>
+                <span className="generation-phase-badge">
+                  {generationProgress?.phase_label ?? (generationMode === 'graph' ? 'Starting graph' : 'Generating')}
+                </span>
+              </header>
+
+              <div className="generation-dashboard">
+                <div className="generation-phase-visual">
+                  <div className="generation-panel-heading">
+                    <span>Overall progress</span>
+                    <strong>{generationMode === 'graph' ? 'Graph pipeline' : 'Question pipeline'}</strong>
+                  </div>
+
+                  <div
+                    className="generation-progress-ring"
+                    role="progressbar"
+                    aria-label="Question generation progress"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={generationPercent}
+                  >
+                    <svg viewBox="0 0 176 176" aria-hidden="true">
+                      <circle className="generation-ring-track" cx="88" cy="88" r="72" />
+                      <circle
+                        className="generation-ring-value"
+                        cx="88"
+                        cy="88"
+                        r="72"
+                        pathLength="1"
+                        style={{ strokeDashoffset: 1 - generationPercent / 100 }}
+                      />
+                    </svg>
+                    <div className="generation-ring-label">
+                      <strong key={generationPercent}>{generationPercent}%</strong>
+                      <span>complete</span>
+                    </div>
+                  </div>
+
+                  {generationMode === 'graph' ? (
+                    <ol className="generation-phase-list" aria-label="Graph generation phases">
+                      {graphPhases.map((phase, index) => (
+                        <li
+                          key={phase}
+                          className={index < currentGraphPhaseIndex ? 'is-complete' : index === currentGraphPhaseIndex ? 'is-current' : ''}
+                        >
+                          <span aria-hidden="true">{index < currentGraphPhaseIndex ? <Check /> : index + 1}</span>
+                          <div>
+                            <strong>{phase}</strong>
+                            <small>{index < currentGraphPhaseIndex ? 'Complete' : index === currentGraphPhaseIndex ? 'In progress' : 'Waiting'}</small>
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="generation-phase-note">
+                      Processing chunk {generationProgress?.current_chunk ?? 0} of {totalWork || '—'}
+                    </p>
+                  )}
+                </div>
+
+                <div className="generation-output-visual">
+                  <div className="generation-panel-heading generation-output-heading">
+                    <span>Question output</span>
+                    <span className="generation-live-label"><i aria-hidden="true" /> Live</span>
+                  </div>
+
+                  <div className="generation-question-total">
+                    <strong key={questionsGenerated}>{questionsGenerated}</strong>
+                    <span>questions built</span>
+                  </div>
+
+                  <div className="generation-chart-group">
+                    {generationMode === 'graph' ? (
+                      <>
+                        <div className="generation-chart-row">
+                          <div><span>Relational</span><strong>{relationalQuestions}</strong></div>
+                          <div className="generation-chart-track"><span className="is-relational" style={{ transform: `scaleX(${relationalQuestions / questionScale})` }} /></div>
+                        </div>
+                        <div className="generation-chart-row">
+                          <div><span>Recall</span><strong>{recallQuestions}</strong></div>
+                          <div className="generation-chart-track"><span className="is-recall" style={{ transform: `scaleX(${recallQuestions / questionScale})` }} /></div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="generation-chart-row">
+                        <div><span>Generated</span><strong>{questionsGenerated}</strong></div>
+                        <div className="generation-chart-track"><span className="is-relational" style={{ transform: `scaleX(${questionsGenerated / workScale})` }} /></div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="generation-work-summary">
+                    <div className="generation-work-heading">
+                      <span>{generationMode === 'graph' ? 'Knowledge work' : 'Chunk work'}</span>
+                      <strong>{completedWork} / {totalWork || '—'}</strong>
+                    </div>
+                    <div className="generation-work-bar" aria-label={`${successfulWork} completed, ${skippedWork} skipped`}>
+                      <span className="is-complete" style={{ transform: `scaleX(${successfulWork / workScale})` }} />
+                      <span
+                        className="is-skipped"
+                        style={{ left: `${(successfulWork / workScale) * 100}%`, transform: `scaleX(${skippedWork / workScale})` }}
+                      />
+                    </div>
+                    <div className="generation-work-legend">
+                      <span><i className="is-complete" aria-hidden="true" />{successfulWork} completed</span>
+                      <span><i className="is-skipped" aria-hidden="true" />{skippedWork} skipped</span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <div
-                className="generation-bar-track"
-                role="progressbar"
-                aria-label="Question generation progress"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={generationProgress?.progress_percent ?? 0}
-              >
-                <div
-                  className="generation-bar-fill"
-                  style={{
-                    transform: `scaleX(${(generationProgress?.progress_percent ?? 0) / 100})`,
-                  }}
-                />
-              </div>
+              {(generationProgress?.failed_chunks ?? 0) > 0 && (
+                <p className="generation-inline-warning" role="status">
+                  <AlertTriangle aria-hidden="true" />
+                  {generationProgress?.failed_chunks === 1
+                    ? '1 chunk could not be generated and was skipped. Continuing with the rest.'
+                    : `${generationProgress?.failed_chunks} chunks could not be generated and were skipped. Continuing with the rest.`}
+                </p>
+              )}
 
-              <dl className="generation-progress-stats">
-                <div>
-                  <dt>{generationMode === 'graph' ? 'Knowledge processed' : 'Chunks completed'}</dt>
-                  <dd>{generationProgress ? `${generationProgress.completed_chunks} / ${generationProgress.total_chunks}` : '—'}</dd>
-                </div>
-                <div>
-                  <dt>Questions generated</dt>
-                  <dd>{generationProgress?.mcq_generated ?? 0}</dd>
-                </div>
-                <div>
-                  <dt>Status</dt>
-                  <dd>{generationProgress?.is_paused ? 'Paused' : 'Running'}</dd>
-                </div>
-              </dl>
-
-              <div className="generation-actions">
+              <footer className="generation-dashboard-footer">
+                <span>
+                  <Zap aria-hidden="true" />
+                  You can leave this screen open while ARKA keeps working.
+                </span>
+                <div className="generation-actions">
                 <button
                   type="button"
                   className="btn-pause"
@@ -763,81 +911,222 @@ export function HomePage() {
                   <X aria-hidden="true" />
                   Cancel
                 </button>
-              </div>
+                </div>
+              </footer>
             </section>
           )}
 
       {generationSummary && (
-        <section className="generation-summary" aria-live="polite">
-          <div className="generation-summary-head">
-            <h2>Chunk Preview Summary</h2>
-            <button
-              type="button"
-              className="view-chunks-btn"
-              onClick={() => setShowChunks((prev) => !prev)}
-              aria-expanded={showChunks}
+        <section className="generation-summary generation-complete-dashboard" aria-live="polite">
+          <header className="generation-complete-banner">
+            <span
+              className={`generation-complete-symbol${generationProgress?.error ? ' is-error' : ''}`}
+              aria-hidden="true"
             >
-              <svg
-                className="view-chunks-icon"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+              {generationProgress?.error ? <AlertTriangle /> : <Check />}
+            </span>
+            <div>
+              <h2>
+                {generationProgress?.error
+                  ? 'Generation stopped early'
+                  : 'Your questions are ready'}
+              </h2>
+              <p>
+                {generatedQuestionCount}{' '}
+                {generatedQuestionCount === 1 ? 'question is' : 'questions are'} ready to review and save.
+              </p>
+            </div>
+            <div className="generation-summary-head-actions">
+              {generationProgress?.error && (
+                <button type="button" className="view-chunks-btn" onClick={generatePreview}>
+                  Try again
+                </button>
+              )}
+              <button
+                type="button"
+                className="view-chunks-btn"
+                onClick={() => setShowChunks((prev) => !prev)}
+                aria-expanded={showChunks}
               >
-                <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-              {showChunks ? 'Hide Chunks' : 'View Chunks'}
-            </button>
-          </div>
-          <div className="summary-grid">
-            <p>
-              <span>Total Notes</span>
-              <strong>{generationSummary.total_notes}</strong>
-            </p>
-            <p>
-              <span>Notes With Chunks</span>
-              <strong>{generationSummary.notes_with_chunks}</strong>
-            </p>
-            <p>
-              <span>Total Chunks</span>
-              <strong>{generationSummary.total_chunks}</strong>
-            </p>
-          </div>
+                <svg
+                  className="view-chunks-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                {showChunks ? 'Hide chunks' : 'View chunks'}
+              </button>
+            </div>
+          </header>
 
-          <div className="generation-summary-actions">
-            <div className="recall-save-panel">
-              <div className="recall-save-head">
-                <div>
-                  <h3>Save to Recall Space</h3>
-                  <p>{generatedQuestionCount} questions ready to save</p>
-                </div>
-                <div className="save-mode-toggle" role="group" aria-label="Save destination">
-                  <button
-                    type="button"
-                    className={`save-mode-btn${saveDestinationMode === 'existing' ? ' is-active' : ''}`}
-                    onClick={() => setSaveDestinationMode('existing')}
-                    disabled={isSavingQuestions || hasSavedQuestions}
-                  >
-                    Existing
-                  </button>
-                  <button
-                    type="button"
-                    className={`save-mode-btn${saveDestinationMode === 'new' ? ' is-active' : ''}`}
-                    onClick={() => setSaveDestinationMode('new')}
-                    disabled={isSavingQuestions || hasSavedQuestions}
-                  >
-                    New
-                  </button>
+          <div className="generation-complete-overview">
+            <div className="generation-phase-visual generation-complete-visual">
+              <div className="generation-panel-heading">
+                <span>Completion</span>
+                <strong>{generationProgress?.error ? 'Stopped early' : 'Generation finished'}</strong>
+              </div>
+
+              <div
+                className={`generation-progress-ring${generationProgress?.error ? ' is-error' : ' is-complete'}`}
+                role="progressbar"
+                aria-label="Completed generation progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={finalCompletionPercent}
+              >
+                <svg viewBox="0 0 176 176" aria-hidden="true">
+                  <circle className="generation-ring-track" cx="88" cy="88" r="72" />
+                  <circle
+                    className="generation-ring-value"
+                    cx="88"
+                    cy="88"
+                    r="72"
+                    pathLength="1"
+                    style={{ strokeDashoffset: 1 - finalCompletionPercent / 100 }}
+                  />
+                </svg>
+                <div className="generation-ring-label">
+                  <strong>{finalCompletionPercent}%</strong>
+                  <span>{generationProgress?.error ? 'reached' : 'complete'}</span>
                 </div>
               </div>
 
+              <p className="generation-complete-message">
+                {generationProgress?.error
+                  ? 'Your completed questions are preserved and can still be saved.'
+                  : 'Generation finished. Choose a Recall Space to continue.'}
+              </p>
+            </div>
+
+            <div className="generation-complete-insights">
+              <div className="generation-panel-heading">
+                <span>Generation insights</span>
+                <strong>{generationMode === 'graph' ? 'Graph pipeline' : 'Question pipeline'}</strong>
+              </div>
+
+              <dl className="generation-insight-list">
+                <div>
+                  <dt>Questions created</dt>
+                  <dd>{generatedQuestionCount}</dd>
+                </div>
+                <div>
+                  <dt>Notes covered</dt>
+                  <dd>{generationSummary.notes_with_chunks} / {generationSummary.total_notes}</dd>
+                </div>
+                <div>
+                  <dt>{generationMode === 'graph' ? 'Knowledge work completed' : 'Chunks completed'}</dt>
+                  <dd>{finalCompletedWork} / {generationSummary.total_chunks}</dd>
+                </div>
+                <div className={finalSkippedWork > 0 ? 'has-warning' : ''}>
+                  <dt>Skipped work</dt>
+                  <dd>{finalSkippedWork}</dd>
+                </div>
+              </dl>
+
+              {generationMode === 'graph' && generatedQuestionCount > 0 && (
+                <div className="generation-complete-composition">
+                  <div className="generation-work-heading">
+                    <span>Question composition</span>
+                    <strong>{generatedQuestionCount} total</strong>
+                  </div>
+                  <div className="generation-composition-bar" aria-label={`${relationalQuestions} relational and ${recallQuestions} recall questions`}>
+                    <span
+                      className="is-relational"
+                      style={{ transform: `scaleX(${relationalQuestions / generatedQuestionCount})` }}
+                    />
+                    <span
+                      className="is-recall"
+                      style={{
+                        left: `${(relationalQuestions / generatedQuestionCount) * 100}%`,
+                        transform: `scaleX(${recallQuestions / generatedQuestionCount})`,
+                      }}
+                    />
+                  </div>
+                  <div className="generation-work-legend">
+                    <span><i className="is-relational" aria-hidden="true" />{relationalQuestions} relational</span>
+                    <span><i className="is-recall" aria-hidden="true" />{recallQuestions} recall</span>
+                  </div>
+                </div>
+              )}
+
+              {generationProgress?.error ? (
+                <div className="generation-result-notice is-error" role="alert">
+                  <AlertTriangle aria-hidden="true" />
+                  <div>
+                    <strong>Provider request failed</strong>
+                    <p>{generationProgress.error.message}</p>
+                  </div>
+                </div>
+              ) : finalSkippedWork > 0 ? (
+                <div className="generation-result-notice is-warning" role="status">
+                  <AlertTriangle aria-hidden="true" />
+                  <div>
+                    <strong>
+                      Completed with {finalSkippedWork}{' '}
+                      {finalSkippedWork === 1 ? 'skipped chunk' : 'skipped chunks'}
+                    </strong>
+                    <p>Questions from the remaining work are ready to save.</p>
+                    {visibleSkippedWarnings.length > 0 && (
+                      <div className="generation-result-details">
+                        <ul>
+                          {visibleSkippedWarnings.map((message) => (
+                            <li key={message}>{message}</li>
+                          ))}
+                        </ul>
+                        {additionalSkippedWarnings > 0 && (
+                          <small>
+                            {additionalSkippedWarnings} more distinct{' '}
+                            {additionalSkippedWarnings === 1 ? 'issue' : 'issues'}
+                          </small>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="generation-summary-actions generation-complete-save">
+            <div className="generation-save-heading">
+              <span className="generation-save-symbol" aria-hidden="true">
+                <Save />
+              </span>
+              <div>
+                <h3>Save to Recall Space</h3>
+                <p>{generatedQuestionCount} questions ready to save</p>
+              </div>
+              <div className="save-mode-toggle" role="group" aria-label="Save destination">
+                <button
+                  type="button"
+                  className={`save-mode-btn${saveDestinationMode === 'existing' ? ' is-active' : ''}`}
+                  onClick={() => setSaveDestinationMode('existing')}
+                  disabled={isSavingQuestions || hasSavedQuestions}
+                >
+                  Existing
+                </button>
+                <button
+                  type="button"
+                  className={`save-mode-btn${saveDestinationMode === 'new' ? ' is-active' : ''}`}
+                  onClick={() => setSaveDestinationMode('new')}
+                  disabled={isSavingQuestions || hasSavedQuestions}
+                >
+                  New
+                </button>
+              </div>
+            </div>
+
+            <div className={`generation-save-controls${saveDestinationMode === 'new' ? ' is-new-space' : ''}`}>
               {saveDestinationMode === 'existing' ? (
                 <label className="recall-space-select-wrap">
-                  <span>{isLoadingRecallSpaces ? 'Loading recall spaces…' : 'Recall space'}</span>
+                  <span>{isLoadingRecallSpaces ? 'Loading spaces…' : 'Destination'}</span>
                   <select
                     className="recall-space-select"
                     value={selectedSpaceId}
@@ -882,37 +1171,37 @@ export function HomePage() {
                 </div>
               )}
 
-              {saveStatus && (
-                <p className={`settings-status save-status${saveStatusKind ? ` is-${saveStatusKind}` : ''}`}>
-                  {saveStatus}
-                </p>
-              )}
+              <button
+                type="button"
+                className="btn-primary btn-save-questions"
+                onClick={saveGeneratedQuestions}
+                disabled={isSavingQuestions || hasSavedQuestions || generatedQuestionCount === 0}
+              >
+                {isSavingQuestions ? (
+                  'Saving...'
+                ) : hasSavedQuestions ? (
+                  <span className="btn-content">
+                    <Check className="btn-icon" aria-hidden="true" />
+                    Saved
+                  </span>
+                ) : (
+                  <span className="btn-content">
+                    {saveDestinationMode === 'new' ? (
+                      <Plus className="btn-icon" aria-hidden="true" />
+                    ) : (
+                      <Save className="btn-icon" aria-hidden="true" />
+                    )}
+                    {saveDestinationMode === 'new' ? 'Create Space & Save' : 'Save Questions'}
+                  </span>
+                )}
+              </button>
             </div>
 
-            <button
-              type="button"
-              className="btn-primary btn-save-questions"
-              onClick={saveGeneratedQuestions}
-              disabled={isSavingQuestions || hasSavedQuestions || generatedQuestionCount === 0}
-            >
-              {isSavingQuestions ? (
-                'Saving...'
-              ) : hasSavedQuestions ? (
-                <span className="btn-content">
-                  <Check className="btn-icon" aria-hidden="true" />
-                  Saved
-                </span>
-              ) : (
-                <span className="btn-content">
-                  {saveDestinationMode === 'new' ? (
-                    <Plus className="btn-icon" aria-hidden="true" />
-                  ) : (
-                    <Save className="btn-icon" aria-hidden="true" />
-                  )}
-                  Save Questions
-                </span>
-              )}
-            </button>
+            {saveStatus && (
+              <p className={`settings-status save-status${saveStatusKind ? ` is-${saveStatusKind}` : ''}`}>
+                {saveStatus}
+              </p>
+            )}
           </div>
 
           {showChunks && (
