@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use models::model_settings::ModelConfig;
 use models::note::Note;
 use models::question::{Question, QuestionInput};
+use models::recall_dashboard::RecallDashboard;
 use models::recall_space::RecallSpace;
 use services::generation::{GenerationProgressSnapshot, GenerationSummary};
 use services::scheduler::Rating;
@@ -37,12 +38,23 @@ async fn get_due_questions(space_id: Option<i64>) -> Result<Vec<Question>, Strin
 }
 
 #[tauri::command]
-async fn review_question(question_id: i64, rating: String) -> Result<Question, String> {
+async fn get_recall_dashboard() -> Result<RecallDashboard, String> {
+    services::database::get_recall_dashboard()
+        .await
+        .map_err(|err| format!("Failed to load recall dashboard: {err}"))
+}
+
+#[tauri::command]
+async fn review_question(
+    question_id: i64,
+    rating: String,
+    is_correct: bool,
+) -> Result<Question, String> {
     let parsed_rating = rating
         .parse::<Rating>()
         .map_err(|err| format!("Failed to parse review rating: {err}"))?;
 
-    services::database::review_question(question_id, parsed_rating)
+    services::database::review_question_with_outcome(question_id, parsed_rating, is_correct)
         .await
         .map_err(|err| format!("Failed to review question {question_id}: {err}"))
 }
@@ -312,6 +324,7 @@ pub fn run() {
             get_questions,
             get_questions_by_space,
             get_due_questions,
+            get_recall_dashboard,
             review_question,
             delete_question,
             delete_questions,

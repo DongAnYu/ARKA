@@ -1,12 +1,16 @@
-import { Link } from 'react-router-dom'
-
 type SessionCompleteProps = {
   reviewedCount: number
   correctCount: number
   durationLabel: string
+  onReturn: () => void
 }
 
-export function SessionComplete({ reviewedCount, correctCount, durationLabel }: SessionCompleteProps) {
+export function SessionComplete({
+  reviewedCount,
+  correctCount,
+  durationLabel,
+  onReturn,
+}: SessionCompleteProps) {
   return (
     <section className="session-complete surface-panel" aria-label="Session complete">
       <p className="session-complete-mark" aria-hidden="true">
@@ -26,9 +30,9 @@ export function SessionComplete({ reviewedCount, correctCount, durationLabel }: 
         </div>
       </dl>
 
-      <Link to="/questions" className="btn-primary session-complete-link">
-        Return to Recall Space
-      </Link>
+      <button type="button" className="btn-primary session-complete-link" onClick={onReturn}>
+        Return to Recall
+      </button>
     </section>
   )
 }
