@@ -4,8 +4,8 @@ import arkaLogo from '../assets/arka-logo.svg'
 
 const navItems = [
   { to: '/', label: 'Home', icon: Home, end: true },
-  { to: '/session', label: 'Session', icon: HelpCircle },
-  { to: '/questions', label: 'Recall Spaces', icon: FolderOpen },
+  { to: '/session', label: 'Recall', icon: HelpCircle },
+  { to: '/questions', label: 'Library', icon: FolderOpen },
   { to: '/models', label: 'Models', icon: Plug },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]

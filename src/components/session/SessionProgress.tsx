@@ -7,7 +7,10 @@ export function SessionProgress({ value }: SessionProgressProps) {
 
   return (
     <div className="session-progress" aria-hidden="true">
-      <div className="session-progress-fill" style={{ width: `${clampedValue}%` }} />
+      <div
+        className="session-progress-fill"
+        style={{ transform: `scaleX(${clampedValue / 100})` }}
+      />
     </div>
   )
 }

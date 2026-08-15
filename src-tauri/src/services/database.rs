@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use crate::models::model_settings::ModelConfig;
 use crate::models::question::{Question, QuestionInput};
+use crate::models::recall_dashboard::{RecallDashboard, RecallSpaceSummary};
 use crate::models::recall_space::RecallSpace;
 use crate::services::scheduler::{Rating, SM2Scheduler};
 
@@ -162,7 +163,96 @@ pub async fn get_due_questions(space_id: Option<i64>) -> Result<Vec<Question>, s
     Ok(questions)
 }
 
-pub async fn review_question(question_id: i64, rating: Rating) -> Result<Question, sqlx::Error> {
+pub async fn get_recall_dashboard() -> Result<RecallDashboard, sqlx::Error> {
+    let pool = open_pool().await?;
+    ensure_default_space(&pool).await?;
+
+    let totals = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+        "SELECT
+            COALESCE(SUM(CASE
+                WHEN next_review_at IS NULL
+                    OR (next_review_at >= date('now')
+                        AND next_review_at <= CURRENT_TIMESTAMP)
+                THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE
+                WHEN next_review_at IS NOT NULL AND next_review_at < date('now')
+                THEN 1 ELSE 0 END), 0),
+            (SELECT COUNT(*) FROM review_history WHERE reviewed_at >= date('now')),
+            (SELECT COALESCE(SUM(is_correct), 0) FROM review_history WHERE reviewed_at >= date('now'))
+         FROM questions",
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    let space_rows = sqlx::query_as::<_, (i64, String, i64, i64, i64, i64, i64)>(
+        "SELECT
+            recall_spaces.id,
+            recall_spaces.name,
+            COUNT(questions.id),
+            COALESCE(SUM(CASE
+                WHEN questions.id IS NOT NULL
+                    AND (questions.next_review_at IS NULL
+                        OR questions.next_review_at <= CURRENT_TIMESTAMP)
+                THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE
+                WHEN questions.next_review_at IS NOT NULL
+                    AND questions.next_review_at < date('now')
+                THEN 1 ELSE 0 END), 0),
+            (SELECT COUNT(*)
+               FROM review_history
+               INNER JOIN questions AS reviewed_questions ON reviewed_questions.id = review_history.question_id
+               WHERE reviewed_questions.space_id = recall_spaces.id
+                 AND review_history.reviewed_at >= date('now'))
+            , (SELECT COALESCE(SUM(review_history.is_correct), 0)
+               FROM review_history
+               INNER JOIN questions AS reviewed_questions ON reviewed_questions.id = review_history.question_id
+               WHERE reviewed_questions.space_id = recall_spaces.id
+                 AND review_history.reviewed_at >= date('now'))
+         FROM recall_spaces
+         LEFT JOIN questions ON questions.space_id = recall_spaces.id
+         GROUP BY recall_spaces.id, recall_spaces.name
+         ORDER BY recall_spaces.id",
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    let spaces = space_rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                name,
+                total_questions,
+                due_count,
+                overdue_count,
+                reviewed_today_count,
+                correct_today_count,
+            )| RecallSpaceSummary {
+                id,
+                name,
+                total_questions,
+                due_count,
+                overdue_count,
+                reviewed_today_count,
+                correct_today_count,
+            },
+        )
+        .collect();
+
+    Ok(RecallDashboard {
+        due_today_count: totals.0,
+        overdue_count: totals.1,
+        reviewed_today_count: totals.2,
+        correct_today_count: totals.3,
+        spaces,
+    })
+}
+
+pub async fn review_question_with_outcome(
+    question_id: i64,
+    rating: Rating,
+    is_correct: bool,
+) -> Result<Question, sqlx::Error> {
     let pool = open_pool().await?;
 
     let mut question = sqlx::query_as::<_, Question>(
@@ -187,6 +277,12 @@ pub async fn review_question(question_id: i64, rating: Rating) -> Result<Questio
     .bind(question.id)
     .execute(&pool)
     .await?;
+
+    sqlx::query("INSERT INTO review_history (question_id, is_correct) VALUES (?, ?)")
+        .bind(question.id)
+        .bind(is_correct)
+        .execute(&pool)
+        .await?;
 
     Ok(question)
 }
@@ -602,7 +698,7 @@ mod tests {
             .next()
             .expect("expected one saved question");
 
-        let reviewed_question = review_question(saved_question.id, Rating::Easy)
+        let reviewed_question = review_question_with_outcome(saved_question.id, Rating::Easy, true)
             .await
             .expect("review should persist");
 

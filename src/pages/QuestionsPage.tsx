@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ArrowLeft, ChevronDown, Ellipsis, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChevronDown, Ellipsis, Trash2 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 
 type Question = {
   id: number
@@ -21,10 +22,25 @@ type RecallSpace = {
   description: string | null
 }
 
+type RecallSpaceSummary = {
+  id: number
+  total_questions: number
+  due_count: number
+  overdue_count: number
+}
+
+type RecallDashboard = {
+  spaces: RecallSpaceSummary[]
+}
+
+const questionLabel = (count: number) => `${count} ${count === 1 ? 'question' : 'questions'}`
+
 export function QuestionsPage() {
+  const navigate = useNavigate()
   const [spaces, setSpaces] = useState<RecallSpace[]>([])
   const [questions, setQuestions] = useState<Question[]>([])
   const [allQuestions, setAllQuestions] = useState<Question[]>([])
+  const [spaceSummaries, setSpaceSummaries] = useState<RecallSpaceSummary[]>([])
   const [isLoadingSpaces, setIsLoadingSpaces] = useState(true)
   const [isLoadingQuestions, setIsLoadingQuestions] = useState(false)
   const [error, setError] = useState('')
@@ -54,18 +70,29 @@ export function QuestionsPage() {
       ? null
       : spaces.find((space) => space.id === pendingDeleteSpaceId) ?? null
 
+  const refreshSpaceSummaries = async () => {
+    try {
+      const dashboard = await invoke<RecallDashboard>('get_recall_dashboard')
+      setSpaceSummaries(dashboard.spaces)
+    } catch {
+      // A completed mutation remains valid even if its non-critical summary refresh fails.
+    }
+  }
+
   useEffect(() => {
     const loadSpacesAndCounts = async () => {
       setIsLoadingSpaces(true)
       setError('')
 
       try {
-        const [spaceRows, questionRows] = await Promise.all([
+        const [spaceRows, questionRows, dashboard] = await Promise.all([
           invoke<RecallSpace[]>('get_spaces'),
           invoke<Question[]>('get_questions'),
+          invoke<RecallDashboard>('get_recall_dashboard'),
         ])
         setSpaces(spaceRows)
         setAllQuestions(questionRows)
+        setSpaceSummaries(dashboard.spaces)
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to load recall spaces'
         setError(message)
@@ -151,6 +178,7 @@ export function QuestionsPage() {
 
       setSpaces((current) => current.filter((item) => item.id !== space.id))
       setAllQuestions((current) => current.filter((item) => item.space_id !== space.id))
+      void refreshSpaceSummaries()
       setPendingDeleteSpaceId(null)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete recall space'
@@ -207,6 +235,7 @@ export function QuestionsPage() {
 
       setQuestions((current) => current.filter((item) => !selectedIdSet.has(item.id)))
       setAllQuestions((current) => current.filter((item) => !selectedIdSet.has(item.id)))
+      void refreshSpaceSummaries()
       setSelectedQuestionIds([])
       setIsManagingQuestions(false)
       setPendingDeleteQuestions(false)
@@ -221,6 +250,14 @@ export function QuestionsPage() {
   const getSpaceQuestionCount = (spaceId: number) => {
     return allQuestions.filter((item) => item.space_id === spaceId).length
   }
+
+  const getSpaceSummary = (spaceId: number) =>
+    spaceSummaries.find((summary) => summary.id === spaceId) ?? {
+      id: spaceId,
+      total_questions: getSpaceQuestionCount(spaceId),
+      due_count: 0,
+      overdue_count: 0,
+    }
 
   const openEditSpace = (space: RecallSpace) => {
     setEditingSpace(space)
@@ -330,6 +367,7 @@ export function QuestionsPage() {
 
       setQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
       setAllQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+      void refreshSpaceSummaries()
       setEditingQuestion(null)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to update question'
@@ -342,11 +380,11 @@ export function QuestionsPage() {
   return (
     <div className="app-container questions-page">
       <header className="settings-panel">
-        <h1>{selectedSpace ? selectedSpace.name : 'Recall Spaces'}</h1>
+        <h1>{selectedSpace ? selectedSpace.name : 'Question Library'}</h1>
         <p className="settings-help-text">
           {selectedSpace
             ? 'Questions saved inside this recall space.'
-            : 'Choose a recall space to browse its questions.'}
+            : 'Browse, edit, and manage questions by recall space.'}
         </p>
       </header>
 
@@ -615,12 +653,14 @@ export function QuestionsPage() {
 
           <section className="recall-spaces-grid" aria-label="Recall spaces list">
             {spaces.map((space) => {
-              const questionCount = getSpaceQuestionCount(space.id)
+              const summary = getSpaceSummary(space.id)
               const isDefaultSpace = space.id === 1
+              const isCaughtUp = summary.due_count === 0
 
               return (
                 <article className={`recall-space-card${isManagingSpaces ? ' is-managing' : ''}`} key={space.id}>
-                  <div
+                  <button
+                    type="button"
                     className="recall-space-button"
                     onClick={() => {
                       if (deletingSpaceId !== null) {
@@ -629,33 +669,33 @@ export function QuestionsPage() {
 
                       void openSpace(space)
                     }}
-                    onKeyDown={(event) => {
-                      if (deletingSpaceId !== null) {
-                        return
-                      }
-
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        void openSpace(space)
-                      }
-                    }}
-                    aria-label={`Open ${space.name}`}
-                    role="button"
-                    tabIndex={deletingSpaceId !== null ? -1 : 0}
-                    aria-disabled={deletingSpaceId !== null}
+                    disabled={deletingSpaceId !== null}
                   >
                     <div className="recall-space-meta">
-                      <span className="question-id">Space #{space.id}</span>
                       <h2>{space.name}</h2>
-                      <p>
-                        {space.description?.trim() || 'No description provided.'}
-                      </p>
+                      <p>{isCaughtUp ? 'All caught up' : `${questionLabel(summary.due_count)} due`} · {questionLabel(summary.total_questions)}</p>
                     </div>
+                  </button>
 
-                    <div className="recall-space-count" aria-label={`${questionCount} questions`}>
-                      <strong>{questionCount}</strong>
-                      <span>{questionCount === 1 ? 'Question' : 'Questions'}</span>
-                    </div>
+                  <div className="library-space-workload">
+                    <span className={summary.overdue_count > 0 ? 'is-overdue' : undefined}>
+                      {summary.overdue_count > 0
+                        ? `${questionLabel(summary.overdue_count)} overdue`
+                        : 'No overdue questions'}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn-secondary library-space-recall-btn"
+                      onClick={() => {
+                        navigate('/session', {
+                          state: { recallSpaceId: space.id, recallSpaceName: space.name },
+                        })
+                      }}
+                      disabled={isCaughtUp || deletingSpaceId !== null}
+                    >
+                      Recall {summary.due_count}
+                      <ArrowRight className="size-4" aria-hidden="true" />
+                    </button>
                   </div>
 
                   <button
