@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
 import { getVersion } from '@tauri-apps/api/app'
-import { check } from '@tauri-apps/plugin-updater'
+import { check, type Update } from '@tauri-apps/plugin-updater'
 import { error as logError } from '@tauri-apps/plugin-log'
-import { RefreshCw } from 'lucide-react'
+import { relaunch } from '@tauri-apps/plugin-process'
+import { Download, RefreshCw } from 'lucide-react'
 
-type UpdateCheckStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'error'
+type UpdateCheckStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'installing' | 'restart-needed' | 'error'
 
 export function SettingsPage() {
   const [version, setVersion] = useState<string | null>(null)
   const [isLoadingVersion, setIsLoadingVersion] = useState(true)
   const [hasVersionLoadError, setHasVersionLoadError] = useState(false)
   const [updateCheckStatus, setUpdateCheckStatus] = useState<UpdateCheckStatus>('idle')
-  const [availableVersion, setAvailableVersion] = useState<string | null>(null)
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null)
+  const [updateError, setUpdateError] = useState<string | null>(null)
 
   useEffect(() => {
     let isMounted = true
@@ -53,14 +55,19 @@ export function SettingsPage() {
     : updateCheckStatus === 'up-to-date'
       ? `You're up to date — ${versionLabel}.`
       : updateCheckStatus === 'available'
-        ? `Version ${availableVersion} is available.`
+        ? `Version ${availableUpdate?.version} is available.`
+        : updateCheckStatus === 'installing'
+          ? `Downloading and installing Version ${availableUpdate?.version}. A.R.K.A will restart when it is ready.`
+          : updateCheckStatus === 'restart-needed'
+            ? `Version ${availableUpdate?.version} is installed. Restart A.R.K.A to finish.`
         : updateCheckStatus === 'error'
-          ? 'Unable to check for updates. Try again later.'
+          ? updateError
           : ''
 
   const checkForUpdates = async () => {
     setUpdateCheckStatus('checking')
-    setAvailableVersion(null)
+    setAvailableUpdate(null)
+    setUpdateError(null)
 
     try {
       const update = await check()
@@ -70,14 +77,74 @@ export function SettingsPage() {
         return
       }
 
-      setAvailableVersion(update.version)
+      setAvailableUpdate(update)
       setUpdateCheckStatus('available')
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       void logError(`Updater check failed: ${detail}`).catch((loggingError) => {
         console.error('Failed to record updater check error:', loggingError)
       })
+      setUpdateError('Unable to check for updates. Try again later.')
       setUpdateCheckStatus('error')
+    }
+  }
+
+  const dismissAvailableUpdate = () => {
+    if (availableUpdate) {
+      void availableUpdate.close().catch((error) => {
+        console.error('Failed to release updater resource:', error)
+      })
+    }
+
+    setAvailableUpdate(null)
+    setUpdateError(null)
+    setUpdateCheckStatus('idle')
+  }
+
+  const installAvailableUpdate = async () => {
+    if (!availableUpdate) {
+      return
+    }
+
+    setUpdateCheckStatus('installing')
+    setUpdateError(null)
+    let updateInstalled = false
+
+    try {
+      await availableUpdate.downloadAndInstall()
+      updateInstalled = true
+      setUpdateCheckStatus('restart-needed')
+      await relaunch()
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+
+      if (updateInstalled) {
+        void logError(`Application restart failed after update: ${detail}`).catch((loggingError) => {
+          console.error('Failed to record updater restart error:', loggingError)
+        })
+        setUpdateError('Update installed. Restart A.R.K.A to finish.')
+        setUpdateCheckStatus('restart-needed')
+        return
+      }
+
+      void logError(`Updater installation failed: ${detail}`).catch((loggingError) => {
+        console.error('Failed to record updater installation error:', loggingError)
+      })
+      setUpdateError('Unable to install the update. Try again later.')
+      setUpdateCheckStatus('error')
+    }
+  }
+
+  const restartApp = async () => {
+    try {
+      await relaunch()
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      void logError(`Application restart failed after update: ${detail}`).catch((loggingError) => {
+        console.error('Failed to record updater restart error:', loggingError)
+      })
+      setUpdateError('Update installed. Restart A.R.K.A to finish.')
+      setUpdateCheckStatus('restart-needed')
     }
   }
 
@@ -114,24 +181,55 @@ export function SettingsPage() {
           </div>
 
           <div className="settings-application-actions">
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={checkForUpdates}
-              disabled={updateCheckStatus === 'checking'}
-              aria-describedby="application-version-status application-update-status"
-            >
-              <RefreshCw aria-hidden="true" />
-              {updateCheckStatus === 'checking' ? 'Checking...' : 'Check for updates'}
-            </button>
+            {updateCheckStatus === 'restart-needed' ? (
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => void restartApp()}
+                aria-describedby="application-version-status application-update-status"
+              >
+                <RefreshCw aria-hidden="true" />
+                Restart A.R.K.A
+              </button>
+            ) : availableUpdate ? (
+              <div className="settings-update-actions" role="group" aria-label="Available update actions">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => void installAvailableUpdate()}
+                  disabled={updateCheckStatus === 'installing'}
+                  aria-describedby="application-version-status application-update-status"
+                >
+                  <Download aria-hidden="true" />
+                  {updateCheckStatus === 'installing' ? 'Updating...' : 'Update now'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={dismissAvailableUpdate}
+                  disabled={updateCheckStatus === 'installing'}
+                >
+                  Later
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={checkForUpdates}
+                disabled={updateCheckStatus === 'checking'}
+                aria-describedby="application-version-status application-update-status"
+              >
+                <RefreshCw aria-hidden="true" />
+                {updateCheckStatus === 'checking' ? 'Checking...' : 'Check for updates'}
+              </button>
+            )}
             <p id="application-version-status" className="settings-status" role="status" aria-live="polite">
               {versionStatus}
             </p>
-            {updateStatus && (
-              <p id="application-update-status" className="settings-status" role="status" aria-live="polite">
-                {updateStatus}
-              </p>
-            )}
+            <p id="application-update-status" className="settings-status" role="status" aria-live="polite">
+              {updateStatus}
+            </p>
           </div>
         </div>
       </section>
