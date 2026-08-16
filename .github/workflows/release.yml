@@ -46,10 +46,11 @@ jobs:
       - name: Test Rust
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Build and create draft release
+      - name: Build and publish signed release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: v__VERSION__
           releaseName: ARKA v__VERSION__
@@ -57,5 +58,6 @@ jobs:
             Download the Windows installer from the assets below.
             Report problems at https://github.com/DongAnYu/ARKA/issues.
           generateReleaseNotes: true
-          releaseDraft: true
-          prerelease: true
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
