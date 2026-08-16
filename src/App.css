@@ -1172,6 +1172,96 @@ body {
   align-items: flex-end;
 }
 
+.settings-page-intro {
+  gap: 6px;
+}
+
+.settings-application {
+  gap: 20px;
+}
+
+.settings-application-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 24px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(var(--rgb-white), 0.08);
+}
+
+.settings-application-details {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-application-name,
+.settings-application-version {
+  margin: 0;
+}
+
+.settings-application-name {
+  color: var(--color-bright-gray);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.settings-application-version {
+  color: var(--color-muted-gray);
+  font-size: 14px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-application-description {
+  max-width: 52ch;
+  margin-top: 6px;
+}
+
+.settings-application-delivery {
+  margin: 2px 0 0;
+  color: var(--color-muted-gray);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-application-delivery a {
+  color: var(--color-lavender);
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+
+.settings-application-delivery a:hover {
+  color: var(--color-bright-gray);
+}
+
+.settings-application-delivery a:focus-visible {
+  outline: 2px solid var(--color-lavender);
+  outline-offset: 3px;
+}
+
+.settings-application-actions {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.settings-application-actions .btn-primary {
+  gap: 8px;
+}
+
+.settings-application-actions .btn-primary svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.settings-application-actions .settings-status {
+  max-width: 28ch;
+  text-align: right;
+}
+
 .questions-page {
   gap: 16px;
 }
@@ -3062,6 +3152,20 @@ body {
 
   .settings-fetch-btn {
     width: 100%;
+  }
+
+  .settings-application-content {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .settings-application-actions {
+    justify-items: stretch;
+  }
+
+  .settings-application-actions .settings-status {
+    max-width: none;
+    text-align: left;
   }
 
   .generation-summary-head {
