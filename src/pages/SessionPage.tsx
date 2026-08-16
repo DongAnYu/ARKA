@@ -46,14 +46,6 @@ type StoredQuestion = {
 
 const getSchedulerRating = (isCorrect: boolean): SchedulerRating => (isCorrect ? 'easy' : 'again')
 
-const formatDuration = (elapsedMs: number): string => {
-  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000))
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-}
-
 const questionLabel = (count: number) => `${count} ${count === 1 ? 'question' : 'questions'}`
 
 type RecallChartCategory = {
@@ -139,8 +131,6 @@ export function SessionPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [reviews, setReviews] = useState<SessionReview[]>([])
-  const [sessionStartedAt, setSessionStartedAt] = useState<number | null>(null)
-  const [sessionCompletedAt, setSessionCompletedAt] = useState<number | null>(null)
   const [sessionTitle, setSessionTitle] = useState("Today's Recall")
   const [selectedSpaceId, setSelectedSpaceId] = useState<number | null>(requestedSpaceId)
 
@@ -160,14 +150,6 @@ export function SessionPage() {
     () => reviews.reduce((count, review) => count + (review.isCorrect ? 1 : 0), 0),
     [reviews],
   )
-
-  const sessionDurationLabel = useMemo(() => {
-    if (sessionCompletedAt === null || sessionStartedAt === null) {
-      return '00:00'
-    }
-
-    return formatDuration(sessionCompletedAt - sessionStartedAt)
-  }, [sessionCompletedAt, sessionStartedAt])
 
   const selectedSpace = useMemo(
     () => dashboard?.spaces.find((space) => space.id === selectedSpaceId) ?? null,
@@ -212,8 +194,6 @@ export function SessionPage() {
     setIsSubmitted(false)
     setIsSubmitting(false)
     setReviews([])
-    setSessionCompletedAt(null)
-    setSessionStartedAt(questions.length > 0 ? Date.now() : null)
   }, [])
 
   const loadDashboard = useCallback(async () => {
@@ -326,12 +306,7 @@ export function SessionPage() {
       return
     }
 
-    const nextIndex = currentIndex + 1
-    if (nextIndex >= totalQuestions) {
-      setSessionCompletedAt(Date.now())
-    }
-
-    setCurrentIndex(nextIndex)
+    setCurrentIndex(currentIndex + 1)
     setSelectedOptionId(null)
     setIsSubmitted(false)
   }
@@ -352,7 +327,6 @@ export function SessionPage() {
           <SessionComplete
             reviewedCount={reviews.length}
             correctCount={correctCount}
-            durationLabel={sessionDurationLabel}
             onReturn={returnToDashboard}
           />
         ) : currentQuestion ? (
@@ -391,6 +365,7 @@ export function SessionPage() {
                 <div className="session-navigation">
                   <button type="button" className="btn-primary session-next-btn" onClick={handleNextQuestion}>
                     Next question
+                    <ArrowRight className="size-4" aria-hidden="true" />
                   </button>
                 </div>
               </>
