@@ -1247,14 +1247,23 @@ body {
   gap: 10px;
 }
 
-.settings-application-actions .btn-primary {
+.settings-application-actions .btn-primary,
+.settings-update-actions .btn-primary {
   gap: 8px;
 }
 
-.settings-application-actions .btn-primary svg {
+.settings-application-actions .btn-primary svg,
+.settings-update-actions .btn-primary svg {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
+}
+
+.settings-update-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .settings-application-actions .settings-status {
@@ -3161,6 +3170,15 @@ body {
 
   .settings-application-actions {
     justify-items: stretch;
+  }
+
+  .settings-update-actions {
+    justify-content: stretch;
+  }
+
+  .settings-update-actions .btn-primary,
+  .settings-update-actions .btn-secondary {
+    flex: 1;
   }
 
   .settings-application-actions .settings-status {
