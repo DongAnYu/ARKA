@@ -1,3 +1,5 @@
+import { Check, X } from 'lucide-react'
+
 type ExplanationPanelProps = {
   isCorrect: boolean
   selectedOptionId: string
@@ -16,7 +18,12 @@ export function ExplanationPanel({
       className={`session-explanation surface-panel${isCorrect ? ' is-correct' : ' is-incorrect'}`}
       aria-live="polite"
     >
-      <h3>{isCorrect ? 'Correct' : 'Incorrect'}</h3>
+      <div className="session-explanation-heading">
+        <span className="session-explanation-symbol" aria-hidden="true">
+          {isCorrect ? <Check /> : <X />}
+        </span>
+        <h3>{isCorrect ? 'Correct' : 'Incorrect'}</h3>
+      </div>
       <p>
         Correct answer: <strong>{correctOptionId}</strong>
       </p>

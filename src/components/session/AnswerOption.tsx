@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { Check, X } from 'lucide-react'
 
 type OptionId = 'A' | 'B' | 'C' | 'D'
 
@@ -37,12 +37,12 @@ export function AnswerOption({
     classNames.push('is-incorrect')
   }
 
-  let statusLabel: ReactNode = null
+  let statusLabel: string | null = null
 
   if (isSubmitted && isCorrect) {
-    statusLabel = <span className="session-answer-status">Correct answer</span>
+    statusLabel = 'Correct answer'
   } else if (isSubmitted && isIncorrect) {
-    statusLabel = <span className="session-answer-status">Your choice</span>
+    statusLabel = 'Your choice'
   }
 
   return (
@@ -52,12 +52,18 @@ export function AnswerOption({
       onClick={() => onSelect(id)}
       disabled={isSubmitted}
       aria-pressed={isSelected}
+      aria-label={statusLabel ? `${label}. ${text}. ${statusLabel}.` : `${label}. ${text}.`}
     >
       <span className="session-answer-label" aria-hidden="true">
         {label}
       </span>
       <span className="session-answer-text">{text}</span>
-      {statusLabel}
+      {statusLabel ? (
+        <span className="session-answer-status">
+          {isCorrect ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}
+          {statusLabel}
+        </span>
+      ) : null}
     </button>
   )
 }

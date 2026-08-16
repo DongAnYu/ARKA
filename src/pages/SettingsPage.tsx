@@ -7,6 +7,58 @@ import { Download, RefreshCw } from 'lucide-react'
 
 type UpdateCheckStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'installing' | 'restart-needed' | 'error'
 
+function getVersionStatus(
+  versionLabel: string,
+  isLoadingVersion: boolean,
+  hasVersionLoadError: boolean,
+): string {
+  if (hasVersionLoadError) {
+    return 'Unable to load the application version.'
+  }
+
+  if (isLoadingVersion) {
+    return 'Loading application version.'
+  }
+
+  return `Current version: ${versionLabel}.`
+}
+
+function getUpdateStatus(
+  updateCheckStatus: UpdateCheckStatus,
+  availableUpdate: Update | null,
+  updateError: string | null,
+  versionLabel: string,
+): string {
+  switch (updateCheckStatus) {
+    case 'checking':
+      return 'Checking for updates.'
+    case 'up-to-date':
+      return `You're up to date — ${versionLabel}.`
+    case 'available':
+      return `Version ${availableUpdate?.version} is available.`
+    case 'installing':
+      return `Downloading and installing Version ${availableUpdate?.version}. A.R.K.A will restart when it is ready.`
+    case 'restart-needed':
+      return `Version ${availableUpdate?.version} is installed. Restart A.R.K.A to finish.`
+    case 'error':
+      return updateError ?? ''
+    case 'idle':
+      return ''
+  }
+}
+
+function getUpdateStatusClass(updateCheckStatus: UpdateCheckStatus): string {
+  if (updateCheckStatus === 'error') {
+    return 'settings-status is-error'
+  }
+
+  if (updateCheckStatus === 'up-to-date' || updateCheckStatus === 'restart-needed') {
+    return 'settings-status is-success'
+  }
+
+  return 'settings-status'
+}
+
 export function SettingsPage() {
   const [version, setVersion] = useState<string | null>(null)
   const [isLoadingVersion, setIsLoadingVersion] = useState(true)
@@ -45,24 +97,9 @@ export function SettingsPage() {
   }, [])
 
   const versionLabel = version ? `Version ${version}` : 'Version unavailable'
-  const versionStatus = hasVersionLoadError
-    ? 'Unable to load the application version.'
-    : isLoadingVersion
-      ? 'Loading application version.'
-      : `Current version: ${versionLabel}.`
-  const updateStatus = updateCheckStatus === 'checking'
-    ? 'Checking for updates.'
-    : updateCheckStatus === 'up-to-date'
-      ? `You're up to date — ${versionLabel}.`
-      : updateCheckStatus === 'available'
-        ? `Version ${availableUpdate?.version} is available.`
-        : updateCheckStatus === 'installing'
-          ? `Downloading and installing Version ${availableUpdate?.version}. A.R.K.A will restart when it is ready.`
-          : updateCheckStatus === 'restart-needed'
-            ? `Version ${availableUpdate?.version} is installed. Restart A.R.K.A to finish.`
-        : updateCheckStatus === 'error'
-          ? updateError
-          : ''
+  const versionStatus = getVersionStatus(versionLabel, isLoadingVersion, hasVersionLoadError)
+  const updateStatus = getUpdateStatus(updateCheckStatus, availableUpdate, updateError, versionLabel)
+  const updateStatusClass = getUpdateStatusClass(updateCheckStatus)
 
   const checkForUpdates = async () => {
     setUpdateCheckStatus('checking')
@@ -227,7 +264,7 @@ export function SettingsPage() {
             <p id="application-version-status" className="settings-status" role="status" aria-live="polite">
               {versionStatus}
             </p>
-            <p id="application-update-status" className="settings-status" role="status" aria-live="polite">
+            <p id="application-update-status" className={updateStatusClass} role="status" aria-live="polite">
               {updateStatus}
             </p>
           </div>
