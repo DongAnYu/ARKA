@@ -2,7 +2,7 @@
 //!
 //! Orchestrates the complete MCQ generation pipeline:
 //! 1. Build structured prompt from GraphContextBundle
-//! 2. Call LLM via JsonGenerationRequest (with built-in retry logic)
+//! 2. Call LLM via StructuredGenerationRequest (with built-in retry logic)
 //! 3. Parse JSON response into GeneratedMCQ struct
 //! 4. Validate structural correctness
 //! 5. Return or error
@@ -10,7 +10,7 @@
 //! Error handling: Retries are managed by LlmService.generate_json_with_retries().
 //! This module focuses on orchestration, not retry logic.
 
-use crate::services::llm::{JsonGenerationRequest, LlmService, LlmServiceError};
+use crate::services::llm::{LlmService, LlmServiceError, StructuredGenerationRequest};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -60,11 +60,12 @@ pub async fn generate_mcq(
     let format_schema = schema_for_generated_mcq();
 
     // Prepare LLM request
-    let request = JsonGenerationRequest {
+    let request = StructuredGenerationRequest {
         stage_label: "stage_b_mcq",
+        schema_name: "graph_stage_b_mcq",
         system_prompt: &system_prompt,
         user_prompt: &user_prompt,
-        format_schema,
+        schema: format_schema,
         payload_preview_chars: 200,
     };
 
@@ -279,6 +280,11 @@ mod tests {
         assert!(schema["properties"]["options"].is_object());
         assert!(schema["properties"]["correct_index"].is_object());
         assert!(schema["properties"]["explanation"].is_object());
+    }
+
+    #[test]
+    fn generated_mcq_schema_is_strict_openai_compatible() {
+        crate::services::llm::assert_strict_json_schema(&schema_for_generated_mcq());
     }
 
     #[test]

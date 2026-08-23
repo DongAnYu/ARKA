@@ -20,15 +20,15 @@ struct OllamaErrorEnvelope {
     error: String,
 }
 
-/// Top-level error response returned by OpenRouter.
+/// OpenAI-compatible error envelope returned by OpenAI and OpenRouter.
 #[derive(Debug, Deserialize)]
-struct OpenRouterErrorEnvelope {
-    error: OpenRouterErrorDetails,
+struct OpenAiCompatibleErrorEnvelope {
+    error: OpenAiCompatibleErrorDetails,
 }
 
-/// Error details nested inside an OpenRouter error response.
+/// Error details nested inside an OpenAI-compatible error response.
 #[derive(Debug, Deserialize)]
-struct OpenRouterErrorDetails {
+struct OpenAiCompatibleErrorDetails {
     code: Option<Value>,
     message: String,
 }
@@ -159,7 +159,7 @@ pub enum LlmServiceError {
     HttpStatus { failure: LlmFailure },
     ResponseDecode(serde_json::Error),
     ModelNotFound { model: String },
-    MissingApiKey,
+    MissingApiKey { provider: LlmProvider },
     Serialize(serde_json::Error),
     EmptyModelResponse,
     Schema(LlmSchemaError),
@@ -184,9 +184,10 @@ impl fmt::Display for LlmServiceError {
                 f,
                 "Model '{model}' was not found on this provider URL. Try fetching all models first."
             ),
-            Self::MissingApiKey => write!(
+            Self::MissingApiKey { provider } => write!(
                 f,
-                "Missing API key for provider request. Set OPENROUTER_API_KEY in your environment."
+                "Missing API key for {} request. Add it in Models or configure the provider environment variable.",
+                provider.as_str()
             ),
             Self::Serialize(err) => write!(f, "Failed to serialize LLM request context: {err}"),
             Self::EmptyModelResponse => write!(f, "LLM returned an empty response message"),
@@ -223,9 +224,9 @@ impl LlmServiceError {
                 "The selected model was not found. Choose an available model in Models.",
                 false,
             ),
-            Self::MissingApiKey => LlmFailure::new(
+            Self::MissingApiKey { .. } => LlmFailure::new(
                 LlmFailureCode::Account,
-                "The OpenRouter API key is missing. Add it in Models and save your settings.",
+                "The provider API key is missing. Add it in Models and save your settings.",
                 false,
             ),
             Self::ResponseDecode(_)
@@ -277,7 +278,7 @@ pub(super) fn is_retryable_error(error: &LlmServiceError) -> bool {
 fn parse_provider_error(provider: LlmProvider, body: &str) -> Option<ProviderErrorDetails> {
     match provider {
         LlmProvider::Ollama => parse_ollama_error(body),
-        LlmProvider::OpenRouter => parse_openrouter_error(body),
+        LlmProvider::OpenAi | LlmProvider::OpenRouter => parse_openai_compatible_error(body),
     }
 }
 
@@ -294,8 +295,8 @@ fn parse_ollama_error(body: &str) -> Option<ProviderErrorDetails> {
     })
 }
 
-fn parse_openrouter_error(body: &str) -> Option<ProviderErrorDetails> {
-    let envelope: OpenRouterErrorEnvelope = serde_json::from_str(body).ok()?;
+fn parse_openai_compatible_error(body: &str) -> Option<ProviderErrorDetails> {
+    let envelope: OpenAiCompatibleErrorEnvelope = serde_json::from_str(body).ok()?;
     let message = envelope.error.message.trim();
     if message.is_empty() {
         return None;
@@ -417,8 +418,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_openai_error_envelope() {
+        let details = parse_provider_error(
+            LlmProvider::OpenAi,
+            r#"{
+                "error": {
+                    "code": "invalid_request_error",
+                    "message": "Invalid response format"
+                }
+            }"#,
+        )
+        .expect("OpenAI error response should parse");
+
+        assert_eq!(details.code.as_deref(), Some("invalid_request_error"));
+        assert_eq!(details.message, "Invalid response format");
+    }
+
+    #[test]
     fn rejects_unrecognized_or_empty_provider_error_envelopes() {
         assert!(parse_provider_error(LlmProvider::Ollama, r#"{"error":"  "}"#).is_none());
+        assert!(parse_provider_error(LlmProvider::OpenAi, "not-json").is_none());
         assert!(parse_provider_error(LlmProvider::OpenRouter, "not-json").is_none());
     }
 

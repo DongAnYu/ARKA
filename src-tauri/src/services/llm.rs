@@ -18,6 +18,7 @@ pub use error::{LlmConfigError, LlmFailure, LlmFailureCode, LlmServiceError};
 use error::{classify_provider_error, is_retryable_error};
 
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 // One initial request plus four retries: 2s + 4s + 8s + 16s = 30s total waiting.
@@ -28,6 +29,7 @@ static RUNTIME_LLM_CONFIG: OnceLock<RwLock<Option<LlmConfig>>> = OnceLock::new()
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {
     Ollama,
+    OpenAi,
     OpenRouter,
 }
 
@@ -35,6 +37,7 @@ impl LlmProvider {
     fn as_str(&self) -> &'static str {
         match self {
             Self::Ollama => "ollama",
+            Self::OpenAi => "openai",
             Self::OpenRouter => "openrouter",
         }
     }
@@ -42,11 +45,12 @@ impl LlmProvider {
     fn from_str(raw: &str) -> Result<Self, LlmConfigError> {
         match raw.trim().to_lowercase().as_str() {
             "ollama" => Ok(Self::Ollama),
+            "openai" => Ok(Self::OpenAi),
             "openrouter" => Ok(Self::OpenRouter),
             _ => Err(LlmConfigError::InvalidValue {
                 key: String::from("LLM_PROVIDER"),
                 value: raw.to_string(),
-                reason: String::from("expected 'ollama' or 'openrouter'"),
+                reason: String::from("expected 'ollama', 'openai', or 'openrouter'"),
             }),
         }
     }
@@ -67,6 +71,14 @@ fn provider_registry() -> HashMap<&'static str, ProviderProfile> {
                 default_base_url: DEFAULT_OLLAMA_BASE_URL,
                 chat_path: "/api/chat",
                 bypass_proxy: true,
+            },
+        ),
+        (
+            "openai",
+            ProviderProfile {
+                default_base_url: DEFAULT_OPENAI_BASE_URL,
+                chat_path: "/chat/completions",
+                bypass_proxy: false,
             },
         ),
         (
@@ -101,10 +113,12 @@ impl LlmConfig {
     /// Builds config from environment variables for supported providers.
     ///
     /// Supported env vars:
-    /// - LLM_PROVIDER: ollama | openrouter
+    /// - LLM_PROVIDER: ollama | openai | openrouter
     /// - LLM_BASE_URL: default base URL override (all providers)
+    /// - OPENAI_BASE_URL: OpenAI base URL override
     /// - OPENROUTER_BASE_URL: OpenRouter base URL override
     /// - LLM_MODEL: model id
+    /// - OPENAI_API_KEY: required when LLM_PROVIDER=openai
     /// - OPENROUTER_API_KEY: required when LLM_PROVIDER=openrouter
     /// - LLM_TIMEOUT_SECS: request timeout in seconds
     pub fn from_env() -> Result<Self, LlmConfigError> {
@@ -117,6 +131,9 @@ impl LlmConfig {
             LlmProvider::Ollama => {
                 env::var("LLM_BASE_URL").unwrap_or_else(|_| profile.default_base_url.to_string())
             }
+            LlmProvider::OpenAi => env::var("OPENAI_BASE_URL")
+                .or_else(|_| env::var("LLM_BASE_URL"))
+                .unwrap_or_else(|_| profile.default_base_url.to_string()),
             LlmProvider::OpenRouter => env::var("OPENROUTER_BASE_URL")
                 .or_else(|_| env::var("LLM_BASE_URL"))
                 .unwrap_or_else(|_| profile.default_base_url.to_string()),
@@ -128,20 +145,27 @@ impl LlmConfig {
         let timeout_secs = parse_u64_env("LLM_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS)?;
         let api_key = match provider {
             LlmProvider::Ollama => None,
-            LlmProvider::OpenRouter => {
-                let key =
-                    env::var("OPENROUTER_API_KEY").map_err(|_| LlmConfigError::InvalidValue {
-                        key: String::from("OPENROUTER_API_KEY"),
-                        value: String::new(),
-                        reason: String::from("is required when LLM_PROVIDER=openrouter"),
-                    })?;
+            LlmProvider::OpenAi | LlmProvider::OpenRouter => {
+                let key_name = match provider {
+                    LlmProvider::OpenAi => "OPENAI_API_KEY",
+                    LlmProvider::OpenRouter => "OPENROUTER_API_KEY",
+                    LlmProvider::Ollama => unreachable!("Ollama does not require an API key"),
+                };
+                let key = env::var(key_name).map_err(|_| LlmConfigError::InvalidValue {
+                    key: String::from(key_name),
+                    value: String::new(),
+                    reason: format!("is required when LLM_PROVIDER={}", provider.as_str()),
+                })?;
 
                 let normalized = key.trim().to_string();
                 if normalized.is_empty() {
                     return Err(LlmConfigError::InvalidValue {
-                        key: String::from("OPENROUTER_API_KEY"),
+                        key: String::from(key_name),
                         value: String::from("<empty>"),
-                        reason: String::from("must be non-empty when LLM_PROVIDER=openrouter"),
+                        reason: format!(
+                            "must be non-empty when LLM_PROVIDER={}",
+                            provider.as_str()
+                        ),
                     });
                 }
 
@@ -206,14 +230,14 @@ pub fn set_runtime_llm_config(
 
     let normalized_api_key = match parsed_provider {
         LlmProvider::Ollama => None,
-        LlmProvider::OpenRouter => {
+        LlmProvider::OpenAi | LlmProvider::OpenRouter => {
             let key = api_key
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .ok_or(LlmConfigError::InvalidValue {
                     key: String::from("api_key"),
                     value: String::from("<empty>"),
-                    reason: String::from("is required when provider=openrouter"),
+                    reason: format!("is required when provider={}", parsed_provider.as_str()),
                 })?;
 
             Some(key.to_string())
@@ -285,52 +309,57 @@ pub(crate) struct LlmRetryEvent {
     pub(crate) state: LlmRetryState,
 }
 
-pub(crate) struct JsonGenerationRequest<'a> {
+/// Provider-neutral contract for one schema-constrained generation operation.
+///
+/// Adapters decide how to transport `schema`; parsing and semantic validation
+/// remain shared by every provider.
+pub(crate) struct StructuredGenerationRequest<'a> {
     pub(crate) stage_label: &'a str,
+    pub(crate) schema_name: &'a str,
     pub(crate) system_prompt: &'a str,
     pub(crate) user_prompt: &'a str,
-    pub(crate) format_schema: Value,
+    pub(crate) schema: Value,
     pub(crate) payload_preview_chars: usize,
 }
 
 #[derive(Debug, Serialize)]
 struct OllamaChatRequest {
     model: String,
-    messages: Vec<OllamaChatMessage>,
+    messages: Vec<ChatMessage>,
     stream: bool,
     format: Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct OllamaChatMessage {
+struct ChatMessage {
     role: String,
     content: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct OllamaChatResponse {
-    message: Option<OllamaChatMessage>,
+    message: Option<ChatMessage>,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenRouterChatRequest {
+struct OpenAiCompatibleChatRequest {
     model: String,
-    messages: Vec<OllamaChatMessage>,
+    messages: Vec<ChatMessage>,
     response_format: Value,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterChatResponse {
-    choices: Vec<OpenRouterChatChoice>,
+struct OpenAiCompatibleChatResponse {
+    choices: Vec<OpenAiCompatibleChatChoice>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterChatChoice {
-    message: Option<OpenRouterChatMessage>,
+struct OpenAiCompatibleChatChoice {
+    message: Option<OpenAiCompatibleChatMessage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterChatMessage {
+struct OpenAiCompatibleChatMessage {
     content: Value,
 }
 
@@ -488,21 +517,14 @@ impl LlmService {
 
     pub(crate) async fn generate_json_with_retries<T, Parse>(
         &self,
-        request: JsonGenerationRequest<'_>,
+        request: StructuredGenerationRequest<'_>,
         parse: Parse,
     ) -> Result<(T, String, usize), LlmServiceError>
     where
         Parse: Fn(&str) -> Result<T, LlmServiceError>,
     {
         for attempt in 1..=GENERATION_MAX_ATTEMPTS {
-            let raw_json = match self
-                .chat_json(
-                    request.system_prompt,
-                    request.user_prompt,
-                    request.format_schema.clone(),
-                )
-                .await
-            {
+            let raw_json = match self.chat_json(&request).await {
                 Ok(value) => value,
                 Err(err) => {
                     if attempt >= GENERATION_MAX_ATTEMPTS || !is_retryable_error(&err) {
@@ -580,44 +602,22 @@ impl LlmService {
 
     pub(crate) async fn chat_json(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
-        format_schema: Value,
+        request: &StructuredGenerationRequest<'_>,
     ) -> Result<String, LlmServiceError> {
         match self.config.provider {
-            LlmProvider::Ollama => {
-                self.chat_json_ollama(system_prompt, user_prompt, format_schema)
-                    .await
-            }
-            LlmProvider::OpenRouter => {
-                self.chat_json_openrouter(system_prompt, user_prompt, format_schema)
-                    .await
+            LlmProvider::Ollama => self.chat_json_ollama(request).await,
+            LlmProvider::OpenAi | LlmProvider::OpenRouter => {
+                self.chat_json_openai_compatible(request).await
             }
         }
     }
 
     async fn chat_json_ollama(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
-        format_schema: Value,
+        request: &StructuredGenerationRequest<'_>,
     ) -> Result<String, LlmServiceError> {
         let endpoint = self.chat_endpoint();
-        let payload = OllamaChatRequest {
-            model: self.model().to_string(),
-            messages: vec![
-                OllamaChatMessage {
-                    role: String::from("system"),
-                    content: system_prompt.to_string(),
-                },
-                OllamaChatMessage {
-                    role: String::from("user"),
-                    content: user_prompt.to_string(),
-                },
-            ],
-            stream: false,
-            format: format_schema,
-        };
+        let payload = build_ollama_chat_request(self.model(), request);
 
         let response = self
             .client
@@ -653,40 +653,20 @@ impl LlmService {
         Ok(strip_markdown_fences(&content))
     }
 
-    async fn chat_json_openrouter(
+    async fn chat_json_openai_compatible(
         &self,
-        system_prompt: &str,
-        user_prompt: &str,
-        format_schema: Value,
+        request: &StructuredGenerationRequest<'_>,
     ) -> Result<String, LlmServiceError> {
         let endpoint = self.chat_endpoint();
         let api_key = self
             .config
             .api_key
             .as_deref()
-            .ok_or(LlmServiceError::MissingApiKey)?;
+            .ok_or(LlmServiceError::MissingApiKey {
+                provider: self.config.provider,
+            })?;
 
-        let payload = OpenRouterChatRequest {
-            model: self.model().to_string(),
-            messages: vec![
-                OllamaChatMessage {
-                    role: String::from("system"),
-                    content: system_prompt.to_string(),
-                },
-                OllamaChatMessage {
-                    role: String::from("user"),
-                    content: user_prompt.to_string(),
-                },
-            ],
-            response_format: json!({
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "active_recall_output",
-                    "strict": true,
-                    "schema": format_schema
-                }
-            }),
-        };
+        let payload = build_openai_compatible_chat_request(self.model(), request);
 
         let response = self
             .client
@@ -703,14 +683,10 @@ impl LlmService {
         let status = response.status();
         let body = response.text().await.map_err(LlmServiceError::Http)?;
         if !status.is_success() {
-            return Err(classify_provider_error(
-                LlmProvider::OpenRouter,
-                status,
-                &body,
-            ));
+            return Err(classify_provider_error(self.config.provider, status, &body));
         }
 
-        let parsed: OpenRouterChatResponse =
+        let parsed: OpenAiCompatibleChatResponse =
             serde_json::from_str(&body).map_err(LlmServiceError::ResponseDecode)?;
         let content = parsed
             .choices
@@ -726,6 +702,49 @@ impl LlmService {
         }
 
         Ok(strip_markdown_fences(&content))
+    }
+}
+
+fn structured_messages(request: &StructuredGenerationRequest<'_>) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage {
+            role: String::from("system"),
+            content: request.system_prompt.to_string(),
+        },
+        ChatMessage {
+            role: String::from("user"),
+            content: request.user_prompt.to_string(),
+        },
+    ]
+}
+
+fn build_ollama_chat_request(
+    model: &str,
+    request: &StructuredGenerationRequest<'_>,
+) -> OllamaChatRequest {
+    OllamaChatRequest {
+        model: model.to_string(),
+        messages: structured_messages(request),
+        stream: false,
+        format: request.schema.clone(),
+    }
+}
+
+fn build_openai_compatible_chat_request(
+    model: &str,
+    request: &StructuredGenerationRequest<'_>,
+) -> OpenAiCompatibleChatRequest {
+    OpenAiCompatibleChatRequest {
+        model: model.to_string(),
+        messages: structured_messages(request),
+        response_format: json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": request.schema_name,
+                "strict": true,
+                "schema": request.schema.clone()
+            }
+        }),
     }
 }
 
@@ -822,9 +841,189 @@ fn log_preview(raw: &str, max_chars: usize) -> String {
     preview
 }
 
+/// Recursively verifies the strict JSON Schema object contract required by
+/// OpenAI-compatible structured-output endpoints.
+///
+/// Every object must reject undeclared fields, and every declared property must
+/// be required. Optional values remain representable with nullable property
+/// types such as `["string", "null"]`.
+#[cfg(test)]
+pub(crate) fn assert_strict_json_schema(schema: &Value) {
+    use std::collections::HashSet;
+
+    fn visit(value: &Value, path: &str) {
+        match value {
+            Value::Object(object) => {
+                if object.get("type").and_then(Value::as_str) == Some("object") {
+                    assert_eq!(
+                        object.get("additionalProperties"),
+                        Some(&Value::Bool(false)),
+                        "object schema at {path} must set additionalProperties to false"
+                    );
+
+                    let properties = object
+                        .get("properties")
+                        .and_then(Value::as_object)
+                        .unwrap_or_else(|| {
+                            panic!("object schema at {path} must define properties")
+                        });
+                    let required = object
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .unwrap_or_else(|| panic!("object schema at {path} must define required"));
+
+                    let property_names = properties
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<HashSet<_>>();
+                    let required_names = required
+                        .iter()
+                        .map(|name| {
+                            name.as_str().unwrap_or_else(|| {
+                                panic!("required entry at {path} must be a string")
+                            })
+                        })
+                        .collect::<HashSet<_>>();
+
+                    assert_eq!(
+                        required.len(),
+                        required_names.len(),
+                        "object schema at {path} must not contain duplicate required entries"
+                    );
+                    assert_eq!(
+                        required_names, property_names,
+                        "object schema at {path} must require every declared property exactly once"
+                    );
+                }
+
+                for (key, child) in object {
+                    visit(child, &format!("{path}.{key}"));
+                }
+            }
+            Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    visit(child, &format!("{path}[{index}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    visit(schema, "$");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_structured_request() -> StructuredGenerationRequest<'static> {
+        StructuredGenerationRequest {
+            stage_label: "test",
+            schema_name: "test_output",
+            system_prompt: "Return structured data.",
+            user_prompt: "Test input",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "answer": { "type": "string" }
+                },
+                "required": ["answer"],
+                "additionalProperties": false
+            }),
+            payload_preview_chars: 100,
+        }
+    }
+
+    #[test]
+    fn parses_the_three_supported_providers() {
+        assert_eq!(
+            LlmProvider::from_str("ollama").unwrap(),
+            LlmProvider::Ollama
+        );
+        assert_eq!(
+            LlmProvider::from_str("openai").unwrap(),
+            LlmProvider::OpenAi
+        );
+        assert_eq!(
+            LlmProvider::from_str("openrouter").unwrap(),
+            LlmProvider::OpenRouter
+        );
+        assert!(LlmProvider::from_str("unsupported").is_err());
+    }
+
+    #[test]
+    fn provider_profiles_build_expected_chat_endpoints() {
+        let cases = [
+            (LlmProvider::Ollama, "http://127.0.0.1:11434/api/chat"),
+            (
+                LlmProvider::OpenAi,
+                "https://api.openai.com/v1/chat/completions",
+            ),
+            (
+                LlmProvider::OpenRouter,
+                "https://openrouter.ai/api/v1/chat/completions",
+            ),
+        ];
+
+        for (provider, expected_url) in cases {
+            let profile = provider_profile(provider);
+            let config = LlmConfig {
+                provider,
+                base_url: profile.default_base_url.to_string(),
+                model: String::from("test-model"),
+                timeout_secs: 60,
+                api_key: None,
+            };
+
+            assert_eq!(config.chat_url(), expected_url);
+        }
+    }
+
+    #[test]
+    fn ollama_adapter_places_the_canonical_schema_in_format() {
+        let request = test_structured_request();
+        let payload = serde_json::to_value(build_ollama_chat_request("local-model", &request))
+            .expect("Ollama request should serialize");
+
+        assert_eq!(payload["model"], "local-model");
+        assert_eq!(payload["stream"], false);
+        assert_eq!(payload["format"], request.schema);
+        assert!(payload.get("response_format").is_none());
+    }
+
+    #[test]
+    fn openai_compatible_adapter_wraps_the_same_canonical_schema() {
+        let request = test_structured_request();
+        let payload = serde_json::to_value(build_openai_compatible_chat_request(
+            "remote-model",
+            &request,
+        ))
+        .expect("OpenAI-compatible request should serialize");
+
+        assert_eq!(payload["model"], "remote-model");
+        assert_eq!(payload["response_format"]["type"], "json_schema");
+        assert_eq!(
+            payload["response_format"]["json_schema"]["name"],
+            "test_output"
+        );
+        assert_eq!(payload["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(
+            payload["response_format"]["json_schema"]["schema"],
+            request.schema
+        );
+        assert!(payload.get("format").is_none());
+    }
+
+    #[test]
+    fn remote_providers_require_api_keys_in_runtime_settings() {
+        for provider in ["openai", "openrouter"] {
+            let error =
+                set_runtime_llm_config(provider, "https://example.com/v1", "test-model", 60, None)
+                    .expect_err("remote provider should reject a missing API key");
+
+            assert!(error.to_string().contains(provider));
+        }
+    }
 
     #[test]
     fn retry_schedule_waits_thirty_seconds_in_total() {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 
-type ProviderId = 'ollama' | 'openrouter'
+type ProviderId = 'ollama' | 'openai' | 'openrouter'
 type ModelHistoryMap = Record<string, string[]>
 
 type ProviderOption = {
@@ -29,6 +29,12 @@ const providerOptions: ProviderOption[] = [
     defaultBaseUrl: 'http://localhost:11434',
   },
   {
+    id: 'openai',
+    name: 'OpenAI',
+    description: 'OpenAI models with an API key',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+  },
+  {
     id: 'openrouter',
     name: 'OpenRouter',
     description: 'Many models, one API key',
@@ -38,6 +44,12 @@ const providerOptions: ProviderOption[] = [
 
 const findProvider = (provider: ProviderId): ProviderOption => {
   return providerOptions.find((option) => option.id === provider) ?? providerOptions[0]
+}
+
+const parseProvider = (provider: string): ProviderId => {
+  return providerOptions.some((option) => option.id === provider)
+    ? (provider as ProviderId)
+    : 'ollama'
 }
 
 const dedupeModels = (models: string[]): string[] => {
@@ -74,7 +86,7 @@ export function ModelsPage() {
   const [savedConfig, setSavedConfig] = useState<DbModelConfig | null>(null)
   const [provider, setProvider] = useState<ProviderId>('ollama')
   const [baseUrl, setBaseUrl] = useState(findProvider('ollama').defaultBaseUrl)
-  const [openRouterApiKey, setOpenRouterApiKey] = useState('')
+  const [apiKey, setApiKey] = useState('')
   const [timeoutSecs, setTimeoutSecs] = useState('60')
   const [modelId, setModelId] = useState('')
   const [modelHistory, setModelHistory] = useState<ModelHistoryMap>(() => readModelHistory())
@@ -90,13 +102,13 @@ export function ModelsPage() {
   useEffect(() => {
     invoke<DbModelConfig>('load_model_config')
       .then((config) => {
-        const savedProvider = (config.provider === 'openrouter' ? 'openrouter' : 'ollama') as ProviderId
+        const savedProvider = parseProvider(config.provider)
         setSavedConfig(config)
         setProvider(savedProvider)
         setBaseUrl(config.base_url)
         setTimeoutSecs(String(config.timeout_secs))
         setModelId(config.selected_model)
-        setOpenRouterApiKey(config.api_key ?? '')
+        setApiKey(config.api_key ?? '')
       })
       .catch((err) => {
         console.error('Failed to load model config from DB:', err)
@@ -107,7 +119,7 @@ export function ModelsPage() {
     setSaveStatus('')
     const normalizedBaseUrl = baseUrl.trim()
     const normalizedModel = modelId.trim()
-    const normalizedApiKey = openRouterApiKey.trim()
+    const normalizedApiKey = apiKey.trim()
     const parsedTimeout = Number(timeoutSecs)
     const isValidTimeout = Number.isInteger(parsedTimeout) && parsedTimeout > 0
 
@@ -116,8 +128,8 @@ export function ModelsPage() {
       return
     }
 
-    if (provider === 'openrouter' && !normalizedApiKey) {
-      setSaveStatus('OpenRouter API key is required before saving.')
+    if (provider !== 'ollama' && !normalizedApiKey) {
+      setSaveStatus(`${activeProvider.name} API key is required before saving.`)
       return
     }
 
@@ -129,7 +141,7 @@ export function ModelsPage() {
           base_url: normalizedBaseUrl,
           selected_model: normalizedModel,
           timeout_secs: parsedTimeout,
-          api_key: provider === 'openrouter' ? normalizedApiKey : null,
+          api_key: provider !== 'ollama' ? normalizedApiKey : null,
         },
       })
 
@@ -138,7 +150,7 @@ export function ModelsPage() {
         base_url: normalizedBaseUrl,
         selected_model: normalizedModel,
         timeout_secs: parsedTimeout,
-        api_key: provider === 'openrouter' ? normalizedApiKey : null,
+        api_key: provider !== 'ollama' ? normalizedApiKey : null,
       })
 
       await invoke('set_runtime_llm_settings', {
@@ -146,7 +158,7 @@ export function ModelsPage() {
         baseUrl: normalizedBaseUrl,
         model: normalizedModel,
         timeoutSecs: parsedTimeout,
-        apiKey: provider === 'openrouter' ? normalizedApiKey : null,
+        apiKey: provider !== 'ollama' ? normalizedApiKey : null,
       })
 
       setSaveStatus('Model settings saved.')
@@ -178,12 +190,12 @@ export function ModelsPage() {
   const selectProvider = (nextProvider: ProviderId) => {
     const config = findProvider(nextProvider)
 
-    if (savedConfig && (savedConfig.provider === 'openrouter' ? 'openrouter' : 'ollama') === nextProvider) {
+    if (savedConfig && parseProvider(savedConfig.provider) === nextProvider) {
       setProvider(nextProvider)
       setBaseUrl(savedConfig.base_url)
       setTimeoutSecs(String(savedConfig.timeout_secs))
       setModelId(savedConfig.selected_model)
-      setOpenRouterApiKey(savedConfig.api_key ?? '')
+      setApiKey(savedConfig.api_key ?? '')
       setFetchStatus('')
       return
     }
@@ -192,9 +204,7 @@ export function ModelsPage() {
     setBaseUrl(config.defaultBaseUrl)
     setFetchStatus('')
     setModelId('')
-    if (nextProvider !== 'openrouter') {
-      setOpenRouterApiKey('')
-    }
+    setApiKey('')
   }
 
   const fetchModels = async () => {
@@ -259,7 +269,7 @@ export function ModelsPage() {
           <section className="settings-subsection">
             <header className="settings-section-head">
               <h3>Provider</h3>
-              <p>Choose Ollama or OpenRouter.</p>
+              <p>Choose local Ollama, OpenAI, or OpenRouter.</p>
             </header>
 
             <div className="provider-grid" role="radiogroup" aria-label="Provider">
@@ -312,17 +322,17 @@ export function ModelsPage() {
               />
             </div>
 
-            {provider === 'openrouter' && (
+            {provider !== 'ollama' && (
               <div className="settings-field">
-                <label htmlFor="openrouter-api-key">OpenRouter API key</label>
-                <p className="settings-help-text">Needed for OpenRouter requests.</p>
+                <label htmlFor="provider-api-key">{activeProvider.name} API key</label>
+                <p className="settings-help-text">Needed for {activeProvider.name} requests.</p>
                 <input
-                  id="openrouter-api-key"
+                  id="provider-api-key"
                   className="settings-input"
                   type="password"
-                  value={openRouterApiKey}
-                  onChange={(event) => setOpenRouterApiKey(event.target.value)}
-                  placeholder="sk-or-v1-..."
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder={provider === 'openai' ? 'sk-...' : 'sk-or-v1-...'}
                   autoComplete="off"
                 />
               </div>
@@ -368,17 +378,21 @@ export function ModelsPage() {
               </>
             ) : (
               <>
-                <p className="settings-help-text">Enter a model id such as inclusionai/ling-2.6-flash.</p>
+                <p className="settings-help-text">
+                  {provider === 'openai'
+                    ? 'Enter an OpenAI model id.'
+                    : 'Enter an OpenRouter model id such as inclusionai/ling-2.6-flash.'}
+                </p>
 
                 <div className="settings-field">
-                  <label htmlFor="model-query">OpenRouter model id</label>
+                  <label htmlFor="model-query">{activeProvider.name} model id</label>
                   <input
                     id="model-query"
                     className="settings-input"
                     type="text"
                     value={modelId}
                     onChange={(event) => setModelId(event.target.value)}
-                    placeholder="e.g. inclusionai/ling-2.6-flash"
+                    placeholder={provider === 'openai' ? 'e.g. gpt-5.4' : 'e.g. inclusionai/ling-2.6-flash'}
                     autoComplete="off"
                   />
                 </div>

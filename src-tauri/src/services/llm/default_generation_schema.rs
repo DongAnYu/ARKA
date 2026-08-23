@@ -276,6 +276,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_generation_schemas_are_strict_openai_compatible() {
+        crate::services::llm::assert_strict_json_schema(&stage_a_format_schema());
+        crate::services::llm::assert_strict_json_schema(&stage_b_format_schema());
+    }
+
+    #[test]
     fn parses_stage_a_wrapper() {
         let payload = r#"
                 {

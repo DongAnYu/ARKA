@@ -5,7 +5,7 @@ use std::fs;
 use serde::Serialize;
 
 use crate::services::chunker::chunk_markdown;
-use crate::services::llm::{JsonGenerationRequest, LlmService, LlmServiceError};
+use crate::services::llm::{LlmService, LlmServiceError, StructuredGenerationRequest};
 
 use super::bundle_builder::assemble_bundles;
 use super::consolidator::{consolidate, validate_graph};
@@ -114,11 +114,12 @@ pub async fn run_graph_stage_a(
         let user_prompt =
             format_stage_a_graph_user_prompt(&chunk.content, "(no index context in eval mode)");
         let chunk_id = format!("chunk-{}", idx);
-        let request = JsonGenerationRequest {
+        let request = StructuredGenerationRequest {
             stage_label: "Graph Stage A",
+            schema_name: "graph_stage_a",
             system_prompt: GRAPH_STAGE_A_SYSTEM_PROMPT,
             user_prompt: &user_prompt,
-            format_schema: format_schema.clone(),
+            schema: format_schema.clone(),
             payload_preview_chars: 800,
         };
 

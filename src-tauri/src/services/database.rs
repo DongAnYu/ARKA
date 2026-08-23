@@ -529,6 +529,45 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn model_settings_accept_and_preserve_openai_provider() {
+        let _guard = database_test_lock()
+            .lock()
+            .expect("database test lock should not be poisoned");
+
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("arka-openai-config-{unique_id}.sqlite"));
+
+        std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
+
+        run_smoke_test()
+            .await
+            .expect("migrations should support the OpenAI provider");
+        save_model_config(ModelConfig {
+            provider: String::from("openai"),
+            base_url: String::from("https://api.openai.com/v1"),
+            selected_model: String::from("test-model"),
+            timeout_secs: 60,
+            api_key: Some(String::from("test-key")),
+        })
+        .await
+        .expect("OpenAI model settings should save");
+
+        let config = load_model_config()
+            .await
+            .expect("OpenAI model settings should reload");
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.base_url, "https://api.openai.com/v1");
+        assert_eq!(config.selected_model, "test-model");
+        assert_eq!(config.api_key.as_deref(), Some("test-key"));
+
+        std::env::remove_var("DATABASE_URL");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn get_questions_loads_saved_questions_with_scheduler_fields() {
         let _guard = database_test_lock()
             .lock()

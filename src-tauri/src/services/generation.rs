@@ -19,8 +19,8 @@ use super::graph_generation::{
     types::{ExtractedKnowledge, QuestionType},
 };
 use super::llm::{
-    JsonGenerationRequest, LlmFailure, LlmFailureCode, LlmRetryEvent, LlmRetryState, LlmService,
-    LlmServiceError, StageBMcq,
+    LlmFailure, LlmFailureCode, LlmRetryEvent, LlmRetryState, LlmService, LlmServiceError,
+    StageBMcq, StructuredGenerationRequest,
 };
 
 const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
@@ -545,11 +545,12 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 let user_prompt =
                     format_stage_a_graph_user_prompt(&chunk.content, "(graph pipeline)");
                 let chunk_id = format!("chunk-{}", order);
-                let request = JsonGenerationRequest {
+                let request = StructuredGenerationRequest {
                     stage_label: "Graph Stage A",
+                    schema_name: "graph_stage_a",
                     system_prompt: GRAPH_STAGE_A_SYSTEM_PROMPT,
                     user_prompt: &user_prompt,
-                    format_schema: format_schema.clone(),
+                    schema: format_schema.clone(),
                     payload_preview_chars: 800,
                 };
 
@@ -1173,7 +1174,13 @@ mod tests {
             }),
         };
 
-        finish_job_with_llm_error(&job, &LlmServiceError::MissingApiKey, None);
+        finish_job_with_llm_error(
+            &job,
+            &LlmServiceError::MissingApiKey {
+                provider: crate::services::llm::LlmProvider::OpenRouter,
+            },
+            None,
+        );
 
         let snapshot = job
             .snapshot
@@ -1195,7 +1202,9 @@ mod tests {
         assert!(is_skippable_chunk_error(&LlmServiceError::InvalidOutput(
             String::from("invalid MCQ")
         )));
-        assert!(!is_skippable_chunk_error(&LlmServiceError::MissingApiKey));
+        assert!(!is_skippable_chunk_error(&LlmServiceError::MissingApiKey {
+            provider: crate::services::llm::LlmProvider::OpenRouter,
+        }));
     }
 
     #[test]
