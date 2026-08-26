@@ -5,3 +5,4 @@
 //! candidate generation and LLM verification.
 
 pub mod context_builder;
+pub mod embedding_generator;

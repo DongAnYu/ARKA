@@ -1,8 +1,8 @@
 //! Provider-neutral embedding service and response validation.
 //!
-//! Ollama and OpenRouter share one validated batch contract. Callers can rely
-//! on `EmbeddingBatch` only containing non-empty, finite vectors with a
-//! consistent dimensionality.
+//! Ollama, OpenAI, and OpenRouter share one validated batch contract. Callers
+//! can rely on `EmbeddingBatch` only containing non-empty, finite vectors with
+//! a consistent dimensionality.
 
 use std::error::Error;
 use std::fmt;
@@ -15,7 +15,28 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddingProvider {
     Ollama,
+    OpenAi,
     OpenRouter,
+}
+
+impl EmbeddingProvider {
+    /// Parses the stable provider identifiers stored in model settings.
+    pub fn from_config_value(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ollama" => Some(Self::Ollama),
+            "openai" => Some(Self::OpenAi),
+            "openrouter" => Some(Self::OpenRouter),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ollama => "ollama",
+            Self::OpenAi => "openai",
+            Self::OpenRouter => "openrouter",
+        }
+    }
 }
 
 /// Configuration shared by embedding provider implementations.
@@ -31,7 +52,7 @@ pub struct EmbeddingConfig {
 impl EmbeddingConfig {
     /// Creates normalized embedding configuration.
     ///
-    /// OpenRouter requires a non-empty API key; Ollama does not.
+    /// OpenAI and OpenRouter require a non-empty API key; Ollama does not.
     pub fn new(
         provider: EmbeddingProvider,
         base_url: impl Into<String>,
@@ -56,7 +77,11 @@ impl EmbeddingConfig {
         let api_key = api_key
             .map(|key| key.trim().to_string())
             .filter(|key| !key.is_empty());
-        if provider == EmbeddingProvider::OpenRouter && api_key.is_none() {
+        if matches!(
+            provider,
+            EmbeddingProvider::OpenAi | EmbeddingProvider::OpenRouter
+        ) && api_key.is_none()
+        {
             return Err(EmbeddingConfigError::MissingApiKey);
         }
 
@@ -120,7 +145,7 @@ impl fmt::Display for EmbeddingConfigError {
             Self::ZeroTimeout => write!(formatter, "Embedding timeout must be greater than zero"),
             Self::MissingApiKey => write!(
                 formatter,
-                "OpenRouter embedding configuration requires an API key"
+                "OpenAI and OpenRouter embedding configurations require an API key"
             ),
         }
     }
@@ -330,30 +355,30 @@ struct OllamaErrorResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct OpenRouterEmbedRequest<'a> {
+struct OpenAiCompatibleEmbedRequest<'a> {
     model: &'a str,
     input: &'a [String],
     encoding_format: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterEmbedResponse {
-    data: Vec<OpenRouterEmbedding>,
+struct OpenAiCompatibleEmbedResponse {
+    data: Vec<OpenAiCompatibleEmbedding>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterEmbedding {
+struct OpenAiCompatibleEmbedding {
     index: usize,
     embedding: Vec<f32>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterErrorResponse {
-    error: OpenRouterErrorDetails,
+struct OpenAiCompatibleErrorResponse {
+    error: OpenAiCompatibleErrorDetails,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterErrorDetails {
+struct OpenAiCompatibleErrorDetails {
     message: String,
 }
 
@@ -449,7 +474,9 @@ impl EmbeddingService {
 
         match self.config.provider() {
             EmbeddingProvider::Ollama => self.embed_batch_ollama(inputs).await,
-            EmbeddingProvider::OpenRouter => self.embed_batch_openrouter(inputs).await,
+            EmbeddingProvider::OpenAi | EmbeddingProvider::OpenRouter => {
+                self.embed_batch_openai_compatible(inputs).await
+            }
         }
     }
 
@@ -492,7 +519,8 @@ impl EmbeddingService {
         EmbeddingBatch::try_from_raw(response.embeddings, inputs.len()).map_err(Into::into)
     }
 
-    async fn embed_batch_openrouter(
+    /// Sends the shared `/embeddings` contract used by OpenAI and OpenRouter.
+    async fn embed_batch_openai_compatible(
         &self,
         inputs: &[String],
     ) -> Result<EmbeddingBatch, EmbeddingServiceError> {
@@ -500,7 +528,7 @@ impl EmbeddingService {
             "{}/embeddings",
             self.config.base_url().trim_end_matches('/')
         );
-        let payload = OpenRouterEmbedRequest {
+        let payload = OpenAiCompatibleEmbedRequest {
             model: self.config.model(),
             input: inputs,
             encoding_format: "float",
@@ -508,7 +536,7 @@ impl EmbeddingService {
         let api_key = self
             .config
             .api_key()
-            .expect("validated OpenRouter embedding config must contain an API key");
+            .expect("validated remote embedding config must contain an API key");
 
         let response = self
             .client
@@ -527,13 +555,13 @@ impl EmbeddingService {
         if !status.is_success() {
             return Err(EmbeddingServiceError::HttpStatus {
                 status,
-                message: openrouter_error_message(&body),
+                message: openai_compatible_error_message(&body, self.config.provider()),
             });
         }
 
-        let response: OpenRouterEmbedResponse =
+        let response: OpenAiCompatibleEmbedResponse =
             serde_json::from_str(&body).map_err(EmbeddingServiceError::ResponseDecode)?;
-        let vectors = order_openrouter_embeddings(response.data, inputs.len())?;
+        let vectors = order_openai_compatible_embeddings(response.data, inputs.len())?;
 
         EmbeddingBatch::try_from_raw(vectors, inputs.len()).map_err(Into::into)
     }
@@ -546,14 +574,16 @@ fn ollama_error_message(body: &str) -> String {
     bounded_error_message(&response.error, "Ollama embedding request failed")
 }
 
-fn openrouter_error_message(body: &str) -> String {
-    let Ok(response) = serde_json::from_str::<OpenRouterErrorResponse>(body) else {
-        return String::from("OpenRouter embedding request failed");
+fn openai_compatible_error_message(body: &str, provider: EmbeddingProvider) -> String {
+    let fallback = match provider {
+        EmbeddingProvider::OpenAi => "OpenAI embedding request failed",
+        EmbeddingProvider::OpenRouter => "OpenRouter embedding request failed",
+        EmbeddingProvider::Ollama => "Embedding request failed",
     };
-    bounded_error_message(
-        &response.error.message,
-        "OpenRouter embedding request failed",
-    )
+    let Ok(response) = serde_json::from_str::<OpenAiCompatibleErrorResponse>(body) else {
+        return fallback.to_string();
+    };
+    bounded_error_message(&response.error.message, fallback)
 }
 
 fn bounded_error_message(message: &str, fallback: &str) -> String {
@@ -572,14 +602,14 @@ fn bounded_error_message(message: &str, fallback: &str) -> String {
     truncated
 }
 
-/// Restores OpenRouter embeddings to the original request-input order.
+/// Restores OpenAI-compatible embeddings to the original request-input order.
 ///
-/// OpenRouter identifies each returned vector with an `index`, so response
-/// array order is not assumed to match input order. This function places every
-/// vector into its indexed slot and rejects duplicate, missing, or out-of-range
-/// indices before the batch is associated with entity contexts by position.
-fn order_openrouter_embeddings(
-    embeddings: Vec<OpenRouterEmbedding>,
+/// OpenAI and OpenRouter identify each returned vector with an `index`, so
+/// response array order is not assumed to match input order. This function
+/// places every vector into its indexed slot and rejects duplicate, missing, or
+/// out-of-range indices before entity contexts are associated by position.
+fn order_openai_compatible_embeddings(
+    embeddings: Vec<OpenAiCompatibleEmbedding>,
     expected_count: usize,
 ) -> Result<Vec<Vec<f32>>, EmbeddingValidationError> {
     let mut ordered = (0..expected_count)
@@ -691,8 +721,11 @@ mod tests {
     }
 
     fn service_for(provider: EmbeddingProvider, base_url: &str) -> EmbeddingService {
-        let api_key =
-            (provider == EmbeddingProvider::OpenRouter).then(|| String::from("test-api-key"));
+        let api_key = matches!(
+            provider,
+            EmbeddingProvider::OpenAi | EmbeddingProvider::OpenRouter
+        )
+        .then(|| String::from("test-api-key"));
         let config = EmbeddingConfig::new(provider, base_url, "nomic-embed-text", 5, api_key)
             .expect("mock embedding configuration should be valid");
         EmbeddingService::new(config).expect("mock embedding service should build")
@@ -713,6 +746,23 @@ mod tests {
         assert_eq!(config.model(), "nomic-embed-text");
         assert_eq!(config.timeout_secs(), 60);
         assert_eq!(config.api_key(), None);
+    }
+
+    #[test]
+    fn parses_the_three_persisted_provider_values() {
+        assert_eq!(
+            EmbeddingProvider::from_config_value(" ollama "),
+            Some(EmbeddingProvider::Ollama)
+        );
+        assert_eq!(
+            EmbeddingProvider::from_config_value("OPENAI"),
+            Some(EmbeddingProvider::OpenAi)
+        );
+        assert_eq!(
+            EmbeddingProvider::from_config_value("openrouter"),
+            Some(EmbeddingProvider::OpenRouter)
+        );
+        assert_eq!(EmbeddingProvider::from_config_value("unknown"), None);
     }
 
     #[test]
@@ -748,6 +798,16 @@ mod tests {
                 None,
             ),
             Err(EmbeddingConfigError::ZeroTimeout)
+        );
+        assert_eq!(
+            EmbeddingConfig::new(
+                EmbeddingProvider::OpenAi,
+                "https://api.openai.com/v1",
+                "text-embedding-3-small",
+                60,
+                None,
+            ),
+            Err(EmbeddingConfigError::MissingApiKey)
         );
         assert_eq!(
             EmbeddingConfig::new(
@@ -918,6 +978,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn openai_embed_batch_authenticates_and_restores_index_order() {
+        let (base_url, request_receiver) = mock_http_response(
+            "200 OK",
+            r#"{"data":[{"object":"embedding","index":1,"embedding":[0.3,0.4]},{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"text-embedding-3-small","object":"list"}"#,
+        )
+        .await;
+        let config = EmbeddingConfig::new(
+            EmbeddingProvider::OpenAi,
+            format!("{base_url}/v1/"),
+            "text-embedding-3-small",
+            5,
+            Some(String::from("test-api-key")),
+        )
+        .expect("OpenAI test configuration should be valid");
+        let service =
+            EmbeddingService::new(config).expect("OpenAI test embedding service should build");
+        let inputs = vec![String::from("first entity"), String::from("second entity")];
+
+        let batch = service
+            .embed_batch(&inputs)
+            .await
+            .expect("valid OpenAI response should produce a batch");
+        let request = request_receiver
+            .await
+            .expect("mock server should capture the request");
+        let request_body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("request should contain a body");
+        let payload: serde_json::Value =
+            serde_json::from_str(request_body).expect("request body should be valid JSON");
+
+        assert!(request.starts_with("POST /v1/embeddings HTTP/1.1"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-api-key"));
+        assert_eq!(payload["model"], "text-embedding-3-small");
+        assert_eq!(payload["input"], serde_json::json!(inputs));
+        assert_eq!(payload["encoding_format"], "float");
+        assert_eq!(batch.vectors()[0].values(), &[0.1, 0.2]);
+        assert_eq!(batch.vectors()[1].values(), &[0.3, 0.4]);
+    }
+
+    #[tokio::test]
+    async fn openai_errors_use_the_provider_message() {
+        let (base_url, _) = mock_http_response(
+            "401 Unauthorized",
+            r#"{"error":{"message":"  Incorrect   API key  ","type":"invalid_request_error"}}"#,
+        )
+        .await;
+        let service = service_for(EmbeddingProvider::OpenAi, &format!("{base_url}/v1"));
+
+        let error = service
+            .embed_batch(&[String::from("entity")])
+            .await
+            .expect_err("non-success OpenAI response should fail");
+
+        assert!(matches!(
+            error,
+            EmbeddingServiceError::HttpStatus {
+                status: StatusCode::UNAUTHORIZED,
+                ref message,
+            } if message == "Incorrect API key"
+        ));
+    }
+
+    #[tokio::test]
     async fn openrouter_errors_use_the_provider_message() {
         let (base_url, _) = mock_http_response(
             "401 Unauthorized",
@@ -941,14 +1068,14 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_indices_must_be_unique_complete_and_in_range() {
-        let duplicate = order_openrouter_embeddings(
+    fn openai_compatible_indices_must_be_unique_complete_and_in_range() {
+        let duplicate = order_openai_compatible_embeddings(
             vec![
-                OpenRouterEmbedding {
+                OpenAiCompatibleEmbedding {
                     index: 0,
                     embedding: vec![0.1],
                 },
-                OpenRouterEmbedding {
+                OpenAiCompatibleEmbedding {
                     index: 0,
                     embedding: vec![0.2],
                 },
@@ -961,8 +1088,8 @@ mod tests {
             EmbeddingValidationError::DuplicateVectorIndex { index: 0 }
         );
 
-        let missing = order_openrouter_embeddings(
-            vec![OpenRouterEmbedding {
+        let missing = order_openai_compatible_embeddings(
+            vec![OpenAiCompatibleEmbedding {
                 index: 1,
                 embedding: vec![0.1],
             }],
@@ -974,8 +1101,8 @@ mod tests {
             EmbeddingValidationError::MissingVectorIndex { index: 0 }
         );
 
-        let out_of_range = order_openrouter_embeddings(
-            vec![OpenRouterEmbedding {
+        let out_of_range = order_openai_compatible_embeddings(
+            vec![OpenAiCompatibleEmbedding {
                 index: 2,
                 embedding: vec![0.1],
             }],
