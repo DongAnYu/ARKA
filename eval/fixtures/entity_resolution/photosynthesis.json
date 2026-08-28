@@ -124,11 +124,11 @@
   ],
   "expected_clusters": [
     {
-      "canonical_name": "carbon dioxide",
+      "canonical_name": "CO₂",
       "members": ["co2", "carbon-dioxide"]
     },
     {
-      "canonical_name": "glyceraldehyde-3-phosphate",
+      "canonical_name": "G3P",
       "members": ["g3p", "glyceraldehyde-3-phosphate"]
     },
     {

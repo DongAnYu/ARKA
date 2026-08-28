@@ -7,7 +7,7 @@
 use crate::services::embedding::{EmbeddingService, EmbeddingServiceError, EmbeddingVector};
 use crate::services::graph_generation::types::PropositionGraph;
 
-use super::context_builder::build_entity_contexts;
+use super::context_builder::{build_entity_contexts, EntityContext};
 
 /// One validated embedding associated with its stable graph entity ID.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +28,18 @@ pub async fn generate_entity_embeddings(
     max_points_per_entity: usize,
 ) -> Result<Vec<EntityEmbedding>, EmbeddingServiceError> {
     let contexts = build_entity_contexts(graph, max_points_per_entity);
+    generate_entity_context_embeddings(&contexts, embedding_service).await
+}
+
+/// Embeds an already-built deterministic context batch.
+///
+/// This entry point lets the complete entity-resolution pipeline reuse the
+/// exact same contexts for embedding generation and later LLM verification.
+/// Vector order remains aligned with context order and stable entity IDs.
+pub async fn generate_entity_context_embeddings(
+    contexts: &[EntityContext],
+    embedding_service: &EmbeddingService,
+) -> Result<Vec<EntityEmbedding>, EmbeddingServiceError> {
     let inputs = contexts
         .iter()
         .map(|context| context.embedding_text())
@@ -35,10 +47,10 @@ pub async fn generate_entity_embeddings(
     let vectors = embedding_service.embed_batch(&inputs).await?.into_vectors();
 
     Ok(contexts
-        .into_iter()
+        .iter()
         .zip(vectors)
         .map(|(context, vector)| EntityEmbedding {
-            entity_id: context.entity_id,
+            entity_id: context.entity_id.clone(),
             vector,
         })
         .collect())
