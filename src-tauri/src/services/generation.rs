@@ -7,12 +7,21 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
 
+use crate::models::model_settings::EmbeddingModelConfig;
 use crate::models::note::Note;
 
 use super::chunker::{self, MarkdownChunk};
-use super::filesystem;
+use super::embedding::{prepare_embedding_service, EmbeddingService, EmbeddingServiceError};
 use super::graph_generation::{
-    bundle_builder, consolidator, graph_index,
+    bundle_builder, consolidator,
+    entity_resolution::{
+        pipeline::{
+            resolve_graph_entities_with_progress, EntityResolutionConfig,
+            EntityResolutionPipelineError, EntityResolutionProgress,
+        },
+        semantic_verifier::EntityVerificationError,
+    },
+    graph_index,
     stage_a_prompt::format_stage_a_graph_user_prompt,
     stage_a_schema::{parse_stage_a_output, stage_a_format_schema},
     stage_b_generation::generate_mcq,
@@ -22,6 +31,7 @@ use super::llm::{
     LlmFailure, LlmFailureCode, LlmRetryEvent, LlmRetryState, LlmService, LlmServiceError,
     StageBMcq, StructuredGenerationRequest,
 };
+use super::{database, filesystem};
 
 const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
 const PAUSE_POLL_MS: u64 = 250;
@@ -33,6 +43,65 @@ fn configured_llm_service() -> Result<Arc<LlmService>, String> {
             log::warn!("Generation cannot start because LLM configuration is unavailable: {err}");
             err.to_failure().message
         })
+}
+
+#[derive(Debug)]
+struct PreparedEmbeddingService {
+    service: Option<Arc<EmbeddingService>>,
+    warning: Option<LlmFailure>,
+}
+
+/// Loads and validates the saved embedding settings before graph work starts.
+///
+/// An empty model is an intentional opt-out for the MVP and produces a visible
+/// non-terminal warning. Once a model is selected, malformed settings are a
+/// setup error and reject the job instead of silently disabling resolution.
+async fn configured_embedding_service() -> Result<PreparedEmbeddingService, String> {
+    let model_config = database::load_model_config()
+        .await
+        .map_err(|error| format!("Failed to load embedding settings: {error}"))?;
+
+    prepare_embedding_service_for_generation(&model_config.embedding_config())
+}
+
+fn prepare_embedding_service_for_generation(
+    settings: &EmbeddingModelConfig,
+) -> Result<PreparedEmbeddingService, String> {
+    if settings.selected_model.trim().is_empty() {
+        let message = String::from(
+            "Entity resolution was skipped because no embedding model is configured. Configure one in Models to enable entity deduplication.",
+        );
+        log::warn!("{message}");
+
+        return Ok(PreparedEmbeddingService {
+            service: None,
+            warning: Some(LlmFailure {
+                code: LlmFailureCode::Setup,
+                message,
+                retryable: false,
+                retry_after_secs: None,
+            }),
+        });
+    }
+
+    let (provider, service) = prepare_embedding_service(settings).map_err(|error| {
+        log::warn!(
+            "Graph generation cannot start because embedding configuration is invalid: {error}"
+        );
+        error.to_string()
+    })?;
+    log::info!(
+        "Embedding config resolved for graph generation (provider={}, base_url={}, model={}, timeout_secs={})",
+        provider.as_str(),
+        service.config().base_url(),
+        service.config().model(),
+        service.config().timeout_secs()
+    );
+
+    Ok(PreparedEmbeddingService {
+        service: Some(Arc::new(service)),
+        warning: None,
+    })
 }
 
 static PREVIEW_JOBS: OnceLock<Mutex<HashMap<String, Arc<PreviewJob>>>> = OnceLock::new();
@@ -168,17 +237,83 @@ fn finish_job_with_llm_error(
 ) {
     log::error!("Generation stopped after terminal LLM failure: {error}");
 
+    finish_job_with_failure(job, error.to_failure(), partial_summary);
+}
+
+/// Records an entity-resolution failure using the progress dashboard's shared
+/// provider-neutral failure shape.
+fn finish_job_with_entity_resolution_error(
+    job: &PreviewJob,
+    error: &EntityResolutionPipelineError,
+    partial_summary: Option<GenerationSummary>,
+) {
+    log::error!("Generation stopped after entity resolution failed: {error}");
+
+    finish_job_with_failure(job, entity_resolution_failure(error), partial_summary);
+}
+
+fn finish_job_with_failure(
+    job: &PreviewJob,
+    failure: LlmFailure,
+    partial_summary: Option<GenerationSummary>,
+) {
     let mut snapshot = job
         .snapshot
         .lock()
         .expect("preview job snapshot mutex should remain available");
-    snapshot.error = Some(error.to_failure());
+    snapshot.error = Some(failure);
     snapshot.summary = partial_summary;
     snapshot.is_finished = true;
     snapshot.is_paused = false;
     snapshot.phase_label = None;
     snapshot.current_chunk = None;
     snapshot.activity = None;
+}
+
+fn entity_resolution_failure(error: &EntityResolutionPipelineError) -> LlmFailure {
+    if let EntityResolutionPipelineError::Verification(EntityVerificationError::Llm(source)) = error
+    {
+        let mut failure = source.to_failure();
+        failure.message = format!("Entity resolution verifier failed: {}", failure.message);
+        return failure;
+    }
+
+    let (code, retryable) = match error {
+        EntityResolutionPipelineError::Embedding(source) => match source {
+            EmbeddingServiceError::HttpClientBuild(_) => (LlmFailureCode::Setup, false),
+            EmbeddingServiceError::Connect { .. } | EmbeddingServiceError::Http(_) => {
+                (LlmFailureCode::Connection, true)
+            }
+            EmbeddingServiceError::HttpStatus { status, .. }
+                if matches!(status.as_u16(), 401 | 402 | 403) =>
+            {
+                (LlmFailureCode::Account, false)
+            }
+            EmbeddingServiceError::HttpStatus { status, .. } if status.as_u16() == 404 => {
+                (LlmFailureCode::Setup, false)
+            }
+            EmbeddingServiceError::HttpStatus { status, .. } if status.as_u16() == 429 => {
+                (LlmFailureCode::RateLimited, true)
+            }
+            EmbeddingServiceError::HttpStatus { status, .. } if status.is_server_error() => {
+                (LlmFailureCode::ProviderUnavailable, true)
+            }
+            EmbeddingServiceError::HttpStatus { .. } => (LlmFailureCode::RequestRejected, false),
+            EmbeddingServiceError::ResponseDecode(_)
+            | EmbeddingServiceError::InvalidResponse(_) => (LlmFailureCode::InvalidResponse, false),
+        },
+        EntityResolutionPipelineError::CandidateGeneration(_) => (LlmFailureCode::Setup, false),
+        EntityResolutionPipelineError::Verification(_) => (LlmFailureCode::Unknown, false),
+        EntityResolutionPipelineError::MergePlanning(_)
+        | EntityResolutionPipelineError::GraphRewrite(_) => (LlmFailureCode::Unknown, false),
+    };
+
+    LlmFailure {
+        code,
+        message: format!("Entity resolution failed: {error}"),
+        retryable,
+        retry_after_secs: None,
+    }
 }
 
 /// Returns whether a terminal request result is local to one chunk and can be skipped.
@@ -197,6 +332,68 @@ fn set_job_activity(job: &PreviewJob, current_chunk: usize, activity: String) {
         .expect("preview job snapshot mutex should remain available");
     snapshot.current_chunk = Some(current_chunk);
     snapshot.activity = Some(activity);
+}
+
+const GRAPH_STAGE_A_END_PERCENT: u8 = 50;
+const GRAPH_ENTITY_RESOLUTION_END_PERCENT: u8 = 65;
+const GRAPH_VERIFICATION_END_PERCENT: u8 = GRAPH_ENTITY_RESOLUTION_END_PERCENT - 1;
+
+/// Maps provider-neutral resolver milestones onto the app's progress activity.
+fn record_entity_resolution_progress(job: &PreviewJob, progress: EntityResolutionProgress) {
+    let (activity, progress_percent) = match progress {
+        EntityResolutionProgress::GeneratingEmbeddings { entity_count } => {
+            (
+                format!("Generating embeddings for {entity_count} entities"),
+                GRAPH_STAGE_A_END_PERCENT,
+            )
+        }
+        EntityResolutionProgress::CandidatesGenerated { candidate_count } => {
+            (
+                format!(
+                    "Found {candidate_count} candidate entity pairs for semantic verification"
+                ),
+                GRAPH_STAGE_A_END_PERCENT + 1,
+            )
+        }
+        // Candidate-selection events are useful to eval/reporting callers but
+        // arrive synchronously as one burst, so they should not churn the UI.
+        EntityResolutionProgress::CandidateSelected { .. } => return,
+        EntityResolutionProgress::VerifyingCandidates {
+            completed_pairs,
+            total_pairs,
+            in_flight_pairs,
+            ..
+        } => (
+            format!(
+                "Verified {completed_pairs} of {total_pairs} entity pairs · {in_flight_pairs} requests active"
+            ),
+            phase_percent(
+                completed_pairs,
+                total_pairs,
+                GRAPH_STAGE_A_END_PERCENT + 1,
+                GRAPH_VERIFICATION_END_PERCENT,
+            ),
+        ),
+        EntityResolutionProgress::Finalizing {
+            verified_pair_count,
+        } => (
+            format!("Applying entity decisions from {verified_pair_count} verified pairs"),
+            GRAPH_ENTITY_RESOLUTION_END_PERCENT,
+        ),
+    };
+
+    let mut snapshot = job
+        .snapshot
+        .lock()
+        .expect("preview job snapshot mutex should remain available");
+    if snapshot.is_finished || snapshot.is_cancelled {
+        return;
+    }
+    snapshot.current_chunk = None;
+    snapshot.activity = Some(activity);
+    // Retry notifications and concurrent verifier completions may be observed
+    // close together. Never let a late event move the progress ring backwards.
+    snapshot.progress_percent = snapshot.progress_percent.max(progress_percent);
 }
 
 /// Attaches live retry activity to one job without sharing progress state globally.
@@ -267,25 +464,18 @@ fn skipped_chunk_preview(chunk: &MarkdownChunk, error: &LlmServiceError) -> Chun
     }
 }
 
-/// Compute a non-regressing two-phase progress percent.
-/// Phase 1 maps to 0–50 %, Phase 2 maps to 50–100 %.
-fn two_phase_percent(
-    phase1_done: usize,
-    phase1_total: usize,
-    phase2_done: usize,
-    phase2_total: usize,
-) -> u8 {
-    let p1 = if phase1_total == 0 {
-        50.0
-    } else {
-        (phase1_done as f64 / phase1_total as f64) * 50.0
-    };
-    let p2 = if phase2_total == 0 {
-        0.0
-    } else {
-        (phase2_done as f64 / phase2_total as f64) * 50.0
-    };
-    (p1 + p2).round().clamp(0.0, 100.0) as u8
+/// Maps completed work into one bounded portion of the overall progress ring.
+fn phase_percent(done: usize, total: usize, start_percent: u8, end_percent: u8) -> u8 {
+    debug_assert!(start_percent <= end_percent);
+    if total == 0 {
+        return end_percent;
+    }
+
+    let ratio = (done.min(total) as f64 / total as f64).clamp(0.0, 1.0);
+    let span = end_percent.saturating_sub(start_percent) as f64;
+    (start_percent as f64 + ratio * span)
+        .round()
+        .clamp(start_percent as f64, end_percent as f64) as u8
 }
 
 pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, String> {
@@ -441,12 +631,19 @@ const GRAPH_STAGE_A_SYSTEM_PROMPT: &str =
 /// Pipeline:
 /// 1. Phase 1 — Graph Stage A: extract entities + knowledge points per chunk.
 /// 2. Consolidation: merge per-chunk extractions into a single PropositionGraph.
-/// 3. Phase 2 — Stage B MCQ: generate one MCQ per bundle from the graph.
+/// 3. Entity resolution: embed, verify, merge, rewrite, and rebuild the index.
+/// 4. Phase 2 — Stage B MCQ: generate one MCQ per bundle from the resolved graph.
 ///
 /// Progress is reported through the shared PreviewJob snapshot and is
 /// compatible with `get_preview_generation_progress` / pause / cancel.
 pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, String> {
     let llm_service = configured_llm_service()?;
+    // Load and validate embedding settings before reading notes or creating a
+    // background job. The prepared service is consumed by entity resolution in
+    // the next graph-pipeline integration step.
+    let prepared_embedding = configured_embedding_service().await?;
+    let embedding_warning = prepared_embedding.warning;
+    let embedding_service = prepared_embedding.service;
     let notes = filesystem::load_vault_notes(vault_path)?;
     let mut note_reports = Vec::new();
     let mut all_chunks: Vec<MarkdownChunk> = Vec::new();
@@ -483,7 +680,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
         is_cancelled: false,
         is_finished: false,
         error: None,
-        warnings: Vec::new(),
+        warnings: embedding_warning.into_iter().collect(),
         summary: None,
         phase_label: Some(String::from("Extracting knowledge")),
         current_chunk: None,
@@ -587,9 +784,13 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 .lock()
                 .expect("preview job snapshot mutex should remain available");
             snapshot.completed_chunks += 1;
-            // Phase 1 maps to 0–50 % (bundle_count unknown, so phase2 = 0)
-            snapshot.progress_percent =
-                two_phase_percent(snapshot.completed_chunks, total_chunks, 0, 0);
+            // Stage A occupies the first half of graph-pipeline progress.
+            snapshot.progress_percent = phase_percent(
+                snapshot.completed_chunks,
+                total_chunks,
+                0,
+                GRAPH_STAGE_A_END_PERCENT,
+            );
         }
 
         if job.cancelled.load(Ordering::Relaxed) {
@@ -616,11 +817,95 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             snapshot.activity = Some(String::from("Building the knowledge graph"));
         }
         let graph = consolidator::consolidate(extracted_chunks);
-        let index = graph_index::build_index(&graph);
+        let (graph, index) = if let Some(embedding_service) = embedding_service.as_deref() {
+            if graph.entities.len() < 2 {
+                log::info!(
+                    "Skipping entity resolution because the consolidated graph has fewer than two entities"
+                );
+                let index = graph_index::build_index(&graph);
+                (graph, index)
+            } else {
+                {
+                    let mut snapshot = job
+                        .snapshot
+                        .lock()
+                        .expect("preview job snapshot mutex should remain available");
+                    snapshot.phase_label = Some(String::from("Resolving entities"));
+                    snapshot.activity = Some(format!(
+                        "Resolving {} entities in the knowledge graph",
+                        graph.entities.len()
+                    ));
+                }
+
+                let resolution_job = Arc::clone(&job);
+                let resolution = resolve_graph_entities_with_progress(
+                    &graph,
+                    embedding_service,
+                    llm_arc
+                        .as_deref()
+                        .expect("graph generation should always have an LLM service"),
+                    &EntityResolutionConfig::default(),
+                    move |progress| {
+                        record_entity_resolution_progress(&resolution_job, progress);
+                    },
+                )
+                .await;
+
+                let resolution = match resolution {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let partial_summary = GenerationSummary {
+                            total_notes: notes_clone.len(),
+                            total_chunks,
+                            notes_with_chunks,
+                            note_reports,
+                            chunk_previews: Vec::new(),
+                        };
+                        finish_job_with_entity_resolution_error(
+                            &job,
+                            &error,
+                            Some(partial_summary),
+                        );
+                        return;
+                    }
+                };
+
+                log::info!(
+                    "Entity resolution completed (entities_before={}, entities_after={}, candidates={}, same_entity={}, different_entity={}, uncertain={}, merge_groups={})",
+                    resolution.metrics.entity_count_before,
+                    resolution.metrics.entity_count_after,
+                    resolution.metrics.candidate_pair_count,
+                    resolution.metrics.same_entity_count,
+                    resolution.metrics.different_entity_count,
+                    resolution.metrics.unresolved_pair_count,
+                    resolution.metrics.merge_group_count
+                );
+
+                (resolution.graph, resolution.index)
+            }
+        } else {
+            let index = graph_index::build_index(&graph);
+            (graph, index)
+        };
+
+        if job.cancelled.load(Ordering::Relaxed) {
+            let mut snapshot = job
+                .snapshot
+                .lock()
+                .expect("preview job snapshot mutex should remain available");
+            snapshot.is_cancelled = true;
+            snapshot.is_finished = true;
+            snapshot.is_paused = false;
+            snapshot.current_chunk = None;
+            snapshot.activity = None;
+            return;
+        }
+
         let bundles = bundle_builder::assemble_bundles(&graph, &index);
         let bundle_count = bundles.len();
 
-        // Transition to Phase 2: update label, total_chunks = bundle_count, reset completed
+        // Transition to question generation: expose bundle-sized work while
+        // preserving the 65% already earned by extraction and resolution.
         {
             let mut snapshot = job
                 .snapshot
@@ -631,11 +916,10 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             snapshot.completed_chunks = 0;
             snapshot.current_chunk = None;
             snapshot.activity = Some(String::from("Preparing question generation"));
-            snapshot.progress_percent =
-                two_phase_percent(total_chunks, total_chunks, 0, bundle_count);
+            snapshot.progress_percent = GRAPH_ENTITY_RESOLUTION_END_PERCENT;
         }
 
-        // ── Phase 2: MCQ generation per bundle ────────────────────────────
+        // ── Question generation per graph bundle ──────────────────────────
         // Build a map from (note_path, heading) -> chunk metadata for summary
         let mut chunk_meta: HashMap<String, (String, String, usize, usize, usize, usize, String)> =
             HashMap::new();
@@ -806,12 +1090,12 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 QuestionType::Recall => snapshot.recall_mcq_generated += mcq_count,
                 QuestionType::Relational => snapshot.relational_mcq_generated += mcq_count,
             }
-            // Phase 2 maps to 50–100 %
-            snapshot.progress_percent = two_phase_percent(
-                total_chunks,
-                total_chunks,
+            // Question generation occupies the remaining 35%.
+            snapshot.progress_percent = phase_percent(
                 snapshot.completed_chunks,
                 bundle_count,
+                GRAPH_ENTITY_RESOLUTION_END_PERCENT,
+                100,
             );
         }
 
@@ -1081,6 +1365,174 @@ fn build_preview_text(content: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::services::llm::LlmFailureCode;
+
+    fn embedding_settings(model: &str) -> EmbeddingModelConfig {
+        EmbeddingModelConfig {
+            provider: String::from("ollama"),
+            base_url: String::from("http://127.0.0.1:11434"),
+            selected_model: model.to_string(),
+            timeout_secs: 60,
+            api_key: None,
+        }
+    }
+
+    #[test]
+    fn missing_embedding_model_becomes_a_non_terminal_setup_warning() {
+        let prepared = prepare_embedding_service_for_generation(&embedding_settings("   "))
+            .expect("an unconfigured optional model should not reject generation");
+
+        assert!(prepared.service.is_none());
+        let warning = prepared
+            .warning
+            .expect("the skipped stage should be visible");
+        assert_eq!(warning.code, LlmFailureCode::Setup);
+        assert!(!warning.retryable);
+        assert!(warning.message.contains("Entity resolution was skipped"));
+    }
+
+    #[test]
+    fn configured_embedding_model_is_prepared_or_rejected_before_the_job() {
+        let prepared = prepare_embedding_service_for_generation(&embedding_settings(
+            "nomic-embed-text:latest",
+        ))
+        .expect("valid saved settings should prepare an embedding service");
+        assert!(prepared.service.is_some());
+        assert!(prepared.warning.is_none());
+
+        let mut invalid = embedding_settings("nomic-embed-text:latest");
+        invalid.provider = String::from("invalid-provider");
+        let error = prepare_embedding_service_for_generation(&invalid)
+            .expect_err("configured invalid settings must reject generation");
+        assert!(error.contains("Unsupported embedding provider"));
+    }
+
+    #[test]
+    fn phase_percent_maps_work_into_the_requested_progress_range() {
+        assert_eq!(phase_percent(0, 10, 50, 64), 50);
+        assert_eq!(phase_percent(5, 10, 50, 64), 57);
+        assert_eq!(phase_percent(10, 10, 50, 64), 64);
+        assert_eq!(phase_percent(12, 10, 50, 64), 64);
+        assert_eq!(phase_percent(0, 0, 65, 100), 100);
+    }
+
+    #[test]
+    fn entity_verification_advances_progress_without_regressing() {
+        use crate::services::graph_generation::entity_resolution::semantic_verifier::EntityMatchDecision;
+
+        let job = PreviewJob {
+            paused: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+            snapshot: Mutex::new(GenerationProgressSnapshot {
+                job_id: String::from("preview-resolution-progress"),
+                total_notes: 1,
+                total_chunks: 5,
+                notes_with_chunks: 1,
+                completed_chunks: 5,
+                failed_chunks: 0,
+                mcq_generated: 0,
+                recall_mcq_generated: 0,
+                relational_mcq_generated: 0,
+                progress_percent: GRAPH_STAGE_A_END_PERCENT,
+                is_paused: false,
+                is_cancelled: false,
+                is_finished: false,
+                error: None,
+                warnings: Vec::new(),
+                summary: None,
+                phase_label: Some(String::from("Resolving entities")),
+                current_chunk: None,
+                activity: None,
+            }),
+        };
+
+        record_entity_resolution_progress(
+            &job,
+            EntityResolutionProgress::CandidatesGenerated {
+                candidate_count: 100,
+            },
+        );
+        record_entity_resolution_progress(
+            &job,
+            EntityResolutionProgress::VerifyingCandidates {
+                completed_pairs: 50,
+                total_pairs: 100,
+                in_flight_pairs: 5,
+                entity_id: String::from("a"),
+                candidate_entity_id: String::from("b"),
+                similarity: 0.9,
+                decision: EntityMatchDecision::DifferentEntity,
+            },
+        );
+        assert_eq!(
+            job.snapshot
+                .lock()
+                .expect("snapshot available")
+                .progress_percent,
+            58
+        );
+
+        record_entity_resolution_progress(
+            &job,
+            EntityResolutionProgress::Finalizing {
+                verified_pair_count: 100,
+            },
+        );
+        record_entity_resolution_progress(
+            &job,
+            EntityResolutionProgress::GeneratingEmbeddings { entity_count: 20 },
+        );
+
+        let snapshot = job.snapshot.lock().expect("snapshot available");
+        assert_eq!(
+            snapshot.progress_percent,
+            GRAPH_ENTITY_RESOLUTION_END_PERCENT
+        );
+        assert!(snapshot
+            .activity
+            .as_deref()
+            .is_some_and(|activity| activity.contains("Generating embeddings")));
+    }
+
+    #[test]
+    fn embedding_provider_failures_map_to_generation_failure_codes() {
+        let rate_limit =
+            EntityResolutionPipelineError::Embedding(EmbeddingServiceError::HttpStatus {
+                status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+                message: String::from("rate limited"),
+            });
+        let failure = entity_resolution_failure(&rate_limit);
+        assert_eq!(failure.code, LlmFailureCode::RateLimited);
+        assert!(failure.retryable);
+        assert!(failure.message.contains("Entity resolution failed"));
+
+        let invalid_response =
+            EntityResolutionPipelineError::Embedding(EmbeddingServiceError::InvalidResponse(
+                crate::services::embedding::EmbeddingValidationError::VectorCountMismatch {
+                    expected: 2,
+                    actual: 1,
+                },
+            ));
+        let failure = entity_resolution_failure(&invalid_response);
+        assert_eq!(failure.code, LlmFailureCode::InvalidResponse);
+        assert!(!failure.retryable);
+    }
+
+    #[test]
+    fn verifier_provider_failure_retains_shared_llm_classification() {
+        let error = EntityResolutionPipelineError::Verification(EntityVerificationError::Llm(
+            LlmServiceError::MissingApiKey {
+                provider: crate::services::llm::LlmProvider::OpenAi,
+            },
+        ));
+
+        let failure = entity_resolution_failure(&error);
+
+        assert_eq!(failure.code, LlmFailureCode::Account);
+        assert!(!failure.retryable);
+        assert!(failure
+            .message
+            .starts_with("Entity resolution verifier failed:"));
+    }
 
     #[test]
     fn retry_activity_shows_rate_limit_countdown() {

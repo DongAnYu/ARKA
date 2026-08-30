@@ -273,6 +273,7 @@ pub fn resolve_llm_config() -> Result<LlmConfig, LlmConfigError> {
     LlmConfig::from_env()
 }
 
+#[derive(Clone)]
 pub struct LlmService {
     client: Client,
     config: LlmConfig,

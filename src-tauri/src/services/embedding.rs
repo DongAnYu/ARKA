@@ -11,6 +11,8 @@ use std::time::Duration;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 
+use crate::models::model_settings::EmbeddingModelConfig;
+
 /// Embedding providers supported by ARKA's configuration contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddingProvider {
@@ -152,6 +154,79 @@ impl fmt::Display for EmbeddingConfigError {
 }
 
 impl Error for EmbeddingConfigError {}
+
+/// Invalid saved settings or client construction failure encountered while
+/// preparing the embedding service shared by settings and graph generation.
+#[derive(Debug)]
+pub enum EmbeddingSetupError {
+    UnsupportedProvider,
+    InvalidTimeout,
+    InvalidConfig(EmbeddingConfigError),
+    Service(EmbeddingServiceError),
+}
+
+impl fmt::Display for EmbeddingSetupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedProvider => write!(
+                formatter,
+                "Unsupported embedding provider. Choose Ollama, OpenAI, or OpenRouter."
+            ),
+            Self::InvalidTimeout => {
+                write!(
+                    formatter,
+                    "Embedding timeout must be greater than 0 seconds."
+                )
+            }
+            Self::InvalidConfig(source) => {
+                write!(formatter, "Invalid embedding settings: {source}")
+            }
+            Self::Service(source) => {
+                write!(
+                    formatter,
+                    "Failed to prepare embedding connection: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for EmbeddingSetupError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidConfig(source) => Some(source),
+            Self::Service(source) => Some(source),
+            Self::UnsupportedProvider | Self::InvalidTimeout => None,
+        }
+    }
+}
+
+/// Builds the provider-neutral embedding service from persisted/UI settings.
+///
+/// Keeping this conversion beside [`EmbeddingService`] ensures the Models page
+/// and graph generation enforce the same provider, timeout, API-key, and HTTP
+/// client rules. This function validates configuration but sends no request.
+pub fn prepare_embedding_service(
+    settings: &EmbeddingModelConfig,
+) -> Result<(EmbeddingProvider, EmbeddingService), EmbeddingSetupError> {
+    let provider = EmbeddingProvider::from_config_value(&settings.provider)
+        .ok_or(EmbeddingSetupError::UnsupportedProvider)?;
+    let timeout_secs = u64::try_from(settings.timeout_secs)
+        .ok()
+        .filter(|timeout| *timeout > 0)
+        .ok_or(EmbeddingSetupError::InvalidTimeout)?;
+    let config = EmbeddingConfig::new(
+        provider,
+        &settings.base_url,
+        &settings.selected_model,
+        timeout_secs,
+        settings.api_key.clone(),
+    )
+    .map_err(EmbeddingSetupError::InvalidConfig)?;
+    let service = EmbeddingService::new(config).map_err(EmbeddingSetupError::Service)?;
+
+    Ok((provider, service))
+}
 
 /// One validated embedding vector.
 #[derive(Debug, Clone, PartialEq)]
@@ -763,6 +838,50 @@ mod tests {
             Some(EmbeddingProvider::OpenRouter)
         );
         assert_eq!(EmbeddingProvider::from_config_value("unknown"), None);
+    }
+
+    #[test]
+    fn shared_setup_builds_the_service_used_by_settings_and_generation() {
+        let settings = EmbeddingModelConfig {
+            provider: String::from("ollama"),
+            base_url: String::from(" http://127.0.0.1:11434 "),
+            selected_model: String::from(" nomic-embed-text:latest "),
+            timeout_secs: 45,
+            api_key: None,
+        };
+
+        let (provider, service) = prepare_embedding_service(&settings)
+            .expect("valid saved settings should prepare the shared service");
+
+        assert_eq!(provider, EmbeddingProvider::Ollama);
+        assert_eq!(service.config().base_url(), "http://127.0.0.1:11434");
+        assert_eq!(service.config().model(), "nomic-embed-text:latest");
+        assert_eq!(service.config().timeout_secs(), 45);
+    }
+
+    #[test]
+    fn shared_setup_rejects_invalid_saved_settings() {
+        let unsupported = EmbeddingModelConfig {
+            provider: String::from("unsupported"),
+            base_url: String::from("http://127.0.0.1:11434"),
+            selected_model: String::from("model"),
+            timeout_secs: 60,
+            api_key: None,
+        };
+        assert!(matches!(
+            prepare_embedding_service(&unsupported),
+            Err(EmbeddingSetupError::UnsupportedProvider)
+        ));
+
+        let invalid_timeout = EmbeddingModelConfig {
+            provider: String::from("ollama"),
+            timeout_secs: 0,
+            ..unsupported
+        };
+        assert!(matches!(
+            prepare_embedding_service(&invalid_timeout),
+            Err(EmbeddingSetupError::InvalidTimeout)
+        ));
     }
 
     #[test]

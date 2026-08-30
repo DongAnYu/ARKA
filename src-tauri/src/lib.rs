@@ -135,15 +135,10 @@ async fn load_model_config() -> Result<ModelConfig, String> {
 
 #[tauri::command]
 async fn save_model_config(config: ModelConfig) -> Result<(), String> {
-    let embedding_config = EmbeddingModelConfig {
-        provider: config.embedding_provider.clone(),
-        base_url: config.embedding_base_url.clone(),
-        selected_model: config.embedding_selected_model.clone(),
-        timeout_secs: config.embedding_timeout_secs,
-        api_key: config.embedding_api_key.clone(),
-    };
+    let embedding_config = config.embedding_config();
     if !embedding_config.selected_model.trim().is_empty() {
-        prepare_embedding_service(&embedding_config)?;
+        services::embedding::prepare_embedding_service(&embedding_config)
+            .map_err(|err| err.to_string())?;
     }
 
     services::database::save_model_config(config)
@@ -151,42 +146,12 @@ async fn save_model_config(config: ModelConfig) -> Result<(), String> {
         .map_err(|err| format!("Failed to save model config: {err}"))
 }
 
-fn prepare_embedding_service(
-    config: &EmbeddingModelConfig,
-) -> Result<
-    (
-        services::embedding::EmbeddingProvider,
-        services::embedding::EmbeddingService,
-    ),
-    String,
-> {
-    let provider = services::embedding::EmbeddingProvider::from_config_value(&config.provider)
-        .ok_or_else(|| {
-            String::from("Unsupported embedding provider. Choose Ollama, OpenAI, or OpenRouter.")
-        })?;
-    let timeout_secs = u64::try_from(config.timeout_secs)
-        .ok()
-        .filter(|timeout| *timeout > 0)
-        .ok_or_else(|| String::from("Embedding timeout must be greater than 0 seconds."))?;
-    let embedding_config = services::embedding::EmbeddingConfig::new(
-        provider,
-        &config.base_url,
-        &config.selected_model,
-        timeout_secs,
-        config.api_key.clone(),
-    )
-    .map_err(|err| format!("Invalid embedding settings: {err}"))?;
-    let service = services::embedding::EmbeddingService::new(embedding_config)
-        .map_err(|err| format!("Failed to prepare embedding connection: {err}"))?;
-
-    Ok((provider, service))
-}
-
 #[tauri::command]
 async fn test_embedding_config(
     config: EmbeddingModelConfig,
 ) -> Result<EmbeddingConnectionResult, String> {
-    let (provider, service) = prepare_embedding_service(&config)?;
+    let (provider, service) =
+        services::embedding::prepare_embedding_service(&config).map_err(|err| err.to_string())?;
     let batch = service
         .embed_batch(&[String::from("ARKA embedding connection test")])
         .await

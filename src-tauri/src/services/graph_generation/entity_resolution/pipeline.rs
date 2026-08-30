@@ -24,6 +24,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::time::Instant;
 
 use crate::services::embedding::{EmbeddingService, EmbeddingServiceError};
 use crate::services::graph_generation::graph_index::{build_index, GraphIndex};
@@ -38,7 +39,7 @@ use super::embedding_generator::generate_entity_context_embeddings;
 use super::graph_rewriter::{rewrite_graph_with_entity_merges, GraphRewriteError};
 use super::merge_planner::{build_entity_merge_plan, EntityMergePlan, MergePlanningError};
 use super::semantic_verifier::{
-    verify_entity_candidates, EntityMatchDecision, EntityVerificationError,
+    verify_entity_candidates_with_progress, EntityMatchDecision, EntityVerificationError,
     VerifiedEntityCandidate, VerifierConfig,
 };
 
@@ -58,7 +59,7 @@ impl Default for EntityResolutionConfig {
         Self {
             max_points_per_entity: 3,
             candidates: CandidateConfig {
-                minimum_similarity: 0.5,
+                minimum_similarity: 0.8,
                 max_candidates_per_entity: 3,
             },
             verifier: VerifierConfig::default(),
@@ -93,6 +94,38 @@ pub struct EntityResolutionResult {
     pub merge_plan: EntityMergePlan,
     /// Aggregate run counts without embedding-vector storage.
     pub metrics: EntityResolutionMetrics,
+}
+
+/// Live milestones from one entity-resolution run.
+///
+/// These events expose expensive provider-backed work without coupling the
+/// resolver to the application's progress-snapshot implementation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EntityResolutionProgress {
+    /// Entity contexts are about to be embedded in one provider batch.
+    GeneratingEmbeddings { entity_count: usize },
+    /// Embedding retrieval has produced the semantic-verification shortlist.
+    CandidatesGenerated { candidate_count: usize },
+    /// One embedding candidate selected for semantic verification.
+    CandidateSelected {
+        position: usize,
+        total_pairs: usize,
+        entity_id: String,
+        candidate_entity_id: String,
+        similarity: f32,
+    },
+    /// A verifier request completed and the bounded worker pool was refilled.
+    VerifyingCandidates {
+        completed_pairs: usize,
+        total_pairs: usize,
+        in_flight_pairs: usize,
+        entity_id: String,
+        candidate_entity_id: String,
+        similarity: f32,
+        decision: EntityMatchDecision,
+    },
+    /// Provider work is complete and graph merges are being applied locally.
+    Finalizing { verified_pair_count: usize },
 }
 
 /// Stage-specific failure from a complete entity-resolution run.
@@ -177,17 +210,93 @@ pub async fn resolve_graph_entities(
     llm_service: &LlmService,
     config: &EntityResolutionConfig,
 ) -> Result<EntityResolutionResult, EntityResolutionPipelineError> {
+    resolve_graph_entities_with_progress(graph, embedding_service, llm_service, config, |_| {})
+        .await
+}
+
+/// Resolves graph entities while reporting provider-backed stage progress.
+///
+/// The callback is synchronous and lightweight by design: callers should update
+/// in-memory status only, never perform blocking I/O from it.
+pub async fn resolve_graph_entities_with_progress<F>(
+    graph: &PropositionGraph,
+    embedding_service: &EmbeddingService,
+    llm_service: &LlmService,
+    config: &EntityResolutionConfig,
+    mut on_progress: F,
+) -> Result<EntityResolutionResult, EntityResolutionPipelineError>
+where
+    F: FnMut(EntityResolutionProgress) + Send,
+{
     // Fail invalid local configuration before incurring provider work.
     config.candidates.validate()?;
     config.verifier.validate()?;
+    let resolution_started = Instant::now();
+    log::info!(
+        "Starting entity resolution (entities={})",
+        graph.entities.len()
+    );
 
     // Contexts are built once and reused for both semantic stages so the LLM
     // verifies the exact evidence that shaped candidate retrieval.
     let contexts = build_entity_contexts(graph, config.max_points_per_entity);
+    on_progress(EntityResolutionProgress::GeneratingEmbeddings {
+        entity_count: contexts.len(),
+    });
+    let embedding_started = Instant::now();
     let embeddings = generate_entity_context_embeddings(&contexts, embedding_service).await?;
+    log::info!(
+        "Generated {} entity embeddings in {:.2?}",
+        embeddings.len(),
+        embedding_started.elapsed()
+    );
     let candidates = generate_entity_candidates(&embeddings, &config.candidates)?;
-    let verified_candidates =
-        verify_entity_candidates(&candidates, &contexts, llm_service, &config.verifier).await?;
+    on_progress(EntityResolutionProgress::CandidatesGenerated {
+        candidate_count: candidates.len(),
+    });
+    for (index, candidate) in candidates.iter().enumerate() {
+        on_progress(EntityResolutionProgress::CandidateSelected {
+            position: index + 1,
+            total_pairs: candidates.len(),
+            entity_id: candidate.entity_id.clone(),
+            candidate_entity_id: candidate.candidate_entity_id.clone(),
+            similarity: candidate.similarity,
+        });
+    }
+    log::info!(
+        "Generated {} entity verification candidates (minimum_similarity={:.3}, max_per_entity={})",
+        candidates.len(),
+        config.candidates.minimum_similarity,
+        config.candidates.max_candidates_per_entity
+    );
+
+    let verification_started = Instant::now();
+    let verified_candidates = verify_entity_candidates_with_progress(
+        &candidates,
+        &contexts,
+        llm_service,
+        &config.verifier,
+        |progress| {
+            on_progress(EntityResolutionProgress::VerifyingCandidates {
+                completed_pairs: progress.completed_pairs,
+                total_pairs: progress.total_pairs,
+                in_flight_pairs: progress.in_flight_pairs,
+                entity_id: progress.entity_id,
+                candidate_entity_id: progress.candidate_entity_id,
+                similarity: progress.similarity,
+                decision: progress.decision,
+            });
+        },
+    )
+    .await?;
+    log::info!(
+        "Verified {} entity candidate pairs in {:.2?}",
+        verified_candidates.len(),
+        verification_started.elapsed()
+    );
+    on_progress(EntityResolutionProgress::Finalizing {
+        verified_pair_count: verified_candidates.len(),
+    });
     let merge_plan = build_entity_merge_plan(graph, &verified_candidates)?;
     let rewritten_graph = rewrite_graph_with_entity_merges(graph, &merge_plan)?;
     let index = build_index(&rewritten_graph);
@@ -197,6 +306,13 @@ pub async fn resolve_graph_entities(
         &candidates,
         &verified_candidates,
         &merge_plan,
+    );
+    log::info!(
+        "Finished entity resolution in {:.2?} (entities_before={}, entities_after={}, candidates={})",
+        resolution_started.elapsed(),
+        metrics.entity_count_before,
+        metrics.entity_count_after,
+        metrics.candidate_pair_count
     );
 
     Ok(EntityResolutionResult {
@@ -401,11 +517,13 @@ mod tests {
             verifier: VerifierConfig::default(),
         };
 
-        let result = resolve_graph_entities(
+        let mut progress_events = Vec::new();
+        let result = resolve_graph_entities_with_progress(
             &graph(),
             &embedding_service(&embedding_url),
             &llm_service(&llm_url),
             &config,
+            |progress| progress_events.push(progress),
         )
         .await
         .expect("complete resolution pipeline should succeed");
@@ -441,6 +559,33 @@ mod tests {
                 unresolved_pair_count: 0,
                 merge_group_count: 1,
             }
+        );
+        let candidate_similarity = result.candidates[0].similarity;
+        assert_eq!(
+            progress_events,
+            vec![
+                EntityResolutionProgress::GeneratingEmbeddings { entity_count: 3 },
+                EntityResolutionProgress::CandidatesGenerated { candidate_count: 1 },
+                EntityResolutionProgress::CandidateSelected {
+                    position: 1,
+                    total_pairs: 1,
+                    entity_id: String::from("carbon-dioxide"),
+                    candidate_entity_id: String::from("co2-symbol"),
+                    similarity: candidate_similarity,
+                },
+                EntityResolutionProgress::VerifyingCandidates {
+                    completed_pairs: 1,
+                    total_pairs: 1,
+                    in_flight_pairs: 0,
+                    entity_id: String::from("carbon-dioxide"),
+                    candidate_entity_id: String::from("co2-symbol"),
+                    similarity: candidate_similarity,
+                    decision: EntityMatchDecision::SameEntity,
+                },
+                EntityResolutionProgress::Finalizing {
+                    verified_pair_count: 1,
+                },
+            ]
         );
 
         let embedding_request = embedding_request.await.expect("embedding request captured");

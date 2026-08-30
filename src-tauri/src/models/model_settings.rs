@@ -15,6 +15,20 @@ pub struct ModelConfig {
     pub embedding_api_key: Option<String>,
 }
 
+impl ModelConfig {
+    /// Extracts the embedding-specific settings used by connection testing and
+    /// graph generation without duplicating field mapping at each call site.
+    pub fn embedding_config(&self) -> EmbeddingModelConfig {
+        EmbeddingModelConfig {
+            provider: self.embedding_provider.clone(),
+            base_url: self.embedding_base_url.clone(),
+            selected_model: self.embedding_selected_model.clone(),
+            timeout_secs: self.embedding_timeout_secs,
+            api_key: self.embedding_api_key.clone(),
+        }
+    }
+}
+
 /// Embedding settings submitted independently for connection testing.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EmbeddingModelConfig {

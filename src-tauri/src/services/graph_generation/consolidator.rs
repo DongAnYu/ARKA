@@ -52,13 +52,17 @@ pub fn consolidate(chunks: Vec<ExtractedKnowledge>) -> PropositionGraph {
     // canonical_name = first-seen raw form; aliases accumulate all raw forms.
 
     let mut entity_map: HashMap<String, EntityNode> = HashMap::new();
+    // Different normalized keys can still collapse to the same slug. For
+    // example, `partition` and `!partition` both prefer `entity-partition`.
+    // Track allocated IDs so those keys remain distinct without breaking graph
+    // references or relying on HashMap iteration order.
+    let mut used_entity_ids: HashSet<String> = HashSet::new();
     let mut id_map: HashMap<String, String> = HashMap::new();
     let mut seen_chunk_ids: HashMap<String, HashSet<String>> = HashMap::new(); // key → chunk_ids
 
     for chunk in &chunks {
         for mention in &chunk.raw_entities {
             let key = normalize_for_comparison(&mention.name);
-            let id = to_entity_id(&key);
 
             if let Some(node) = entity_map.get_mut(&key) {
                 // Known entity: accumulate alias if new, record chunk_id if new
@@ -71,6 +75,7 @@ pub fn consolidate(chunks: Vec<ExtractedKnowledge>) -> PropositionGraph {
                     .insert(mention.chunk_id.clone());
             } else {
                 // First encounter: canonical_name = raw form as written
+                let id = allocate_entity_id(&key, &mut used_entity_ids);
                 entity_map.insert(
                     key.clone(),
                     EntityNode {
@@ -296,7 +301,56 @@ fn to_entity_id(normalized_key: &str) -> String {
         .collect();
 
     let trimmed = collapsed.trim_matches('_');
-    format!("entity-{trimmed}")
+    let slug = if trimmed.is_empty() {
+        "unnamed"
+    } else {
+        trimmed
+    };
+    format!("entity-{slug}")
+}
+
+/// Allocates a graph-unique entity ID while leaving ordinary IDs unchanged.
+///
+/// A comparison key may contain meaningful punctuation that the ID slug does
+/// not preserve. If its preferred ID is occupied, append a stable hash of the
+/// complete key. The counter is only a final guard against the extremely
+/// unlikely case where two distinct keys also share the same hash.
+fn allocate_entity_id(normalized_key: &str, used_ids: &mut HashSet<String>) -> String {
+    let base_id = to_entity_id(normalized_key);
+    if used_ids.insert(base_id.clone()) {
+        return base_id;
+    }
+
+    let key_hash = stable_entity_key_hash(normalized_key);
+    let hashed_id = format!("{base_id}_{key_hash:016x}");
+    if used_ids.insert(hashed_id.clone()) {
+        return hashed_id;
+    }
+
+    let mut discriminator = 2usize;
+    loop {
+        let candidate = format!("{hashed_id}_{discriminator}");
+        if used_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+        discriminator += 1;
+    }
+}
+
+/// Returns a stable FNV-1a hash for deterministic entity-ID disambiguation.
+///
+/// `DefaultHasher` is deliberately avoided because its output is not a stable
+/// persistence contract across Rust versions.
+fn stable_entity_key_hash(value: &str) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf_29ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x000_0100_0000_01b3;
+
+    value
+        .as_bytes()
+        .iter()
+        .fold(FNV_OFFSET_BASIS, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+        })
 }
 
 // =====================================================================
@@ -436,6 +490,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_entity_id_uses_fallback_for_punctuation_only_names() {
+        assert_eq!(to_entity_id("!!!"), "entity-unnamed");
+        assert_eq!(to_entity_id(""), "entity-unnamed");
+    }
+
     // ── consolidate ───────────────────────────────────────────────────────
 
     fn make_chunk(
@@ -551,6 +611,57 @@ mod tests {
         assert_eq!(graph.entities[0].id, "entity-co2"); // no spaces → no underscores
         assert_eq!(graph.entities[0].canonical_name, "CO₂"); // first-seen form
         assert!(graph.entities[0].aliases.contains(&"CO2".to_string()));
+    }
+
+    #[test]
+    fn test_slug_collisions_receive_unique_deterministic_ids() {
+        fn collision_chunk() -> ExtractedKnowledge {
+            make_chunk(
+                "c1",
+                &["partition", "!partition"],
+                vec![make_point_with_relation(
+                    "c1-kp-0",
+                    "c1",
+                    &["partition"],
+                    "!partition",
+                    RelationType::RelatedTo,
+                )],
+            )
+        }
+
+        let graph = consolidate(vec![collision_chunk()]);
+        let partition = graph
+            .entities
+            .iter()
+            .find(|entity| entity.canonical_name == "partition")
+            .expect("partition entity should exist");
+        let punctuated_partition = graph
+            .entities
+            .iter()
+            .find(|entity| entity.canonical_name == "!partition")
+            .expect("!partition entity should exist");
+
+        assert_eq!(partition.id, "entity-partition");
+        assert!(punctuated_partition.id.starts_with("entity-partition_"));
+        assert_ne!(partition.id, punctuated_partition.id);
+        assert_eq!(graph.relations.len(), 1);
+        assert_eq!(graph.relations[0].source_id, partition.id);
+        assert_eq!(graph.relations[0].target_id, punctuated_partition.id);
+        assert!(validate_graph(&graph).is_empty());
+
+        // Reprocessing the same ordered graph must allocate the same IDs.
+        let repeated = consolidate(vec![collision_chunk()]);
+        let entity_ids = graph
+            .entities
+            .iter()
+            .map(|entity| (&entity.canonical_name, &entity.id))
+            .collect::<Vec<_>>();
+        let repeated_ids = repeated
+            .entities
+            .iter()
+            .map(|entity| (&entity.canonical_name, &entity.id))
+            .collect::<Vec<_>>();
+        assert_eq!(entity_ids, repeated_ids);
     }
 
     #[test]

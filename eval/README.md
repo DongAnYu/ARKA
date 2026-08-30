@@ -20,17 +20,20 @@ npm run eval:entity-resolution
 npm run eval:entity-resolution:hard
 ```
 
-## Required environment for the legacy graph/question evaluators
+## Required environment for evaluation providers
 
 - `LLM_MODEL`
-- `OPENROUTER_API_KEY`
-- Optional: `OPENROUTER_BASE_URL`
+- `OPENAI_API_KEY` or `OPENROUTER_API_KEY` for remote LLM providers
+- `EMBEDDING_MODEL` for entity-resolution and graph E2E evaluation
+- Optional: `LLM_PROVIDER` (`ollama`, `openai`, or `openrouter`; default `openrouter`)
+- Optional: `EMBEDDING_PROVIDER` (`ollama`, `openai`, or `openrouter`; default `ollama`)
+- Optional: `LLM_BASE_URL`, `OPENAI_BASE_URL`, or `OPENROUTER_BASE_URL`
+- Optional: `EMBEDDING_BASE_URL`
 - Optional: `LLM_TIMEOUT_SECS`
+- Optional: `EMBEDDING_TIMEOUT_SECS`
 
-These evaluators force the runtime LLM provider to OpenRouter.
-
-The entity-resolution evaluator separately requires `LLM_MODEL` and
-`EMBEDDING_MODEL`. It uses `LLM_PROVIDER` (default: `openrouter`) and
+The entity-resolution and graph E2E evaluators use `LLM_PROVIDER` (default:
+`openrouter`) and
 `EMBEDDING_PROVIDER` (default: `ollama`). Remote providers use
 `OPENAI_API_KEY` or `OPENROUTER_API_KEY`; `LLM_API_KEY` and
 `EMBEDDING_API_KEY` can override the provider-specific key for their respective
@@ -49,12 +52,22 @@ service. Optional settings include `LLM_BASE_URL`, `EMBEDDING_BASE_URL`,
 - `stage-a-photosynthesis-*.json`
 - `stage-a-photosynthesis-*.xlsx`
 
-`eval:graph-e2e` runs graph Stage A and graph Stage B together. It prints both Stage A and Stage B summaries, then writes:
+`eval:graph-e2e` runs the same graph order used by the application: Stage A,
+semantic entity resolution, index rebuilding, and Stage B from the rewritten
+graph. Stage A prints per-chunk request/completion timing and provider retries.
+During resolution it prints every embedding candidate and score, followed by
+completion-ordered LLM verifier decisions and active-request counts. It writes:
 
 - `graph-e2e-photosynthesis-*.json`
 - `graph-e2e-photosynthesis-*.xlsx`
 
-The E2E JSON includes the full Stage A result, full Stage B result, and compact summaries. The E2E spreadsheet includes Summary, Stage A Chunks, Entities, and Stage B MCQs sheets.
+The E2E JSON includes the full Stage A result, resolved graph, candidate scores,
+verifier reasons, verification progress, merge groups, stage timings, full Stage
+B result, and compact summaries. The spreadsheet includes Summary, Stage A
+Chunks, Entities Before, Entity Resolution, Verification Progress, Entities
+After, and Stage B MCQs sheets. Candidate settings can be overridden with
+`--minimum-similarity`, `--max-candidates`, `--max-context-points`, and
+`--max-concurrency`.
 
 `eval:entity-resolution` runs the fixed entity-resolution fixture through the
 production context, embedding, candidate, verifier, merge, rewrite, and index

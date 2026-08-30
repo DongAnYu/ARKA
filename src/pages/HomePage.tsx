@@ -548,7 +548,12 @@ export function HomePage() {
   const relationalQuestions = generationProgress?.relational_mcq_generated ?? 0
   const workScale = Math.max(totalWork, 1)
   const questionScale = Math.max(questionsGenerated, 1)
-  const graphPhases = ['Extracting knowledge', 'Building knowledge graph', 'Generating questions']
+  const graphPhases = [
+    'Extracting knowledge',
+    'Building knowledge graph',
+    'Resolving entities',
+    'Generating questions',
+  ]
   const currentGraphPhase = generationProgress?.phase_label ?? graphPhases[0]
   const currentGraphPhaseIndex = Math.max(graphPhases.indexOf(currentGraphPhase), 0)
   const finalCompletionPercent = generationProgress?.error

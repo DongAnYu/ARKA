@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt;
 use std::fs;
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -99,6 +100,18 @@ pub async fn run_graph_stage_a(
     input_path: &str,
     llm: &LlmService,
 ) -> Result<GraphStageAResult, GraphPipelineError> {
+    run_graph_stage_a_with_progress(input_path, llm, |_| {}).await
+}
+
+/// Runs Stage A while reporting per-chunk provider activity.
+pub async fn run_graph_stage_a_with_progress<F>(
+    input_path: &str,
+    llm: &LlmService,
+    mut on_progress: F,
+) -> Result<GraphStageAResult, GraphPipelineError>
+where
+    F: FnMut(GraphStageAProgress),
+{
     let note_content = fs::read_to_string(input_path)?;
     let note_title = std::path::Path::new(input_path)
         .file_stem()
@@ -106,11 +119,20 @@ pub async fn run_graph_stage_a(
         .unwrap_or("Untitled");
     let chunks = chunk_markdown(input_path, note_title, &note_content);
     let format_schema = stage_a_format_schema();
+    let total_chunks = chunks.len();
+    on_progress(GraphStageAProgress::ChunksPrepared { total_chunks });
 
     let mut chunk_results = Vec::new();
     let mut extracted_chunks = Vec::new();
 
     for (idx, chunk) in chunks.iter().enumerate() {
+        let chunk_number = idx + 1;
+        on_progress(GraphStageAProgress::ChunkStarted {
+            chunk_number,
+            total_chunks,
+            heading: chunk.heading.clone(),
+        });
+        let chunk_started = Instant::now();
         let user_prompt =
             format_stage_a_graph_user_prompt(&chunk.content, "(no index context in eval mode)");
         let chunk_id = format!("chunk-{}", idx);
@@ -175,6 +197,14 @@ pub async fn run_graph_stage_a(
             },
         };
 
+        on_progress(GraphStageAProgress::ChunkCompleted {
+            chunk_number,
+            total_chunks,
+            heading: chunk.heading.clone(),
+            status: chunk_result.status.clone(),
+            attempts: chunk_result.attempts,
+            elapsed_ms: chunk_started.elapsed().as_millis(),
+        });
         chunk_results.push(chunk_result);
     }
 
@@ -183,6 +213,10 @@ pub async fn run_graph_stage_a(
         .filter(|chunk| chunk.status == "success")
         .count();
     let failed_chunks = chunk_results.len().saturating_sub(successful_chunks);
+    on_progress(GraphStageAProgress::Consolidating {
+        successful_chunks,
+        failed_chunks,
+    });
     let graph = consolidate(extracted_chunks);
     let validation_violations = validate_graph(&graph);
 
@@ -202,8 +236,48 @@ pub async fn run_graph_stage_b(
     stage_a: &GraphStageAResult,
     llm: &LlmService,
 ) -> Result<GraphStageBResult, GraphPipelineError> {
-    let index = build_index(&stage_a.graph);
-    let bundles = assemble_bundles(&stage_a.graph, &index);
+    run_graph_stage_b_for_graph(&stage_a.graph, llm).await
+}
+
+/// Observable milestones for the sequential Stage A extraction pass.
+///
+/// A provider request can legitimately take up to the configured timeout, so
+/// callers should surface these events rather than displaying one apparently
+/// idle "Running Stage A" message for the entire note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphStageAProgress {
+    ChunksPrepared {
+        total_chunks: usize,
+    },
+    ChunkStarted {
+        chunk_number: usize,
+        total_chunks: usize,
+        heading: String,
+    },
+    ChunkCompleted {
+        chunk_number: usize,
+        total_chunks: usize,
+        heading: String,
+        status: String,
+        attempts: Option<usize>,
+        elapsed_ms: u128,
+    },
+    Consolidating {
+        successful_chunks: usize,
+        failed_chunks: usize,
+    },
+}
+
+/// Runs Stage B against the authoritative graph supplied by the caller.
+///
+/// The graph E2E evaluator uses this entry point after entity resolution so its
+/// bundles match the app pipeline's `consolidate → resolve → build index` order.
+pub async fn run_graph_stage_b_for_graph(
+    graph: &PropositionGraph,
+    llm: &LlmService,
+) -> Result<GraphStageBResult, GraphPipelineError> {
+    let index = build_index(graph);
+    let bundles = assemble_bundles(graph, &index);
     let mut items = Vec::with_capacity(bundles.len());
 
     for (bundle_index, bundle) in bundles.into_iter().enumerate() {
