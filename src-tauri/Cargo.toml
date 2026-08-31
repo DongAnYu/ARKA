@@ -1,6 +1,6 @@
 [package]
 name = "arka"
-version = "0.1.5"
+version = "0.1.6"
 description = "A local-first desktop application for AI-assisted active recall and spaced repetition."
 authors = ["Dong An Yu"]
 license-file = "../LICENSE"
