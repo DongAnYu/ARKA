@@ -1,0 +1,149 @@
+{
+  "fixture_version": 1,
+  "name": "photosynthesis-entity-resolution",
+  "description": "A deterministic gold-standard fixture for evaluating semantic entity resolution independently of Stage A extraction. Embedding similarity may propose pairs, but only a semantic verifier may authorize a merge.",
+  "entities": [
+    {
+      "id": "co2",
+      "name": "CO₂",
+      "aliases": ["CO₂", "CO2"],
+      "context": [
+        "CO₂ is attached to RuBP by RuBisCO.",
+        "Carbon fixation incorporates CO₂."
+      ]
+    },
+    {
+      "id": "carbon-dioxide",
+      "name": "carbon dioxide",
+      "aliases": ["carbon dioxide"],
+      "context": [
+        "Photosynthesis consumes carbon dioxide.",
+        "Carbon dioxide is fixed during the Calvin cycle."
+      ]
+    },
+    {
+      "id": "g3p",
+      "name": "G3P",
+      "aliases": ["G3P"],
+      "context": [
+        "G3P is produced during the reduction phase of the Calvin cycle."
+      ]
+    },
+    {
+      "id": "glyceraldehyde-3-phosphate",
+      "name": "glyceraldehyde-3-phosphate",
+      "aliases": ["glyceraldehyde-3-phosphate"],
+      "context": [
+        "Glyceraldehyde-3-phosphate is a three-carbon sugar produced by the Calvin cycle."
+      ]
+    },
+    {
+      "id": "calvin-cycle",
+      "name": "Calvin cycle",
+      "aliases": ["Calvin cycle"],
+      "context": [
+        "The Calvin cycle fixes carbon in the chloroplast stroma using ATP and NADPH."
+      ]
+    },
+    {
+      "id": "light-independent-reactions",
+      "name": "light-independent reactions",
+      "aliases": ["light-independent reactions"],
+      "context": [
+        "The light-independent reactions use ATP and NADPH to fix carbon in the chloroplast stroma."
+      ]
+    },
+    {
+      "id": "carbon-fixation",
+      "name": "carbon fixation",
+      "aliases": ["carbon fixation"],
+      "context": [
+        "Carbon fixation is the process that incorporates carbon dioxide into an organic molecule."
+      ]
+    },
+    {
+      "id": "co2-concentration",
+      "name": "CO₂ concentration",
+      "aliases": ["CO₂ concentration", "CO2 concentration"],
+      "context": [
+        "CO₂ concentration can limit the rate of photosynthesis."
+      ]
+    },
+    {
+      "id": "oxygen",
+      "name": "oxygen",
+      "aliases": ["oxygen", "O₂"],
+      "context": [
+        "Oxygen is released when water is split during the light-dependent reactions."
+      ]
+    }
+  ],
+  "labeled_pairs": [
+    {
+      "id": "co2-carbon-dioxide",
+      "left": "co2",
+      "right": "carbon-dioxide",
+      "expected": "same_entity",
+      "rationale": "CO₂ is the chemical formula and an alias for carbon dioxide."
+    },
+    {
+      "id": "g3p-glyceraldehyde-3-phosphate",
+      "left": "g3p",
+      "right": "glyceraldehyde-3-phosphate",
+      "expected": "same_entity",
+      "rationale": "G3P is the standard abbreviation for glyceraldehyde-3-phosphate."
+    },
+    {
+      "id": "calvin-cycle-light-independent-reactions",
+      "left": "calvin-cycle",
+      "right": "light-independent-reactions",
+      "expected": "same_entity",
+      "rationale": "In this source context, light-independent reactions names the Calvin cycle rather than a separate entity."
+    },
+    {
+      "id": "co2-carbon-fixation",
+      "left": "co2",
+      "right": "carbon-fixation",
+      "expected": "different_entity",
+      "rationale": "CO₂ is a chemical compound; carbon fixation is a process that uses it. Related entities must not be merged."
+    },
+    {
+      "id": "co2-co2-concentration",
+      "left": "co2",
+      "right": "co2-concentration",
+      "expected": "different_entity",
+      "rationale": "CO₂ concentration is a measured property or condition involving CO₂, not the compound itself."
+    },
+    {
+      "id": "oxygen-carbon-dioxide",
+      "left": "oxygen",
+      "right": "carbon-dioxide",
+      "expected": "different_entity",
+      "rationale": "Oxygen and carbon dioxide are distinct chemical compounds despite appearing in the same photosynthesis contexts."
+    }
+  ],
+  "expected_clusters": [
+    {
+      "canonical_name": "CO₂",
+      "members": ["co2", "carbon-dioxide"]
+    },
+    {
+      "canonical_name": "G3P",
+      "members": ["g3p", "glyceraldehyde-3-phosphate"]
+    },
+    {
+      "canonical_name": "Calvin cycle",
+      "members": ["calvin-cycle", "light-independent-reactions"]
+    }
+  ],
+  "expected_entity_count_before": 9,
+  "expected_entity_count_after": 6,
+  "evaluation_contract": {
+    "candidate_recall": "The fraction of expected same_entity pairs emitted by the embedding candidate generator.",
+    "false_positive_rate": "Among labeled different_entity pairs, the fraction incorrectly resolved as same_entity.",
+    "unresolved_pairs": "Labeled pairs for which the verifier returns uncertain, produces no decision, or fails.",
+    "entity_count_before": "The number of fixture entities before semantic merging; expected to equal expected_entity_count_before.",
+    "entity_count_after": "The number of graph entities after confirmed merges and reference rewriting; expected to equal expected_entity_count_after.",
+    "merge_rule": "Only same_entity decisions may merge nodes. Embedding similarity is candidate-generation evidence, never a merge decision."
+  }
+}

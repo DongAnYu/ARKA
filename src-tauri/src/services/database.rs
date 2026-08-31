@@ -453,7 +453,11 @@ pub async fn load_model_config() -> Result<ModelConfig, sqlx::Error> {
     let pool = open_pool().await?;
 
     let config = sqlx::query_as::<_, ModelConfig>(
-        "SELECT provider, base_url, selected_model, timeout_secs, api_key FROM model_settings WHERE id = 1",
+        "SELECT provider, base_url, selected_model, timeout_secs, api_key, llm_concurrency,
+                embedding_provider, embedding_base_url, embedding_selected_model,
+                embedding_timeout_secs, embedding_api_key
+         FROM model_settings
+         WHERE id = 1",
     )
     .fetch_one(&pool)
     .await?;
@@ -465,21 +469,37 @@ pub async fn save_model_config(config: ModelConfig) -> Result<(), sqlx::Error> {
     let pool = open_pool().await?;
 
     sqlx::query(
-                "INSERT INTO model_settings (id, provider, base_url, selected_model, timeout_secs, api_key, updated_at)
-                 VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        "INSERT INTO model_settings (
+                    id, provider, base_url, selected_model, timeout_secs, api_key, llm_concurrency,
+                    embedding_provider, embedding_base_url, embedding_selected_model,
+                    embedding_timeout_secs, embedding_api_key, updated_at
+                 )
+                 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(id) DO UPDATE SET
             provider = excluded.provider,
             base_url = excluded.base_url,
             selected_model = excluded.selected_model,
             timeout_secs = excluded.timeout_secs,
             api_key = excluded.api_key,
+            llm_concurrency = excluded.llm_concurrency,
+            embedding_provider = excluded.embedding_provider,
+            embedding_base_url = excluded.embedding_base_url,
+            embedding_selected_model = excluded.embedding_selected_model,
+            embedding_timeout_secs = excluded.embedding_timeout_secs,
+            embedding_api_key = excluded.embedding_api_key,
             updated_at = excluded.updated_at",
     )
     .bind(&config.provider)
     .bind(&config.base_url)
     .bind(&config.selected_model)
     .bind(config.timeout_secs)
-        .bind(&config.api_key)
+    .bind(&config.api_key)
+    .bind(config.llm_concurrency)
+    .bind(&config.embedding_provider)
+    .bind(&config.embedding_base_url)
+    .bind(&config.embedding_selected_model)
+    .bind(config.embedding_timeout_secs)
+    .bind(&config.embedding_api_key)
     .execute(&pool)
     .await?;
 
@@ -526,6 +546,93 @@ mod tests {
     fn database_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_settings_migration_adds_unconfigured_embedding_defaults() {
+        let _guard = database_test_lock()
+            .lock()
+            .expect("database test lock should not be poisoned");
+
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let db_path =
+            std::env::temp_dir().join(format!("arka-embedding-defaults-{unique_id}.sqlite"));
+
+        std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
+
+        run_smoke_test()
+            .await
+            .expect("migrations should add embedding settings");
+        let config = load_model_config()
+            .await
+            .expect("default model settings should load");
+
+        assert_eq!(config.embedding_provider, "ollama");
+        assert_eq!(config.embedding_base_url, "http://localhost:11434");
+        assert!(config.embedding_selected_model.is_empty());
+        assert_eq!(config.embedding_timeout_secs, 60);
+        assert_eq!(config.embedding_api_key, None);
+        assert_eq!(config.llm_concurrency, 5);
+
+        std::env::remove_var("DATABASE_URL");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_settings_preserve_generation_and_embedding_providers() {
+        let _guard = database_test_lock()
+            .lock()
+            .expect("database test lock should not be poisoned");
+
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("arka-openai-config-{unique_id}.sqlite"));
+
+        std::env::set_var("DATABASE_URL", format!("sqlite://{}", db_path.display()));
+
+        run_smoke_test()
+            .await
+            .expect("migrations should support the OpenAI provider");
+        save_model_config(ModelConfig {
+            provider: String::from("openai"),
+            base_url: String::from("https://api.openai.com/v1"),
+            selected_model: String::from("test-model"),
+            timeout_secs: 60,
+            api_key: Some(String::from("test-key")),
+            llm_concurrency: 7,
+            embedding_provider: String::from("openrouter"),
+            embedding_base_url: String::from("https://openrouter.ai/api/v1"),
+            embedding_selected_model: String::from("test-embedding-model"),
+            embedding_timeout_secs: 45,
+            embedding_api_key: Some(String::from("test-embedding-key")),
+        })
+        .await
+        .expect("OpenAI model settings should save");
+
+        let config = load_model_config()
+            .await
+            .expect("OpenAI model settings should reload");
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.base_url, "https://api.openai.com/v1");
+        assert_eq!(config.selected_model, "test-model");
+        assert_eq!(config.api_key.as_deref(), Some("test-key"));
+        assert_eq!(config.llm_concurrency, 7);
+        assert_eq!(config.embedding_provider, "openrouter");
+        assert_eq!(config.embedding_base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(config.embedding_selected_model, "test-embedding-model");
+        assert_eq!(config.embedding_timeout_secs, 45);
+        assert_eq!(
+            config.embedding_api_key.as_deref(),
+            Some("test-embedding-key")
+        );
+
+        std::env::remove_var("DATABASE_URL");
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -5,7 +5,7 @@ mod services;
 #[cfg(debug_assertions)]
 use std::path::PathBuf;
 
-use models::model_settings::ModelConfig;
+use models::model_settings::{EmbeddingConnectionResult, EmbeddingModelConfig, ModelConfig};
 use models::note::Note;
 use models::question::{Question, QuestionInput};
 use models::recall_dashboard::RecallDashboard;
@@ -135,9 +135,34 @@ async fn load_model_config() -> Result<ModelConfig, String> {
 
 #[tauri::command]
 async fn save_model_config(config: ModelConfig) -> Result<(), String> {
+    config.validated_llm_concurrency()?;
+    let embedding_config = config.embedding_config();
+    if !embedding_config.selected_model.trim().is_empty() {
+        services::embedding::prepare_embedding_service(&embedding_config)
+            .map_err(|err| err.to_string())?;
+    }
+
     services::database::save_model_config(config)
         .await
         .map_err(|err| format!("Failed to save model config: {err}"))
+}
+
+#[tauri::command]
+async fn test_embedding_config(
+    config: EmbeddingModelConfig,
+) -> Result<EmbeddingConnectionResult, String> {
+    let (provider, service) =
+        services::embedding::prepare_embedding_service(&config).map_err(|err| err.to_string())?;
+    let batch = service
+        .embed_batch(&[String::from("ARKA embedding connection test")])
+        .await
+        .map_err(|err| format!("Embedding connection test failed: {err}"))?;
+
+    Ok(EmbeddingConnectionResult {
+        provider: provider.as_str().to_string(),
+        model: config.selected_model.trim().to_string(),
+        dimensions: batch.dimensions(),
+    })
 }
 
 fn apply_persisted_llm_config(config: &ModelConfig) -> Result<(), String> {
@@ -305,11 +330,12 @@ pub fn run() {
                 }
                 Ok(config) => match apply_persisted_llm_config(&config) {
                     Ok(()) => log::info!(
-                        "Restored persisted LLM config (provider={}, base_url={}, model={}, timeout_secs={})",
+                        "Restored persisted LLM config (provider={}, base_url={}, model={}, timeout_secs={}, concurrency={})",
                         config.provider,
                         config.base_url,
                         config.selected_model,
-                        config.timeout_secs
+                        config.timeout_secs,
+                        config.llm_concurrency
                     ),
                     Err(err) => log::warn!(
                         "Could not restore persisted LLM config: {err}; generation requires valid model settings or environment configuration"
@@ -342,6 +368,7 @@ pub fn run() {
             set_runtime_llm_settings,
             load_model_config,
             save_model_config,
+            test_embedding_config,
             save_generated_questions,
             get_spaces,
             create_space,

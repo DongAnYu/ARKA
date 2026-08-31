@@ -14,8 +14,8 @@ use super::types::{
 // ----------------------------------------------------------------------------
 // FUTURE WORK: Entity Resolution
 //
-// normalize_for_comparison() intentionally performs only representation
-// normalization (Unicode, whitespace, case).
+// normalize_for_comparison() performs representation normalization (Unicode,
+// whitespace, case) plus a deliberately narrow regular-plural fold.
 //
 // It DOES NOT merge:
 //
@@ -52,13 +52,17 @@ pub fn consolidate(chunks: Vec<ExtractedKnowledge>) -> PropositionGraph {
     // canonical_name = first-seen raw form; aliases accumulate all raw forms.
 
     let mut entity_map: HashMap<String, EntityNode> = HashMap::new();
+    // Different normalized keys can still collapse to the same slug. For
+    // example, `partition` and `!partition` both prefer `entity-partition`.
+    // Track allocated IDs so those keys remain distinct without breaking graph
+    // references or relying on HashMap iteration order.
+    let mut used_entity_ids: HashSet<String> = HashSet::new();
     let mut id_map: HashMap<String, String> = HashMap::new();
     let mut seen_chunk_ids: HashMap<String, HashSet<String>> = HashMap::new(); // key → chunk_ids
 
     for chunk in &chunks {
         for mention in &chunk.raw_entities {
             let key = normalize_for_comparison(&mention.name);
-            let id = to_entity_id(&key);
 
             if let Some(node) = entity_map.get_mut(&key) {
                 // Known entity: accumulate alias if new, record chunk_id if new
@@ -71,6 +75,7 @@ pub fn consolidate(chunks: Vec<ExtractedKnowledge>) -> PropositionGraph {
                     .insert(mention.chunk_id.clone());
             } else {
                 // First encounter: canonical_name = raw form as written
+                let id = allocate_entity_id(&key, &mut used_entity_ids);
                 entity_map.insert(
                     key.clone(),
                     EntityNode {
@@ -189,8 +194,8 @@ pub fn consolidate(chunks: Vec<ExtractedKnowledge>) -> PropositionGraph {
 // ----------------------------------------------------------------------------
 // FUTURE WORK: Entity Resolution
 //
-// normalize_for_comparison() intentionally performs only representation
-// normalization (Unicode, whitespace, case).
+// normalize_for_comparison() performs representation normalization (Unicode,
+// whitespace, case) plus a deliberately narrow regular-plural fold.
 //
 // It DOES NOT merge:
 //
@@ -203,9 +208,10 @@ pub fn consolidate(chunks: Vec<ExtractedKnowledge>) -> PropositionGraph {
 
 /// Produces a comparison key for entity deduplication.
 ///
-/// Applies representation-only transformations — no semantic normalization.
-/// Two entity names that differ only in casing, whitespace, or Unicode
-/// notation will produce the same key. Everything else produces a distinct key.
+/// Applies representation transformations and conservative regular-plural
+/// folding, but no semantic synonym or abbreviation normalization. This merges
+/// forms such as `chloroplast`/`chloroplasts` while leaving ambiguous or
+/// irregular morphology for semantic entity resolution.
 ///
 /// The raw form is NEVER discarded: callers store the original string in
 /// `EntityNode.canonical_name` (first-seen) and `EntityNode.aliases` (all
@@ -242,7 +248,66 @@ fn normalize_for_comparison(name: &str) -> String {
     let collapsed: String = trimmed.split_whitespace().collect::<Vec<&str>>().join(" ");
 
     // Step 4: Fold to lowercase.
-    collapsed.to_lowercase()
+    let lowercase = collapsed.to_lowercase();
+
+    // Step 5: Fold only conservative regular plural forms. This operates on
+    // the final word so phrases such as `plant cells` become `plant cell`.
+    normalize_simple_plural(&lowercase)
+}
+
+/// Returns a stable singular comparison form for low-risk regular plurals.
+///
+/// This is intentionally not a general English stemmer. Irregular forms and
+/// ambiguous `-ies`/`-ses` words remain separate for the semantic resolver.
+fn normalize_simple_plural(name: &str) -> String {
+    let (prefix, word) = name
+        .rsplit_once(' ')
+        .map_or((None, name), |(prefix, word)| (Some(prefix), word));
+    let singular = singularize_regular_word(word);
+
+    if singular == word {
+        return name.to_string();
+    }
+
+    match prefix {
+        Some(prefix) => format!("{prefix} {singular}"),
+        None => singular,
+    }
+}
+
+/// Singularizes only suffix patterns with a conservative deterministic rule.
+fn singularize_regular_word(word: &str) -> String {
+    // These common singular or invariant nouns would be corrupted by simply
+    // removing their final `s`.
+    const PROTECTED_WORDS: &[&str] =
+        &["axes", "headquarters", "means", "news", "series", "species"];
+    const PROTECTED_SUFFIXES: &[&str] = &["as", "ics", "ies", "is", "ness", "us", "yses"];
+
+    if word.len() < 4
+        || PROTECTED_WORDS.contains(&word)
+        || PROTECTED_SUFFIXES
+            .iter()
+            .any(|suffix| word.ends_with(suffix))
+    {
+        return word.to_string();
+    }
+
+    // `processes` → `process`, `classes` → `class`; and conventional
+    // sibilant plurals such as `boxes`, `churches`, and `dishes`.
+    if ["sses", "ches", "shes", "xes"]
+        .iter()
+        .any(|suffix| word.ends_with(suffix))
+    {
+        return word[..word.len() - 2].to_string();
+    }
+
+    // The safest and most useful rule for extracted graph entities:
+    // `chloroplasts` → `chloroplast`, `molecules` → `molecule`.
+    if word.ends_with('s') && !word.ends_with("ss") {
+        return word[..word.len() - 1].to_string();
+    }
+
+    word.to_string()
 }
 
 // =====================================================================
@@ -296,7 +361,56 @@ fn to_entity_id(normalized_key: &str) -> String {
         .collect();
 
     let trimmed = collapsed.trim_matches('_');
-    format!("entity-{trimmed}")
+    let slug = if trimmed.is_empty() {
+        "unnamed"
+    } else {
+        trimmed
+    };
+    format!("entity-{slug}")
+}
+
+/// Allocates a graph-unique entity ID while leaving ordinary IDs unchanged.
+///
+/// A comparison key may contain meaningful punctuation that the ID slug does
+/// not preserve. If its preferred ID is occupied, append a stable hash of the
+/// complete key. The counter is only a final guard against the extremely
+/// unlikely case where two distinct keys also share the same hash.
+fn allocate_entity_id(normalized_key: &str, used_ids: &mut HashSet<String>) -> String {
+    let base_id = to_entity_id(normalized_key);
+    if used_ids.insert(base_id.clone()) {
+        return base_id;
+    }
+
+    let key_hash = stable_entity_key_hash(normalized_key);
+    let hashed_id = format!("{base_id}_{key_hash:016x}");
+    if used_ids.insert(hashed_id.clone()) {
+        return hashed_id;
+    }
+
+    let mut discriminator = 2usize;
+    loop {
+        let candidate = format!("{hashed_id}_{discriminator}");
+        if used_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+        discriminator += 1;
+    }
+}
+
+/// Returns a stable FNV-1a hash for deterministic entity-ID disambiguation.
+///
+/// `DefaultHasher` is deliberately avoided because its output is not a stable
+/// persistence contract across Rust versions.
+fn stable_entity_key_hash(value: &str) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf_29ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x000_0100_0000_01b3;
+
+    value
+        .as_bytes()
+        .iter()
+        .fold(FNV_OFFSET_BASIS, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+        })
 }
 
 // =====================================================================
@@ -395,7 +509,7 @@ mod tests {
         assert_eq!(normalize_for_comparison("  Calvin cycle  "), "calvin cycle");
         assert_eq!(
             normalize_for_comparison("light  dependent  reactions"),
-            "light dependent reactions"
+            "light dependent reaction"
         );
     }
 
@@ -405,7 +519,32 @@ mod tests {
             normalize_for_comparison("CO₂ concentration"),
             "co2 concentration"
         );
-        assert_eq!(normalize_for_comparison("H⁺ ions"), "h+ ions");
+        assert_eq!(normalize_for_comparison("H⁺ ions"), "h+ ion");
+    }
+
+    #[test]
+    fn test_normalize_conservative_regular_plurals() {
+        assert_eq!(normalize_for_comparison("chloroplasts"), "chloroplast");
+        assert_eq!(normalize_for_comparison("plant cells"), "plant cell");
+        assert_eq!(normalize_for_comparison("ATP synthases"), "atp synthase");
+        assert_eq!(normalize_for_comparison("processes"), "process");
+        assert_eq!(normalize_for_comparison("boxes"), "box");
+    }
+
+    #[test]
+    fn test_plural_normalization_protects_ambiguous_or_invariant_words() {
+        for word in [
+            "photosynthesis",
+            "analysis",
+            "species",
+            "series",
+            "news",
+            "means",
+            "headquarters",
+            "axes",
+        ] {
+            assert_eq!(normalize_for_comparison(word), word);
+        }
     }
 
     // ── to_entity_id ─────────────────────────────────────────────────────
@@ -434,6 +573,12 @@ mod tests {
             to_entity_id("co2 concentration"),
             "entity-co2_concentration"
         );
+    }
+
+    #[test]
+    fn test_entity_id_uses_fallback_for_punctuation_only_names() {
+        assert_eq!(to_entity_id("!!!"), "entity-unnamed");
+        assert_eq!(to_entity_id(""), "entity-unnamed");
     }
 
     // ── consolidate ───────────────────────────────────────────────────────
@@ -551,6 +696,79 @@ mod tests {
         assert_eq!(graph.entities[0].id, "entity-co2"); // no spaces → no underscores
         assert_eq!(graph.entities[0].canonical_name, "CO₂"); // first-seen form
         assert!(graph.entities[0].aliases.contains(&"CO2".to_string()));
+    }
+
+    #[test]
+    fn test_regular_plural_dedup_preserves_both_aliases() {
+        let c1 = make_chunk("c1", &["chloroplast"], vec![]);
+        let c2 = make_chunk("c2", &["chloroplasts"], vec![]);
+        let graph = consolidate(vec![c1, c2]);
+
+        assert_eq!(graph.entities.len(), 1);
+        assert_eq!(graph.entities[0].canonical_name, "chloroplast");
+        assert_eq!(
+            graph.entities[0].aliases,
+            vec!["chloroplast".to_string(), "chloroplasts".to_string()]
+        );
+        assert_eq!(graph.entities[0].chunk_ids, vec!["c1", "c2"]);
+    }
+
+    #[test]
+    fn test_protected_word_is_not_merged_with_different_singular_word() {
+        let graph = consolidate(vec![make_chunk("c1", &["new", "news"], vec![])]);
+
+        assert_eq!(graph.entities.len(), 2);
+    }
+
+    #[test]
+    fn test_slug_collisions_receive_unique_deterministic_ids() {
+        fn collision_chunk() -> ExtractedKnowledge {
+            make_chunk(
+                "c1",
+                &["partition", "!partition"],
+                vec![make_point_with_relation(
+                    "c1-kp-0",
+                    "c1",
+                    &["partition"],
+                    "!partition",
+                    RelationType::RelatedTo,
+                )],
+            )
+        }
+
+        let graph = consolidate(vec![collision_chunk()]);
+        let partition = graph
+            .entities
+            .iter()
+            .find(|entity| entity.canonical_name == "partition")
+            .expect("partition entity should exist");
+        let punctuated_partition = graph
+            .entities
+            .iter()
+            .find(|entity| entity.canonical_name == "!partition")
+            .expect("!partition entity should exist");
+
+        assert_eq!(partition.id, "entity-partition");
+        assert!(punctuated_partition.id.starts_with("entity-partition_"));
+        assert_ne!(partition.id, punctuated_partition.id);
+        assert_eq!(graph.relations.len(), 1);
+        assert_eq!(graph.relations[0].source_id, partition.id);
+        assert_eq!(graph.relations[0].target_id, punctuated_partition.id);
+        assert!(validate_graph(&graph).is_empty());
+
+        // Reprocessing the same ordered graph must allocate the same IDs.
+        let repeated = consolidate(vec![collision_chunk()]);
+        let entity_ids = graph
+            .entities
+            .iter()
+            .map(|entity| (&entity.canonical_name, &entity.id))
+            .collect::<Vec<_>>();
+        let repeated_ids = repeated
+            .entities
+            .iter()
+            .map(|entity| (&entity.canonical_name, &entity.id))
+            .collect::<Vec<_>>();
+        assert_eq!(entity_ids, repeated_ids);
     }
 
     #[test]

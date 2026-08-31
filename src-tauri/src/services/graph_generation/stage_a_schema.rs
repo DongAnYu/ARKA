@@ -248,16 +248,19 @@ pub fn stage_a_format_schema() -> Value {
                                         "description": "Optional text span supporting this relation"
                                     }
                                 },
-                                "required": ["target_entity_name", "relation_type"]
+                                "required": ["target_entity_name", "relation_type", "source_quote"],
+                                "additionalProperties": false
                             },
                             "description": "Relations to other entities"
                         }
                     },
-                    "required": ["point", "knowledge_type", "raw_entity_names", "raw_relations"]
+                    "required": ["point", "knowledge_type", "raw_entity_names", "raw_relations"],
+                    "additionalProperties": false
                 }
             }
         },
-        "required": ["entities", "knowledge_points"]
+        "required": ["entities", "knowledge_points"],
+        "additionalProperties": false
     })
 }
 
@@ -595,6 +598,11 @@ pub fn parse_stage_a_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_a_schema_is_strict_openai_compatible() {
+        crate::services::llm::assert_strict_json_schema(&stage_a_format_schema());
+    }
 
     #[test]
     fn test_valid_stage_a_output() {

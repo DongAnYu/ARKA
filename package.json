@@ -1,7 +1,7 @@
 {
   "name": "arka",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,8 @@
     "eval:default": "cargo run --manifest-path eval/Cargo.toml --bin aqg_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",
     "eval:graph-stage-a": "cargo run --manifest-path eval/Cargo.toml --bin graph_stage_a_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",
     "eval:graph-e2e": "cargo run --manifest-path eval/Cargo.toml --bin graph_e2e_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",
+    "eval:entity-resolution": "cargo run --manifest-path eval/Cargo.toml --bin entity_resolution_eval -- --fixture eval/fixtures/entity_resolution/photosynthesis.json --output-dir eval/output",
+    "eval:entity-resolution:hard": "cargo run --manifest-path eval/Cargo.toml --bin entity_resolution_eval -- --fixture eval/fixtures/entity_resolution/photosynthesis-hard.json --output-dir eval/output",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

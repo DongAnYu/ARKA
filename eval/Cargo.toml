@@ -21,6 +21,10 @@ path = "src/bin/graph_stage_a_eval.rs"
 name = "graph_e2e_eval"
 path = "src/bin/graph_e2e_eval.rs"
 
+[[bin]]
+name = "entity_resolution_eval"
+path = "src/bin/entity_resolution_eval.rs"
+
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }

@@ -2,7 +2,7 @@ use super::default_generation_schema::{
     parse_stage_a_output, parse_stage_b_output, stage_a_format_schema, stage_b_format_schema,
     StageAKeyPointsOutput, StageBMcqOutput,
 };
-use super::{JsonGenerationRequest, LlmService, LlmServiceError};
+use super::{LlmService, LlmServiceError, StructuredGenerationRequest};
 
 impl LlmService {
     pub async fn generate_stage_a_key_points(
@@ -15,11 +15,12 @@ impl LlmService {
         );
 
         let user_prompt = format_stage_a_user_prompt(chunk_markdown);
-        let request = JsonGenerationRequest {
+        let request = StructuredGenerationRequest {
             stage_label: "Stage A",
+            schema_name: "active_recall_key_points",
             system_prompt: STAGE_A_SYSTEM_PROMPT,
             user_prompt: &user_prompt,
-            format_schema: stage_a_format_schema(),
+            schema: stage_a_format_schema(),
             payload_preview_chars: 600,
         };
 
@@ -51,11 +52,12 @@ impl LlmService {
         let key_points_json =
             serde_json::to_string(key_points).map_err(LlmServiceError::Serialize)?;
         let user_prompt = format_stage_b_user_prompt(chunk_markdown, &key_points_json);
-        let request = JsonGenerationRequest {
+        let request = StructuredGenerationRequest {
             stage_label: "Stage B",
+            schema_name: "active_recall_questions",
             system_prompt: STAGE_B_SYSTEM_PROMPT,
             user_prompt: &user_prompt,
-            format_schema: stage_b_format_schema(),
+            schema: stage_b_format_schema(),
             payload_preview_chars: 800,
         };
 

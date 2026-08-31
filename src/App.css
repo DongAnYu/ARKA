@@ -1268,7 +1268,7 @@ body {
 
 .provider-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -1358,6 +1358,104 @@ body {
 
 .settings-page-intro {
   gap: 6px;
+}
+
+.model-config-panel {
+  gap: 22px;
+}
+
+.model-config-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.model-config-head > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.model-config-head h2,
+.embedding-test-row h2 {
+  margin: 0;
+  color: var(--color-bright-gray);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.model-config-head p,
+.embedding-test-row p {
+  max-width: 68ch;
+  margin: 0;
+  color: var(--color-medium-gray);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.model-config-provider {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 4px 9px;
+  background-color: rgba(var(--rgb-lavender), 0.13);
+  color: var(--color-lavender);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.model-config-panel .settings-subsection + .settings-subsection {
+  padding-top: 18px;
+  border-top: 1px solid rgba(var(--rgb-white), 0.08);
+}
+
+.settings-field-compact {
+  max-width: 220px;
+}
+
+.settings-concurrency-field {
+  max-width: 68ch;
+}
+
+.settings-concurrency-input {
+  max-width: 220px;
+}
+
+.settings-privacy-note {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background-color: rgba(var(--rgb-white), 0.035);
+  color: var(--color-medium-gray);
+  font-size: 13px;
+  line-height: 1.5;
+  box-shadow: var(--shadow-subtle);
+}
+
+.embedding-test-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px 20px;
+  border-radius: 12px;
+  background-color: var(--color-surface);
+  box-shadow: var(--shadow-subtle);
+}
+
+.embedding-test-row > div {
+  display: grid;
+  gap: 4px;
+}
+
+.embedding-test-row .btn-secondary {
+  flex: 0 0 auto;
+}
+
+.model-settings-save-row {
+  padding-top: 4px;
 }
 
 .settings-application {
@@ -3345,6 +3443,24 @@ body {
   .model-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .model-config-head,
+  .embedding-test-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .model-config-provider {
+    align-self: flex-start;
+  }
+
+  .settings-field-compact {
+    max-width: none;
+  }
+
+  .embedding-test-row .btn-secondary {
+    width: 100%;
   }
 
   .settings-fetch-btn {

@@ -5,6 +5,7 @@
 
 pub mod bundle_builder;
 pub mod consolidator;
+pub mod entity_resolution;
 pub mod graph_index;
 pub mod pipeline;
 pub mod stage_a_prompt;
