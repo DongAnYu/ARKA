@@ -1415,6 +1415,14 @@ body {
   max-width: 220px;
 }
 
+.settings-concurrency-field {
+  max-width: 68ch;
+}
+
+.settings-concurrency-input {
+  max-width: 220px;
+}
+
 .settings-privacy-note {
   margin: 0;
   padding: 10px 12px;

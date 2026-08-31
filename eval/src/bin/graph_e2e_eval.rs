@@ -20,13 +20,17 @@ use services::embedding::{EmbeddingConfig, EmbeddingProvider, EmbeddingService};
 use services::graph_generation::entity_resolution::candidate_generator::CandidateConfig;
 use services::graph_generation::entity_resolution::pipeline::{
     resolve_graph_entities_with_progress, EntityResolutionConfig, EntityResolutionProgress,
+    DEFAULT_ENTITY_CANDIDATE_SIMILARITY,
 };
 use services::graph_generation::entity_resolution::semantic_verifier::{
-    EntityMatchDecision, VerifierConfig,
+    EntityMatchDecision, EntityVerificationSource, VerifierConfig,
+    DEFAULT_MAX_CONCURRENT_VERIFICATIONS,
 };
 use services::graph_generation::pipeline::{
-    run_graph_stage_a_with_progress, run_graph_stage_b_for_graph, GraphStageAProgress,
-    GraphStageAResult, GraphStageBResult,
+    run_graph_stage_a_with_progress_and_concurrency,
+    run_graph_stage_b_for_graph_with_progress_and_concurrency, GraphStageAProgress,
+    GraphStageAResult, GraphStageBProgress, GraphStageBResult, DEFAULT_STAGE_A_CONCURRENCY,
+    DEFAULT_STAGE_B_CONCURRENCY,
 };
 use services::graph_generation::types::PropositionGraph;
 use services::llm::{LlmConfig, LlmProvider, LlmRetryState, LlmService};
@@ -43,6 +47,8 @@ struct CliArgs {
     max_candidates_per_entity: usize,
     max_points_per_entity: usize,
     max_concurrency: usize,
+    stage_a_concurrency: usize,
+    stage_b_concurrency: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,6 +60,8 @@ struct GraphE2eEvalRun {
     note_path: String,
     json_path: String,
     xlsx_path: String,
+    stage_a_concurrency: usize,
+    stage_b_concurrency: usize,
     embedding: ProviderSummary,
     timings: EvalTimings,
     stage_a_summary: StageASummary,
@@ -110,6 +118,8 @@ struct EntityResolutionSummary {
     different_entity: usize,
     uncertain: usize,
     merge_groups: usize,
+    llm_verifications: usize,
+    transitive_inferences: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -122,6 +132,7 @@ struct EntityCandidateReport {
     similarity: f32,
     decision: String,
     reason: String,
+    source: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,6 +144,7 @@ struct VerificationProgressReport {
     candidate_entity_id: String,
     similarity: f32,
     decision: String,
+    source: String,
     elapsed_ms: u128,
 }
 
@@ -225,14 +237,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         resolution_config.candidates.max_candidates_per_entity,
         resolution_config.verifier.max_concurrency
     );
+    println!("Stage A concurrency: {}", args.stage_a_concurrency);
+    println!("Stage B concurrency: {}", args.stage_b_concurrency);
     println!("---");
 
     let total_started = Instant::now();
     println!("Running Stage A...");
     let stage_a_started = Instant::now();
-    let stage_a = run_graph_stage_a_with_progress(note_path, &llm, |progress| match progress {
-        GraphStageAProgress::ChunksPrepared { total_chunks } => println!(
-            "[stage-a] Prepared {total_chunks} chunks; LLM extraction runs sequentially"
+    let stage_a = run_graph_stage_a_with_progress_and_concurrency(
+        note_path,
+        &llm,
+        args.stage_a_concurrency,
+        |progress| match progress {
+        GraphStageAProgress::ChunksPrepared {
+            total_chunks,
+            max_concurrency,
+        } => println!(
+            "[stage-a] Prepared {total_chunks} chunks; concurrency={max_concurrency}"
         ),
         GraphStageAProgress::ChunkStarted {
             chunk_number,
@@ -261,7 +282,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => println!(
             "[stage-a] Consolidating chunks | successful={successful_chunks} failed={failed_chunks}"
         ),
-    })
+    },
+    )
     .await?;
     let stage_a_ms = stage_a_started.elapsed().as_millis();
     let stage_a_summary = summarize_stage_a(&stage_a);
@@ -312,13 +334,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 candidate_entity_id,
                 similarity,
                 decision,
+                source,
             } => {
                 let elapsed_ms = resolution_started.elapsed().as_millis();
                 println!(
-                    "[verify {completed_pairs}/{total_pairs}] {} ↔ {} | similarity={similarity:.4} decision={} active={in_flight_pairs}",
+                    "[verify {completed_pairs}/{total_pairs}] {} ↔ {} | similarity={similarity:.4} decision={} source={} active={in_flight_pairs}",
                     entity_name(&entity_names, &entity_id),
                     entity_name(&entity_names, &candidate_entity_id),
                     decision_label(decision),
+                    verification_source_label(source),
                 );
                 resolution_trace.verification_progress.push(VerificationProgressReport {
                     completed_pairs,
@@ -328,6 +352,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     candidate_entity_id,
                     similarity,
                     decision: decision_label(decision).to_string(),
+                    source: verification_source_label(source).to_string(),
                     elapsed_ms,
                 });
             }
@@ -344,7 +369,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let entity_resolution_ms = resolution_started.elapsed().as_millis();
     let finalization_ms =
         entity_resolution_ms.saturating_sub(resolution_trace.finalization_started_ms);
-    print_entity_resolution_summary(&resolution.metrics);
+    let transitive_inferences = resolution
+        .verified_candidates
+        .iter()
+        .filter(|result| result.source == EntityVerificationSource::TransitiveInference)
+        .count();
+    let llm_verifications = resolution.verified_candidates.len() - transitive_inferences;
+    print_entity_resolution_summary(
+        &resolution.metrics,
+        llm_verifications,
+        transitive_inferences,
+    );
     print_stage_timing("Entity resolution", entity_resolution_ms);
     print_stage_timing(
         "  Embedding + candidate generation",
@@ -356,7 +391,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("---");
     println!("Running Stage B from the resolved graph...");
     let stage_b_started = Instant::now();
-    let stage_b = run_graph_stage_b_for_graph(&resolution.graph, &llm).await?;
+    let stage_b = run_graph_stage_b_for_graph_with_progress_and_concurrency(
+        &resolution.graph,
+        &llm,
+        args.stage_b_concurrency,
+        |progress| match progress {
+            GraphStageBProgress::BundlesPrepared {
+                total_bundles,
+                max_concurrency,
+            } => println!(
+                "[stage-b] Prepared {total_bundles} bundles; concurrency={max_concurrency}"
+            ),
+            GraphStageBProgress::BundleCompleted {
+                bundle_number,
+                total_bundles,
+                status,
+                in_flight_requests,
+                elapsed_ms,
+            } => println!(
+                "[stage-b {bundle_number}/{total_bundles}] Completed | status={status} active={in_flight_requests} elapsed={:.1}s",
+                elapsed_ms as f64 / 1_000.0
+            ),
+        },
+    )
+    .await?;
     let stage_b_ms = stage_b_started.elapsed().as_millis();
     let stage_b_summary = summarize_stage_b(&stage_b);
     print_stage_b_summary(&stage_b_summary);
@@ -379,6 +437,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             similarity: candidate.similarity,
             decision: decision_label(verified.decision).to_string(),
             reason: verified.reason.clone(),
+            source: verification_source_label(verified.source).to_string(),
         })
         .collect();
     let merge_groups = resolution
@@ -407,6 +466,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             different_entity: resolution_metrics.different_entity_count,
             uncertain: resolution_metrics.unresolved_pair_count,
             merge_groups: resolution_metrics.merge_group_count,
+            llm_verifications,
+            transitive_inferences,
         },
         candidates,
         verification_progress: std::mem::take(&mut resolution_trace.verification_progress),
@@ -434,6 +495,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         note_path: args.note_path.display().to_string(),
         json_path: json_path.display().to_string(),
         xlsx_path: xlsx_path.display().to_string(),
+        stage_a_concurrency: args.stage_a_concurrency,
+        stage_b_concurrency: args.stage_b_concurrency,
         embedding: embedding_summary,
         timings: EvalTimings {
             total_ms,
@@ -545,6 +608,8 @@ fn format_duration(elapsed_ms: u128) -> String {
 
 fn print_entity_resolution_summary(
     metrics: &services::graph_generation::entity_resolution::pipeline::EntityResolutionMetrics,
+    llm_verifications: usize,
+    transitive_inferences: usize,
 ) {
     println!(
         "Entity resolution: {} → {} entities, {} candidates, {} same, {} different, {} uncertain, {} merge groups",
@@ -555,6 +620,9 @@ fn print_entity_resolution_summary(
         metrics.different_entity_count,
         metrics.unresolved_pair_count,
         metrics.merge_group_count
+    );
+    println!(
+        "Verifier work: {llm_verifications} LLM requests, {transitive_inferences} transitive skips"
     );
 }
 
@@ -581,6 +649,13 @@ fn decision_label(decision: EntityMatchDecision) -> &'static str {
         EntityMatchDecision::SameEntity => "same_entity",
         EntityMatchDecision::DifferentEntity => "different_entity",
         EntityMatchDecision::Uncertain => "uncertain",
+    }
+}
+
+fn verification_source_label(source: EntityVerificationSource) -> &'static str {
+    match source {
+        EntityVerificationSource::Llm => "llm",
+        EntityVerificationSource::TransitiveInference => "transitive_inference",
     }
 }
 
@@ -637,6 +712,8 @@ fn write_summary_sheet(
     )?;
     sheet.write_string(start + 5, 0, "stage_a_relations")?;
     sheet.write_number(start + 5, 1, run.stage_a_summary.total_relations as f64)?;
+    sheet.write_string(start + 6, 0, "stage_a_concurrency")?;
+    sheet.write_number(start + 6, 1, run.stage_a_concurrency as f64)?;
 
     let start_resolution = start + 8;
     sheet.write_string(start_resolution, 0, "resolution_entities_before")?;
@@ -675,14 +752,26 @@ fn write_summary_sheet(
         1,
         run.entity_resolution.summary.uncertain as f64,
     )?;
-    sheet.write_string(start_resolution + 6, 0, "resolution_total_ms")?;
+    sheet.write_string(start_resolution + 6, 0, "resolution_llm_verifications")?;
     sheet.write_number(
         start_resolution + 6,
+        1,
+        run.entity_resolution.summary.llm_verifications as f64,
+    )?;
+    sheet.write_string(start_resolution + 7, 0, "resolution_transitive_inferences")?;
+    sheet.write_number(
+        start_resolution + 7,
+        1,
+        run.entity_resolution.summary.transitive_inferences as f64,
+    )?;
+    sheet.write_string(start_resolution + 8, 0, "resolution_total_ms")?;
+    sheet.write_number(
+        start_resolution + 8,
         1,
         run.timings.entity_resolution_ms as f64,
     )?;
 
-    let start_b = start_resolution + 9;
+    let start_b = start_resolution + 11;
     sheet.write_string(start_b, 0, "stage_b_total_bundles")?;
     sheet.write_number(start_b, 1, run.stage_b_summary.total_bundles as f64)?;
     sheet.write_string(start_b + 1, 0, "stage_b_successful_mcqs")?;
@@ -693,6 +782,8 @@ fn write_summary_sheet(
     sheet.write_number(start_b + 3, 1, run.stage_b_summary.recall_mcqs as f64)?;
     sheet.write_string(start_b + 4, 0, "stage_b_relational_mcqs")?;
     sheet.write_number(start_b + 4, 1, run.stage_b_summary.relational_mcqs as f64)?;
+    sheet.write_string(start_b + 5, 0, "stage_b_concurrency")?;
+    sheet.write_number(start_b + 5, 1, run.stage_b_concurrency as f64)?;
 
     Ok(())
 }
@@ -796,8 +887,9 @@ fn write_entity_resolution_sheet(
         "candidate_entity_id",
         "candidate_entity_name",
         "embedding_similarity",
-        "llm_decision",
-        "llm_reason",
+        "decision",
+        "reason",
+        "verification_source",
     ];
     for (column, header) in headers.iter().enumerate() {
         sheet.write_string(0, column as u16, *header)?;
@@ -813,6 +905,7 @@ fn write_entity_resolution_sheet(
         sheet.write_number(row, 5, candidate.similarity as f64)?;
         sheet.write_string(row, 6, &candidate.decision)?;
         sheet.write_string(row, 7, &candidate.reason)?;
+        sheet.write_string(row, 8, &candidate.source)?;
     }
 
     Ok(())
@@ -830,7 +923,8 @@ fn write_verification_progress_sheet(
         "entity_id",
         "candidate_entity_id",
         "embedding_similarity",
-        "llm_decision",
+        "decision",
+        "verification_source",
         "elapsed_ms",
     ];
     for (column, header) in headers.iter().enumerate() {
@@ -846,7 +940,8 @@ fn write_verification_progress_sheet(
         sheet.write_string(row, 4, &progress.candidate_entity_id)?;
         sheet.write_number(row, 5, progress.similarity as f64)?;
         sheet.write_string(row, 6, &progress.decision)?;
-        sheet.write_number(row, 7, progress.elapsed_ms as f64)?;
+        sheet.write_string(row, 7, &progress.source)?;
+        sheet.write_number(row, 8, progress.elapsed_ms as f64)?;
     }
 
     Ok(())
@@ -946,10 +1041,12 @@ fn parse_args() -> Result<CliArgs, Box<dyn Error>> {
 
     let mut note_path = default_note_path;
     let mut output_dir = default_output_dir;
-    let mut minimum_similarity = 0.5;
+    let mut minimum_similarity = DEFAULT_ENTITY_CANDIDATE_SIMILARITY;
     let mut max_candidates_per_entity = 3;
     let mut max_points_per_entity = 3;
-    let mut max_concurrency = 5;
+    let mut max_concurrency = DEFAULT_MAX_CONCURRENT_VERIFICATIONS;
+    let mut stage_a_concurrency = DEFAULT_STAGE_A_CONCURRENCY;
+    let mut stage_b_concurrency = DEFAULT_STAGE_B_CONCURRENCY;
     let mut args = env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -974,6 +1071,12 @@ fn parse_args() -> Result<CliArgs, Box<dyn Error>> {
             "--max-concurrency" => {
                 max_concurrency = next_arg(&mut args, "--max-concurrency")?.parse()?
             }
+            "--stage-a-concurrency" => {
+                stage_a_concurrency = next_arg(&mut args, "--stage-a-concurrency")?.parse()?
+            }
+            "--stage-b-concurrency" => {
+                stage_b_concurrency = next_arg(&mut args, "--stage-b-concurrency")?.parse()?
+            }
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -991,12 +1094,14 @@ fn parse_args() -> Result<CliArgs, Box<dyn Error>> {
         max_candidates_per_entity,
         max_points_per_entity,
         max_concurrency,
+        stage_a_concurrency,
+        stage_b_concurrency,
     })
 }
 
 fn print_usage() {
     println!(
-        "Usage: cargo run --manifest-path eval/Cargo.toml --bin graph_e2e_eval -- [--note <markdown-file>] [--output-dir <dir>] [--minimum-similarity <f32>] [--max-candidates <usize>] [--max-context-points <usize>] [--max-concurrency <usize>]"
+        "Usage: cargo run --manifest-path eval/Cargo.toml --bin graph_e2e_eval -- [--note <markdown-file>] [--output-dir <dir>] [--stage-a-concurrency <usize>] [--stage-b-concurrency <usize>] [--minimum-similarity <f32>] [--max-candidates <usize>] [--max-context-points <usize>] [--max-concurrency <usize>]"
     );
 }
 

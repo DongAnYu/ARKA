@@ -21,7 +21,7 @@ use services::graph_generation::entity_resolution::pipeline::{
     resolve_graph_entities, EntityResolutionConfig, EntityResolutionMetrics,
 };
 use services::graph_generation::entity_resolution::semantic_verifier::{
-    EntityMatchDecision, VerifierConfig,
+    EntityMatchDecision, EntityVerificationSource, VerifierConfig,
 };
 use services::graph_generation::types::{
     EntityNode, KnowledgePoint, KnowledgeType, PropositionGraph,
@@ -202,6 +202,7 @@ struct VerifierDecisionSummary {
     similarity: f32,
     decision: String,
     reason: String,
+    source: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -304,6 +305,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 similarity: decision.similarity,
                 decision: decision_label(decision.decision).to_string(),
                 reason: decision.reason,
+                source: verification_source_label(decision.source).to_string(),
             })
             .collect(),
         entities_after: result
@@ -966,6 +968,13 @@ fn decision_label(decision: EntityMatchDecision) -> &'static str {
         EntityMatchDecision::SameEntity => "same_entity",
         EntityMatchDecision::DifferentEntity => "different_entity",
         EntityMatchDecision::Uncertain => "uncertain",
+    }
+}
+
+fn verification_source_label(source: EntityVerificationSource) -> &'static str {
+    match source {
+        EntityVerificationSource::Llm => "llm",
+        EntityVerificationSource::TransitiveInference => "transitive_inference",
     }
 }
 

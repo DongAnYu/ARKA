@@ -40,8 +40,12 @@ use super::graph_rewriter::{rewrite_graph_with_entity_merges, GraphRewriteError}
 use super::merge_planner::{build_entity_merge_plan, EntityMergePlan, MergePlanningError};
 use super::semantic_verifier::{
     verify_entity_candidates_with_progress, EntityMatchDecision, EntityVerificationError,
-    VerifiedEntityCandidate, VerifierConfig,
+    EntityVerificationSource, VerifiedEntityCandidate, VerifierConfig,
 };
+
+/// Default loose retrieval threshold shared by the application and eval tools.
+/// Similarity selects verifier candidates only; it never authorizes a merge.
+pub const DEFAULT_ENTITY_CANDIDATE_SIMILARITY: f32 = 0.9;
 
 /// Settings for one complete entity-resolution run.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,7 +63,7 @@ impl Default for EntityResolutionConfig {
         Self {
             max_points_per_entity: 3,
             candidates: CandidateConfig {
-                minimum_similarity: 0.8,
+                minimum_similarity: DEFAULT_ENTITY_CANDIDATE_SIMILARITY,
                 max_candidates_per_entity: 3,
             },
             verifier: VerifierConfig::default(),
@@ -123,6 +127,8 @@ pub enum EntityResolutionProgress {
         candidate_entity_id: String,
         similarity: f32,
         decision: EntityMatchDecision,
+        /// Whether this completion used the provider or transitive equality.
+        source: EntityVerificationSource,
     },
     /// Provider work is complete and graph merges are being applied locally.
     Finalizing { verified_pair_count: usize },
@@ -285,14 +291,21 @@ where
                 candidate_entity_id: progress.candidate_entity_id,
                 similarity: progress.similarity,
                 decision: progress.decision,
+                source: progress.source,
             });
         },
     )
     .await?;
+    let transitive_inference_count = verified_candidates
+        .iter()
+        .filter(|result| result.source == EntityVerificationSource::TransitiveInference)
+        .count();
     log::info!(
-        "Verified {} entity candidate pairs in {:.2?}",
+        "Resolved {} entity candidate pairs in {:.2?} (llm_requests={}, transitive_skips={})",
         verified_candidates.len(),
-        verification_started.elapsed()
+        verification_started.elapsed(),
+        verified_candidates.len() - transitive_inference_count,
+        transitive_inference_count
     );
     on_progress(EntityResolutionProgress::Finalizing {
         verified_pair_count: verified_candidates.len(),
@@ -581,6 +594,7 @@ mod tests {
                     candidate_entity_id: String::from("co2-symbol"),
                     similarity: candidate_similarity,
                     decision: EntityMatchDecision::SameEntity,
+                    source: EntityVerificationSource::Llm,
                 },
                 EntityResolutionProgress::Finalizing {
                     verified_pair_count: 1,

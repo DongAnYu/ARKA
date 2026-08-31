@@ -14,8 +14,8 @@ use super::types::{
 // ----------------------------------------------------------------------------
 // FUTURE WORK: Entity Resolution
 //
-// normalize_for_comparison() intentionally performs only representation
-// normalization (Unicode, whitespace, case).
+// normalize_for_comparison() performs representation normalization (Unicode,
+// whitespace, case) plus a deliberately narrow regular-plural fold.
 //
 // It DOES NOT merge:
 //
@@ -194,8 +194,8 @@ pub fn consolidate(chunks: Vec<ExtractedKnowledge>) -> PropositionGraph {
 // ----------------------------------------------------------------------------
 // FUTURE WORK: Entity Resolution
 //
-// normalize_for_comparison() intentionally performs only representation
-// normalization (Unicode, whitespace, case).
+// normalize_for_comparison() performs representation normalization (Unicode,
+// whitespace, case) plus a deliberately narrow regular-plural fold.
 //
 // It DOES NOT merge:
 //
@@ -208,9 +208,10 @@ pub fn consolidate(chunks: Vec<ExtractedKnowledge>) -> PropositionGraph {
 
 /// Produces a comparison key for entity deduplication.
 ///
-/// Applies representation-only transformations — no semantic normalization.
-/// Two entity names that differ only in casing, whitespace, or Unicode
-/// notation will produce the same key. Everything else produces a distinct key.
+/// Applies representation transformations and conservative regular-plural
+/// folding, but no semantic synonym or abbreviation normalization. This merges
+/// forms such as `chloroplast`/`chloroplasts` while leaving ambiguous or
+/// irregular morphology for semantic entity resolution.
 ///
 /// The raw form is NEVER discarded: callers store the original string in
 /// `EntityNode.canonical_name` (first-seen) and `EntityNode.aliases` (all
@@ -247,7 +248,66 @@ fn normalize_for_comparison(name: &str) -> String {
     let collapsed: String = trimmed.split_whitespace().collect::<Vec<&str>>().join(" ");
 
     // Step 4: Fold to lowercase.
-    collapsed.to_lowercase()
+    let lowercase = collapsed.to_lowercase();
+
+    // Step 5: Fold only conservative regular plural forms. This operates on
+    // the final word so phrases such as `plant cells` become `plant cell`.
+    normalize_simple_plural(&lowercase)
+}
+
+/// Returns a stable singular comparison form for low-risk regular plurals.
+///
+/// This is intentionally not a general English stemmer. Irregular forms and
+/// ambiguous `-ies`/`-ses` words remain separate for the semantic resolver.
+fn normalize_simple_plural(name: &str) -> String {
+    let (prefix, word) = name
+        .rsplit_once(' ')
+        .map_or((None, name), |(prefix, word)| (Some(prefix), word));
+    let singular = singularize_regular_word(word);
+
+    if singular == word {
+        return name.to_string();
+    }
+
+    match prefix {
+        Some(prefix) => format!("{prefix} {singular}"),
+        None => singular,
+    }
+}
+
+/// Singularizes only suffix patterns with a conservative deterministic rule.
+fn singularize_regular_word(word: &str) -> String {
+    // These common singular or invariant nouns would be corrupted by simply
+    // removing their final `s`.
+    const PROTECTED_WORDS: &[&str] =
+        &["axes", "headquarters", "means", "news", "series", "species"];
+    const PROTECTED_SUFFIXES: &[&str] = &["as", "ics", "ies", "is", "ness", "us", "yses"];
+
+    if word.len() < 4
+        || PROTECTED_WORDS.contains(&word)
+        || PROTECTED_SUFFIXES
+            .iter()
+            .any(|suffix| word.ends_with(suffix))
+    {
+        return word.to_string();
+    }
+
+    // `processes` → `process`, `classes` → `class`; and conventional
+    // sibilant plurals such as `boxes`, `churches`, and `dishes`.
+    if ["sses", "ches", "shes", "xes"]
+        .iter()
+        .any(|suffix| word.ends_with(suffix))
+    {
+        return word[..word.len() - 2].to_string();
+    }
+
+    // The safest and most useful rule for extracted graph entities:
+    // `chloroplasts` → `chloroplast`, `molecules` → `molecule`.
+    if word.ends_with('s') && !word.ends_with("ss") {
+        return word[..word.len() - 1].to_string();
+    }
+
+    word.to_string()
 }
 
 // =====================================================================
@@ -449,7 +509,7 @@ mod tests {
         assert_eq!(normalize_for_comparison("  Calvin cycle  "), "calvin cycle");
         assert_eq!(
             normalize_for_comparison("light  dependent  reactions"),
-            "light dependent reactions"
+            "light dependent reaction"
         );
     }
 
@@ -459,7 +519,32 @@ mod tests {
             normalize_for_comparison("CO₂ concentration"),
             "co2 concentration"
         );
-        assert_eq!(normalize_for_comparison("H⁺ ions"), "h+ ions");
+        assert_eq!(normalize_for_comparison("H⁺ ions"), "h+ ion");
+    }
+
+    #[test]
+    fn test_normalize_conservative_regular_plurals() {
+        assert_eq!(normalize_for_comparison("chloroplasts"), "chloroplast");
+        assert_eq!(normalize_for_comparison("plant cells"), "plant cell");
+        assert_eq!(normalize_for_comparison("ATP synthases"), "atp synthase");
+        assert_eq!(normalize_for_comparison("processes"), "process");
+        assert_eq!(normalize_for_comparison("boxes"), "box");
+    }
+
+    #[test]
+    fn test_plural_normalization_protects_ambiguous_or_invariant_words() {
+        for word in [
+            "photosynthesis",
+            "analysis",
+            "species",
+            "series",
+            "news",
+            "means",
+            "headquarters",
+            "axes",
+        ] {
+            assert_eq!(normalize_for_comparison(word), word);
+        }
     }
 
     // ── to_entity_id ─────────────────────────────────────────────────────
@@ -611,6 +696,28 @@ mod tests {
         assert_eq!(graph.entities[0].id, "entity-co2"); // no spaces → no underscores
         assert_eq!(graph.entities[0].canonical_name, "CO₂"); // first-seen form
         assert!(graph.entities[0].aliases.contains(&"CO2".to_string()));
+    }
+
+    #[test]
+    fn test_regular_plural_dedup_preserves_both_aliases() {
+        let c1 = make_chunk("c1", &["chloroplast"], vec![]);
+        let c2 = make_chunk("c2", &["chloroplasts"], vec![]);
+        let graph = consolidate(vec![c1, c2]);
+
+        assert_eq!(graph.entities.len(), 1);
+        assert_eq!(graph.entities[0].canonical_name, "chloroplast");
+        assert_eq!(
+            graph.entities[0].aliases,
+            vec!["chloroplast".to_string(), "chloroplasts".to_string()]
+        );
+        assert_eq!(graph.entities[0].chunk_ids, vec!["c1", "c2"]);
+    }
+
+    #[test]
+    fn test_protected_word_is_not_merged_with_different_singular_word() {
+        let graph = consolidate(vec![make_chunk("c1", &["new", "news"], vec![])]);
+
+        assert_eq!(graph.entities.len(), 2);
     }
 
     #[test]

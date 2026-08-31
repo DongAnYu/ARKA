@@ -67,7 +67,8 @@ B result, and compact summaries. The spreadsheet includes Summary, Stage A
 Chunks, Entities Before, Entity Resolution, Verification Progress, Entities
 After, and Stage B MCQs sheets. Candidate settings can be overridden with
 `--minimum-similarity`, `--max-candidates`, `--max-context-points`, and
-`--max-concurrency`.
+`--max-concurrency`. Stage A uses bounded concurrency 10 by default and can be
+overridden with `--stage-a-concurrency`.
 
 `eval:entity-resolution` runs the fixed entity-resolution fixture through the
 production context, embedding, candidate, verifier, merge, rewrite, and index

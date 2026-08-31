@@ -135,6 +135,7 @@ async fn load_model_config() -> Result<ModelConfig, String> {
 
 #[tauri::command]
 async fn save_model_config(config: ModelConfig) -> Result<(), String> {
+    config.validated_llm_concurrency()?;
     let embedding_config = config.embedding_config();
     if !embedding_config.selected_model.trim().is_empty() {
         services::embedding::prepare_embedding_service(&embedding_config)
@@ -329,11 +330,12 @@ pub fn run() {
                 }
                 Ok(config) => match apply_persisted_llm_config(&config) {
                     Ok(()) => log::info!(
-                        "Restored persisted LLM config (provider={}, base_url={}, model={}, timeout_secs={})",
+                        "Restored persisted LLM config (provider={}, base_url={}, model={}, timeout_secs={}, concurrency={})",
                         config.provider,
                         config.base_url,
                         config.selected_model,
-                        config.timeout_secs
+                        config.timeout_secs,
+                        config.llm_concurrency
                     ),
                     Err(err) => log::warn!(
                         "Could not restore persisted LLM config: {err}; generation requires valid model settings or environment configuration"

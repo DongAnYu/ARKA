@@ -7,7 +7,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
 
-use crate::models::model_settings::EmbeddingModelConfig;
+use crate::models::model_settings::{EmbeddingModelConfig, DEFAULT_LLM_CONCURRENCY};
 use crate::models::note::Note;
 
 use super::chunker::{self, MarkdownChunk};
@@ -25,7 +25,8 @@ use super::graph_generation::{
     stage_a_prompt::format_stage_a_graph_user_prompt,
     stage_a_schema::{parse_stage_a_output, stage_a_format_schema},
     stage_b_generation::generate_mcq,
-    types::{ExtractedKnowledge, QuestionType},
+    stage_b_schema::GeneratedMCQ,
+    types::{ExtractedKnowledge, GraphContextBundle, QuestionType},
 };
 use super::llm::{
     LlmFailure, LlmFailureCode, LlmRetryEvent, LlmRetryState, LlmService, LlmServiceError,
@@ -33,7 +34,6 @@ use super::llm::{
 };
 use super::{database, filesystem};
 
-const DEFAULT_MAX_CONCURRENT_CHUNKS: usize = 3;
 const PAUSE_POLL_MS: u64 = 250;
 
 fn configured_llm_service() -> Result<Arc<LlmService>, String> {
@@ -43,6 +43,16 @@ fn configured_llm_service() -> Result<Arc<LlmService>, String> {
             log::warn!("Generation cannot start because LLM configuration is unavailable: {err}");
             err.to_failure().message
         })
+}
+
+/// Loads the single concurrency limit shared by every application LLM stage.
+async fn configured_llm_concurrency() -> Result<usize, String> {
+    let model_config = database::load_model_config()
+        .await
+        .map_err(|error| format!("Failed to load LLM concurrency setting: {error}"))?;
+    let concurrency = model_config.validated_llm_concurrency()?;
+    log::info!("Generation LLM concurrency resolved (limit={concurrency})");
+    Ok(concurrency)
 }
 
 #[derive(Debug)]
@@ -324,14 +334,119 @@ fn is_skippable_chunk_error(error: &LlmServiceError) -> bool {
     )
 }
 
-/// Updates the progress snapshot before starting work on a chunk or graph bundle.
-fn set_job_activity(job: &PreviewJob, current_chunk: usize, activity: String) {
+type GraphStageAJobResult = (usize, Result<ExtractedKnowledge, LlmServiceError>);
+
+/// Starts one independent graph-extraction request with owned task data.
+fn spawn_graph_stage_a_job(
+    jobs: &mut JoinSet<GraphStageAJobResult>,
+    order: usize,
+    chunk: &MarkdownChunk,
+    llm: &Arc<LlmService>,
+    format_schema: &serde_json::Value,
+) {
+    let chunk = chunk.clone();
+    let llm = Arc::clone(llm);
+    let format_schema = format_schema.clone();
+    jobs.spawn(async move {
+        let user_prompt = format_stage_a_graph_user_prompt(&chunk.content, "(graph pipeline)");
+        let chunk_id = format!("chunk-{order}");
+        let request = StructuredGenerationRequest {
+            stage_label: "Graph Stage A",
+            schema_name: "graph_stage_a",
+            system_prompt: GRAPH_STAGE_A_SYSTEM_PROMPT,
+            user_prompt: &user_prompt,
+            schema: format_schema,
+            payload_preview_chars: 800,
+        };
+        let result = llm
+            .generate_json_with_retries(request, |raw_json| {
+                parse_stage_a_output(raw_json, chunk_id.clone())
+                    .map_err(|error| LlmServiceError::InvalidOutput(error.to_string()))
+            })
+            .await
+            .map(|(extracted, _, _)| extracted);
+        (order, result)
+    });
+}
+
+/// Shows aggregate work because several chunks may be active simultaneously.
+fn update_parallel_stage_a_activity(
+    job: &PreviewJob,
+    total_chunks: usize,
+    in_flight: usize,
+    concurrency_limit: usize,
+) {
     let mut snapshot = job
         .snapshot
         .lock()
         .expect("preview job snapshot mutex should remain available");
-    snapshot.current_chunk = Some(current_chunk);
-    snapshot.activity = Some(activity);
+    if snapshot.is_finished || snapshot.is_cancelled {
+        return;
+    }
+    snapshot.current_chunk = None;
+    snapshot.activity = Some(format!(
+        "Extracted {} of {total_chunks} chunks · {in_flight} active (limit {concurrency_limit})",
+        snapshot.completed_chunks
+    ));
+}
+
+type GraphStageBJobResult = (usize, Result<GeneratedMCQ, LlmServiceError>);
+
+/// Starts one independent question-generation request.
+fn spawn_graph_stage_b_job(
+    jobs: &mut JoinSet<GraphStageBJobResult>,
+    bundle_index: usize,
+    bundle: &GraphContextBundle,
+    llm: &Arc<LlmService>,
+) {
+    let bundle = bundle.clone();
+    let llm = Arc::clone(llm);
+    jobs.spawn(async move {
+        let result = generate_mcq(&bundle, &llm).await;
+        (bundle_index, result)
+    });
+}
+
+/// Shows aggregate Stage B work because requests can finish out of order.
+fn update_parallel_stage_b_activity(
+    job: &PreviewJob,
+    total_bundles: usize,
+    in_flight: usize,
+    concurrency_limit: usize,
+) {
+    let mut snapshot = job
+        .snapshot
+        .lock()
+        .expect("preview job snapshot mutex should remain available");
+    if snapshot.is_finished || snapshot.is_cancelled {
+        return;
+    }
+    snapshot.current_chunk = None;
+    snapshot.activity = Some(format!(
+        "Generated {} of {total_bundles} questions · {in_flight} active (limit {concurrency_limit})",
+        snapshot.completed_chunks
+    ));
+}
+
+/// Shows aggregate progress for the legacy per-chunk LLM pipeline.
+fn update_parallel_chunk_activity(
+    job: &PreviewJob,
+    total_chunks: usize,
+    in_flight: usize,
+    concurrency_limit: usize,
+) {
+    let mut snapshot = job
+        .snapshot
+        .lock()
+        .expect("preview job snapshot mutex should remain available");
+    if snapshot.is_finished || snapshot.is_cancelled {
+        return;
+    }
+    snapshot.current_chunk = None;
+    snapshot.activity = Some(format!(
+        "Generated {} of {total_chunks} chunks · {in_flight} active (limit {concurrency_limit})",
+        snapshot.completed_chunks
+    ));
 }
 
 const GRAPH_STAGE_A_END_PERCENT: u8 = 50;
@@ -339,7 +454,11 @@ const GRAPH_ENTITY_RESOLUTION_END_PERCENT: u8 = 65;
 const GRAPH_VERIFICATION_END_PERCENT: u8 = GRAPH_ENTITY_RESOLUTION_END_PERCENT - 1;
 
 /// Maps provider-neutral resolver milestones onto the app's progress activity.
-fn record_entity_resolution_progress(job: &PreviewJob, progress: EntityResolutionProgress) {
+fn record_entity_resolution_progress(
+    job: &PreviewJob,
+    progress: EntityResolutionProgress,
+    concurrency_limit: usize,
+) {
     let (activity, progress_percent) = match progress {
         EntityResolutionProgress::GeneratingEmbeddings { entity_count } => {
             (
@@ -365,7 +484,7 @@ fn record_entity_resolution_progress(job: &PreviewJob, progress: EntityResolutio
             ..
         } => (
             format!(
-                "Verified {completed_pairs} of {total_pairs} entity pairs · {in_flight_pairs} requests active"
+                "Verified {completed_pairs} of {total_pairs} entity pairs · {in_flight_pairs} active (limit {concurrency_limit})"
             ),
             phase_percent(
                 completed_pairs,
@@ -480,6 +599,7 @@ fn phase_percent(done: usize, total: usize, start_percent: u8, end_percent: u8) 
 
 pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, String> {
     let llm_service = configured_llm_service()?;
+    let llm_concurrency = configured_llm_concurrency().await?;
     let notes = filesystem::load_vault_notes(vault_path)?;
     let mut note_reports = Vec::new();
     let mut all_chunks = Vec::new();
@@ -536,16 +656,19 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
 
     tauri::async_runtime::spawn(async move {
         let llm_service = llm_with_job_retry_activity(&llm_service, &job);
-        let processor = ChunkProcessor::new(Some(llm_service));
+        let processor = Arc::new(ChunkProcessor::new(Some(llm_service)));
         let total_chunks = all_chunks.len();
         let mut ordered_previews = vec![None; total_chunks];
+        let mut jobs = JoinSet::new();
+        let mut next_order = 0usize;
 
-        for (order, chunk) in all_chunks.into_iter().enumerate() {
+        while next_order < total_chunks || !jobs.is_empty() {
             if job.cancelled.load(Ordering::Relaxed) {
+                jobs.abort_all();
                 break;
             }
 
-            while job.paused.load(Ordering::Relaxed) {
+            while job.paused.load(Ordering::Relaxed) && jobs.is_empty() {
                 if job.cancelled.load(Ordering::Relaxed) {
                     break;
                 }
@@ -553,25 +676,59 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
             }
 
             if job.cancelled.load(Ordering::Relaxed) {
+                jobs.abort_all();
                 break;
             }
 
-            set_job_activity(
-                &job,
-                order + 1,
-                format!(
-                    "Generating questions for chunk {} of {total_chunks}",
-                    order + 1
-                ),
-            );
+            while !job.paused.load(Ordering::Relaxed)
+                && !job.cancelled.load(Ordering::Relaxed)
+                && next_order < total_chunks
+                && jobs.len() < llm_concurrency
+            {
+                let order = next_order;
+                let chunk = all_chunks[order].clone();
+                let processor = Arc::clone(&processor);
+                jobs.spawn(async move { (order, processor.process(&chunk).await) });
+                next_order += 1;
+            }
 
-            let preview = match processor.process(&chunk).await {
+            update_parallel_chunk_activity(&job, total_chunks, jobs.len(), llm_concurrency);
+            let Some(joined) = jobs.join_next().await else {
+                continue;
+            };
+            let (order, result) = match joined {
+                Ok(completed) => completed,
+                Err(error) => {
+                    jobs.abort_all();
+                    let partial_summary = GenerationSummary {
+                        total_notes: notes.len(),
+                        total_chunks,
+                        notes_with_chunks,
+                        note_reports,
+                        chunk_previews: ordered_previews.into_iter().flatten().collect(),
+                    };
+                    finish_job_with_failure(
+                        &job,
+                        LlmFailure {
+                            code: LlmFailureCode::Unknown,
+                            message: format!("Chunk generation worker failed: {error}"),
+                            retryable: false,
+                            retry_after_secs: None,
+                        },
+                        Some(partial_summary),
+                    );
+                    return;
+                }
+            };
+
+            let preview = match result {
                 Ok(preview) => preview,
                 Err(err) => {
                     if is_skippable_chunk_error(&err) {
                         record_skipped_chunk(&job, &err);
-                        skipped_chunk_preview(&chunk, &err)
+                        skipped_chunk_preview(&all_chunks[order], &err)
                     } else {
+                        jobs.abort_all();
                         let partial_summary = GenerationSummary {
                             total_notes: notes.len(),
                             total_chunks,
@@ -638,6 +795,7 @@ const GRAPH_STAGE_A_SYSTEM_PROMPT: &str =
 /// compatible with `get_preview_generation_progress` / pause / cancel.
 pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, String> {
     let llm_service = configured_llm_service()?;
+    let llm_concurrency = configured_llm_concurrency().await?;
     // Load and validate embedding settings before reading notes or creating a
     // background job. The prepared service is consumed by entity resolution in
     // the next graph-pipeline integration step.
@@ -704,78 +862,85 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
 
         // ── Phase 1: Graph Stage A extraction per chunk ───────────────────
         let format_schema = stage_a_format_schema();
-        let mut extracted_chunks: Vec<ExtractedKnowledge> = Vec::new();
-        let mut chunk_previews_phase1: Vec<(usize, String, String, String)> = Vec::new();
-        // (order, note_path, note_title, heading)
+        let mut extracted_by_order = vec![None; total_chunks];
+        let mut jobs = JoinSet::new();
+        let mut next_order = 0usize;
 
-        for (order, chunk) in all_chunks.iter().enumerate() {
+        while next_order < total_chunks || !jobs.is_empty() {
             if job.cancelled.load(Ordering::Relaxed) {
+                jobs.abort_all();
                 break;
             }
-            while job.paused.load(Ordering::Relaxed) {
+
+            while job.paused.load(Ordering::Relaxed) && jobs.is_empty() {
                 if job.cancelled.load(Ordering::Relaxed) {
                     break;
                 }
                 sleep(Duration::from_millis(PAUSE_POLL_MS)).await;
             }
-            if job.cancelled.load(Ordering::Relaxed) {
-                break;
+
+            while !job.paused.load(Ordering::Relaxed)
+                && !job.cancelled.load(Ordering::Relaxed)
+                && next_order < total_chunks
+                && jobs.len() < llm_concurrency
+            {
+                spawn_graph_stage_a_job(
+                    &mut jobs,
+                    next_order,
+                    &all_chunks[next_order],
+                    llm_arc
+                        .as_ref()
+                        .expect("graph generation should always have an LLM service"),
+                    &format_schema,
+                );
+                next_order += 1;
             }
 
-            set_job_activity(
-                &job,
-                order + 1,
-                format!(
-                    "Extracting knowledge from chunk {} of {total_chunks}",
-                    order + 1
-                ),
-            );
+            update_parallel_stage_a_activity(&job, total_chunks, jobs.len(), llm_concurrency);
+            let Some(joined) = jobs.join_next().await else {
+                continue;
+            };
+            let (order, result) = match joined {
+                Ok(completed) => completed,
+                Err(error) => {
+                    jobs.abort_all();
+                    let partial_summary = GenerationSummary {
+                        total_notes: notes_clone.len(),
+                        total_chunks,
+                        notes_with_chunks,
+                        note_reports,
+                        chunk_previews: Vec::new(),
+                    };
+                    finish_job_with_failure(
+                        &job,
+                        LlmFailure {
+                            code: LlmFailureCode::Unknown,
+                            message: format!("Knowledge extraction worker failed: {error}"),
+                            retryable: false,
+                            retry_after_secs: None,
+                        },
+                        Some(partial_summary),
+                    );
+                    return;
+                }
+            };
 
-            chunk_previews_phase1.push((
-                order,
-                chunk.note_path.clone(),
-                chunk.note_title.clone(),
-                chunk.heading.clone(),
-            ));
-
-            if let Some(llm) = llm_arc.as_deref() {
-                let user_prompt =
-                    format_stage_a_graph_user_prompt(&chunk.content, "(graph pipeline)");
-                let chunk_id = format!("chunk-{}", order);
-                let request = StructuredGenerationRequest {
-                    stage_label: "Graph Stage A",
-                    schema_name: "graph_stage_a",
-                    system_prompt: GRAPH_STAGE_A_SYSTEM_PROMPT,
-                    user_prompt: &user_prompt,
-                    schema: format_schema.clone(),
-                    payload_preview_chars: 800,
-                };
-
-                match llm
-                    .generate_json_with_retries(request, |raw_json| {
-                        parse_stage_a_output(raw_json, chunk_id.clone())
-                            .map_err(|err| LlmServiceError::InvalidOutput(err.to_string()))
-                    })
-                    .await
-                {
-                    Ok((extracted, _raw_json, _attempts)) => {
-                        extracted_chunks.push(extracted);
-                    }
-                    Err(err) => {
-                        if is_skippable_chunk_error(&err) {
-                            record_skipped_chunk(&job, &err);
-                        } else {
-                            let partial_summary = GenerationSummary {
-                                total_notes: notes_clone.len(),
-                                total_chunks,
-                                notes_with_chunks,
-                                note_reports,
-                                chunk_previews: Vec::new(),
-                            };
-                            finish_job_with_llm_error(&job, &err, Some(partial_summary));
-                            return;
-                        }
-                    }
+            match result {
+                Ok(extracted) => extracted_by_order[order] = Some(extracted),
+                Err(error) if is_skippable_chunk_error(&error) => {
+                    record_skipped_chunk(&job, &error);
+                }
+                Err(error) => {
+                    jobs.abort_all();
+                    let partial_summary = GenerationSummary {
+                        total_notes: notes_clone.len(),
+                        total_chunks,
+                        notes_with_chunks,
+                        note_reports,
+                        chunk_previews: Vec::new(),
+                    };
+                    finish_job_with_llm_error(&job, &error, Some(partial_summary));
+                    return;
                 }
             }
 
@@ -784,7 +949,6 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 .lock()
                 .expect("preview job snapshot mutex should remain available");
             snapshot.completed_chunks += 1;
-            // Stage A occupies the first half of graph-pipeline progress.
             snapshot.progress_percent = phase_percent(
                 snapshot.completed_chunks,
                 total_chunks,
@@ -792,6 +956,8 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 GRAPH_STAGE_A_END_PERCENT,
             );
         }
+
+        let extracted_chunks = extracted_by_order.into_iter().flatten().collect::<Vec<_>>();
 
         if job.cancelled.load(Ordering::Relaxed) {
             let mut snapshot = job
@@ -838,15 +1004,26 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 }
 
                 let resolution_job = Arc::clone(&job);
+                let resolution_config = EntityResolutionConfig {
+                    verifier: super::graph_generation::entity_resolution::semantic_verifier::VerifierConfig {
+                        max_concurrency: llm_concurrency,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
                 let resolution = resolve_graph_entities_with_progress(
                     &graph,
                     embedding_service,
                     llm_arc
                         .as_deref()
                         .expect("graph generation should always have an LLM service"),
-                    &EntityResolutionConfig::default(),
+                    &resolution_config,
                     move |progress| {
-                        record_entity_resolution_progress(&resolution_job, progress);
+                        record_entity_resolution_progress(
+                            &resolution_job,
+                            progress,
+                            llm_concurrency,
+                        );
                     },
                 )
                 .await;
@@ -919,53 +1096,71 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             snapshot.progress_percent = GRAPH_ENTITY_RESOLUTION_END_PERCENT;
         }
 
-        // ── Question generation per graph bundle ──────────────────────────
-        // Build a map from (note_path, heading) -> chunk metadata for summary
-        let mut chunk_meta: HashMap<String, (String, String, usize, usize, usize, usize, String)> =
-            HashMap::new();
-        for chunk in all_chunks.iter() {
-            let key = format!("{}::{}", chunk.note_path, chunk.heading);
-            chunk_meta.entry(key).or_insert_with(|| {
-                (
-                    chunk.note_path.clone(),
-                    chunk.note_title.clone(),
-                    chunk.section_index,
-                    chunk.chunk_index,
-                    chunk.start_line,
-                    chunk.end_line,
-                    build_preview_text(&chunk.content, 220),
-                )
-            });
-        }
-
+        // ── Bounded-concurrent question generation per graph bundle ──────
         let mut ordered_previews: Vec<Option<ChunkPreview>> = vec![None; bundle_count];
+        let llm = llm_arc
+            .as_ref()
+            .expect("graph generation should always have an LLM service");
+        let mut jobs = JoinSet::new();
+        let mut next_bundle_idx = 0usize;
 
-        for (bundle_idx, bundle) in bundles.iter().enumerate() {
+        while next_bundle_idx < bundle_count || !jobs.is_empty() {
             if job.cancelled.load(Ordering::Relaxed) {
+                jobs.abort_all();
                 break;
             }
-            while job.paused.load(Ordering::Relaxed) {
+
+            // Do not start new requests while paused. Requests already sent to
+            // the provider are allowed to finish and are still recorded.
+            while job.paused.load(Ordering::Relaxed) && jobs.is_empty() {
                 if job.cancelled.load(Ordering::Relaxed) {
                     break;
                 }
                 sleep(Duration::from_millis(PAUSE_POLL_MS)).await;
             }
             if job.cancelled.load(Ordering::Relaxed) {
+                jobs.abort_all();
                 break;
             }
 
-            set_job_activity(
-                &job,
-                bundle_idx + 1,
-                format!(
-                    "Generating {} question {} of {bundle_count}",
-                    match bundle.question_type {
-                        QuestionType::Recall => "recall",
-                        QuestionType::Relational => "relational",
-                    },
-                    bundle_idx + 1
-                ),
-            );
+            while !job.paused.load(Ordering::Relaxed)
+                && !job.cancelled.load(Ordering::Relaxed)
+                && next_bundle_idx < bundle_count
+                && jobs.len() < llm_concurrency
+            {
+                spawn_graph_stage_b_job(&mut jobs, next_bundle_idx, &bundles[next_bundle_idx], llm);
+                next_bundle_idx += 1;
+            }
+
+            update_parallel_stage_b_activity(&job, bundle_count, jobs.len(), llm_concurrency);
+            let Some(joined) = jobs.join_next().await else {
+                continue;
+            };
+            let (bundle_idx, result) = match joined {
+                Ok(completed) => completed,
+                Err(error) => {
+                    jobs.abort_all();
+                    let partial_summary = GenerationSummary {
+                        total_notes: notes_clone.len(),
+                        total_chunks: bundle_count,
+                        notes_with_chunks,
+                        note_reports,
+                        chunk_previews: ordered_previews.into_iter().flatten().collect(),
+                    };
+                    finish_job_with_failure(
+                        &job,
+                        LlmFailure {
+                            code: LlmFailureCode::Unknown,
+                            message: format!("Question generation worker failed: {error}"),
+                            retryable: false,
+                            retry_after_secs: None,
+                        },
+                        Some(partial_summary),
+                    );
+                    return;
+                }
+            };
+            let bundle = &bundles[bundle_idx];
 
             // Determine source chunk context for this bundle from entity chunk_ids
             let source_chunk_id = bundle
@@ -1008,61 +1203,51 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                     )
                 });
 
-            let llm_result = if let Some(llm) = llm_arc.as_deref() {
-                match generate_mcq(bundle, llm).await {
-                    Ok(mcq) => {
-                        let correct_answer = match mcq.correct_index {
-                            0 => "A",
-                            1 => "B",
-                            2 => "C",
-                            _ => "D",
-                        };
-                        let options = &mcq.options;
-                        ChunkLlmResult {
-                            status: String::from("ok"),
-                            key_points: vec![bundle.root_point.point.clone()],
-                            questions: vec![ChunkLlmQuestionPreview {
-                                question: mcq.question,
-                                option_a: options.get(0).cloned().unwrap_or_default(),
-                                option_b: options.get(1).cloned().unwrap_or_default(),
-                                option_c: options.get(2).cloned().unwrap_or_default(),
-                                option_d: options.get(3).cloned().unwrap_or_default(),
-                                correct_answer: correct_answer.to_string(),
-                                explanation: mcq.explanation,
-                            }],
-                            error: None,
-                        }
-                    }
-                    Err(err) => {
-                        if is_skippable_chunk_error(&err) {
-                            record_skipped_chunk(&job, &err);
-                            ChunkLlmResult {
-                                status: String::from("skipped"),
-                                key_points: vec![bundle.root_point.point.clone()],
-                                questions: Vec::new(),
-                                error: Some(err.to_failure().message),
-                            }
-                        } else {
-                            let partial_summary = GenerationSummary {
-                                total_notes: notes_clone.len(),
-                                total_chunks: bundle_count,
-                                notes_with_chunks,
-                                note_reports,
-                                chunk_previews: ordered_previews.into_iter().flatten().collect(),
-                            };
-                            finish_job_with_llm_error(&job, &err, Some(partial_summary));
-                            return;
-                        }
+            let llm_result = match result {
+                Ok(mcq) => {
+                    let correct_answer = match mcq.correct_index {
+                        0 => "A",
+                        1 => "B",
+                        2 => "C",
+                        _ => "D",
+                    };
+                    let options = &mcq.options;
+                    ChunkLlmResult {
+                        status: String::from("ok"),
+                        key_points: vec![bundle.root_point.point.clone()],
+                        questions: vec![ChunkLlmQuestionPreview {
+                            question: mcq.question,
+                            option_a: options.first().cloned().unwrap_or_default(),
+                            option_b: options.get(1).cloned().unwrap_or_default(),
+                            option_c: options.get(2).cloned().unwrap_or_default(),
+                            option_d: options.get(3).cloned().unwrap_or_default(),
+                            correct_answer: correct_answer.to_string(),
+                            explanation: mcq.explanation,
+                        }],
+                        error: None,
                     }
                 }
-            } else {
-                ChunkLlmResult {
-                    status: String::from("error_init"),
-                    key_points: Vec::new(),
-                    questions: Vec::new(),
-                    error: Some(String::from(
-                        "LLM service could not be initialized from runtime settings or env",
-                    )),
+                Err(err) => {
+                    if is_skippable_chunk_error(&err) {
+                        record_skipped_chunk(&job, &err);
+                        ChunkLlmResult {
+                            status: String::from("skipped"),
+                            key_points: vec![bundle.root_point.point.clone()],
+                            questions: Vec::new(),
+                            error: Some(err.to_failure().message),
+                        }
+                    } else {
+                        jobs.abort_all();
+                        let partial_summary = GenerationSummary {
+                            total_notes: notes_clone.len(),
+                            total_chunks: bundle_count,
+                            notes_with_chunks,
+                            note_reports,
+                            chunk_previews: ordered_previews.into_iter().flatten().collect(),
+                        };
+                        finish_job_with_llm_error(&job, &err, Some(partial_summary));
+                        return;
+                    }
                 }
             };
 
@@ -1252,6 +1437,14 @@ impl ChunkProcessor {
 /// 2. Chunk each note with the markdown chunker.
 /// 3. Collect note-level and chunk-level metrics.
 pub async fn orchestrate_notes(notes: &[Note]) -> GenerationSummary {
+    orchestrate_notes_with_concurrency(notes, DEFAULT_LLM_CONCURRENCY).await
+}
+
+async fn orchestrate_notes_with_concurrency(
+    notes: &[Note],
+    llm_concurrency: usize,
+) -> GenerationSummary {
+    debug_assert!(llm_concurrency > 0);
     let mut note_reports = Vec::new();
     let mut all_chunks = Vec::new();
     let mut notes_with_chunks = 0;
@@ -1277,7 +1470,7 @@ pub async fn orchestrate_notes(notes: &[Note]) -> GenerationSummary {
     let total_chunks = all_chunks.len();
     let mut ordered_previews = vec![None; total_chunks];
     if total_chunks > 0 {
-        let semaphore = Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_CHUNKS)); // Arc: Atomically Reference Counted
+        let semaphore = Arc::new(Semaphore::new(llm_concurrency));
         let mut jobs = JoinSet::new();
 
         for (order, chunk) in all_chunks.into_iter().enumerate() {
@@ -1321,7 +1514,8 @@ pub async fn orchestrate_notes(notes: &[Note]) -> GenerationSummary {
 /// delegates to `orchestrate_notes`.
 pub async fn orchestrate_vault(vault_path: &str) -> Result<GenerationSummary, String> {
     let notes = filesystem::load_vault_notes(vault_path)?;
-    Ok(orchestrate_notes(&notes).await)
+    let llm_concurrency = configured_llm_concurrency().await?;
+    Ok(orchestrate_notes_with_concurrency(&notes, llm_concurrency).await)
 }
 
 fn mcq_to_preview(item: StageBMcq) -> ChunkLlmQuestionPreview {
@@ -1417,7 +1611,9 @@ mod tests {
 
     #[test]
     fn entity_verification_advances_progress_without_regressing() {
-        use crate::services::graph_generation::entity_resolution::semantic_verifier::EntityMatchDecision;
+        use crate::services::graph_generation::entity_resolution::semantic_verifier::{
+            EntityMatchDecision, EntityVerificationSource,
+        };
 
         let job = PreviewJob {
             paused: AtomicBool::new(false),
@@ -1450,6 +1646,7 @@ mod tests {
             EntityResolutionProgress::CandidatesGenerated {
                 candidate_count: 100,
             },
+            5,
         );
         record_entity_resolution_progress(
             &job,
@@ -1461,7 +1658,9 @@ mod tests {
                 candidate_entity_id: String::from("b"),
                 similarity: 0.9,
                 decision: EntityMatchDecision::DifferentEntity,
+                source: EntityVerificationSource::Llm,
             },
+            5,
         );
         assert_eq!(
             job.snapshot
@@ -1470,16 +1669,25 @@ mod tests {
                 .progress_percent,
             58
         );
+        assert!(job
+            .snapshot
+            .lock()
+            .expect("snapshot available")
+            .activity
+            .as_deref()
+            .is_some_and(|activity| activity.contains("5 active (limit 5)")));
 
         record_entity_resolution_progress(
             &job,
             EntityResolutionProgress::Finalizing {
                 verified_pair_count: 100,
             },
+            5,
         );
         record_entity_resolution_progress(
             &job,
             EntityResolutionProgress::GeneratingEmbeddings { entity_count: 20 },
+            5,
         );
 
         let snapshot = job.snapshot.lock().expect("snapshot available");

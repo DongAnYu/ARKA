@@ -30,6 +30,7 @@ type PersistedProviderConfig = {
 }
 
 type DbModelConfig = PersistedProviderConfig & {
+  llm_concurrency: number
   embedding_provider: string
   embedding_base_url: string
   embedding_selected_model: string
@@ -60,9 +61,13 @@ type ModelConfigPanelProps = {
   onChange: (config: ProviderConfig) => void
   onFetchModels: () => void
   onClearStatus: () => void
+  llmConcurrency?: string
+  onLlmConcurrencyChange?: (value: string) => void
 }
 
 const MODEL_HISTORY_KEY = 'models-page-fetch-history-v1'
+const DEFAULT_LLM_CONCURRENCY = 5
+const MAX_LLM_CONCURRENCY = 20
 
 const providerOptions: ProviderOption[] = [
   {
@@ -229,6 +234,8 @@ function ModelConfigPanel({
   onChange,
   onFetchModels,
   onClearStatus,
+  llmConcurrency,
+  onLlmConcurrencyChange,
 }: ModelConfigPanelProps) {
   const activeProvider = useMemo(() => findProvider(config.provider), [config.provider])
   const availableModels = modelHistory[getHistoryKey(config.provider, config.baseUrl)] ?? []
@@ -360,7 +367,7 @@ function ModelConfigPanel({
           )}
         </section>
 
-        <section className="settings-subsection settings-subsection-last">
+        <section className={`settings-subsection${isEmbedding ? ' settings-subsection-last' : ''}`}>
           <header className="settings-section-head">
             <h3>Model</h3>
             <p>
@@ -422,6 +429,39 @@ function ModelConfigPanel({
             </p>
           )}
         </section>
+
+        {!isEmbedding && llmConcurrency !== undefined && onLlmConcurrencyChange && (
+          <section className="settings-subsection settings-subsection-last">
+            <header className="settings-section-head">
+              <h3>Parallel requests</h3>
+              <p>Set one request limit for all language-model work.</p>
+            </header>
+
+            <div className="settings-field settings-concurrency-field">
+              <label htmlFor="llm-concurrency">LLM concurrency</label>
+              <input
+                id="llm-concurrency"
+                className="settings-input settings-concurrency-input"
+                type="number"
+                min={1}
+                max={MAX_LLM_CONCURRENCY}
+                step={1}
+                value={llmConcurrency}
+                onChange={(event) => {
+                  onLlmConcurrencyChange(event.target.value)
+                  onClearStatus()
+                }}
+                aria-describedby="llm-concurrency-help"
+                inputMode="numeric"
+              />
+              <p id="llm-concurrency-help" className="settings-help-text">
+                Start with 5. Use 1–2 for local models or limited hardware; try 6–8 for hosted APIs.
+                Lower this value if requests slow down or you see rate-limit (429) errors. Higher
+                values use more provider capacity and may not finish faster.
+              </p>
+            </div>
+          </section>
+        )}
       </div>
     </section>
   )
@@ -432,6 +472,7 @@ export function ModelsPage() {
   const [savedEmbeddingConfig, setSavedEmbeddingConfig] = useState<ProviderConfig | null>(null)
   const [generationConfig, setGenerationConfig] = useState<ProviderConfig>(() => defaultConfig())
   const [embeddingConfig, setEmbeddingConfig] = useState<ProviderConfig>(() => defaultConfig())
+  const [llmConcurrency, setLlmConcurrency] = useState(String(DEFAULT_LLM_CONCURRENCY))
   const [modelHistory, setModelHistory] = useState<ModelHistoryMap>(() => readModelHistory())
   const [fetchingScope, setFetchingScope] = useState<ConfigScope | null>(null)
   const [fetchStatuses, setFetchStatuses] = useState<Partial<Record<ConfigScope, StatusMessage>>>({})
@@ -449,6 +490,7 @@ export function ModelsPage() {
         setSavedEmbeddingConfig(loadedEmbedding)
         setGenerationConfig(loadedGeneration)
         setEmbeddingConfig(loadedEmbedding)
+        setLlmConcurrency(String(config.llm_concurrency ?? DEFAULT_LLM_CONCURRENCY))
       })
       .catch((err) => {
         console.error('Failed to load model config from DB:', err)
@@ -591,6 +633,19 @@ export function ModelsPage() {
       return
     }
 
+    const concurrency = Number(llmConcurrency)
+    if (
+      !Number.isInteger(concurrency)
+      || concurrency < 1
+      || concurrency > MAX_LLM_CONCURRENCY
+    ) {
+      setPageStatus({
+        message: `LLM concurrency must be a whole number between 1 and ${MAX_LLM_CONCURRENCY}.`,
+        tone: 'error',
+      })
+      return
+    }
+
     setIsSaving(true)
     try {
       await invoke('set_runtime_llm_settings', {
@@ -603,6 +658,7 @@ export function ModelsPage() {
       await invoke('save_model_config', {
         config: {
           ...generation,
+          llm_concurrency: concurrency,
           embedding_provider: embedding.provider,
           embedding_base_url: embedding.base_url,
           embedding_selected_model: embedding.selected_model,
@@ -617,11 +673,12 @@ export function ModelsPage() {
       setSavedEmbeddingConfig(savedEmbedding)
       setGenerationConfig(savedGeneration)
       setEmbeddingConfig(savedEmbedding)
+      setLlmConcurrency(String(concurrency))
       setPageStatus(
         embedding.selected_model
-          ? { message: 'Generation and embedding settings saved.', tone: 'success' }
+          ? { message: 'Model and LLM concurrency settings saved.', tone: 'success' }
           : {
-              message: 'Question generation settings saved. Entity embeddings remain unconfigured.',
+              message: 'Generation and LLM concurrency settings saved. Entity embeddings remain unconfigured.',
               tone: 'info',
             },
       )
@@ -640,7 +697,7 @@ export function ModelsPage() {
       <header className="settings-panel settings-page-intro">
         <h1>Model settings</h1>
         <p className="settings-help-text">
-          Configure question generation and entity matching independently.
+          Configure language-model generation, parallel requests, and entity matching.
         </p>
       </header>
 
@@ -656,6 +713,11 @@ export function ModelsPage() {
         onChange={updateGenerationConfig}
         onFetchModels={() => fetchModels('generation')}
         onClearStatus={() => clearFetchStatus('generation')}
+        llmConcurrency={llmConcurrency}
+        onLlmConcurrencyChange={(value) => {
+          setLlmConcurrency(value)
+          setPageStatus(null)
+        }}
       />
 
       <ModelConfigPanel
