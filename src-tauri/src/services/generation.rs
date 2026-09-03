@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
 
@@ -211,6 +212,7 @@ pub struct GenerationProgressSnapshot {
 struct PreviewJob {
     paused: AtomicBool,
     cancelled: AtomicBool,
+    control_changed: Notify,
     snapshot: Mutex<GenerationProgressSnapshot>,
 }
 
@@ -223,6 +225,52 @@ fn next_preview_job_id() -> String {
         "preview-{}",
         NEXT_PREVIEW_JOB_ID.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+/// Polls one unit of generation work only while its job is running.
+///
+/// Pausing keeps the operation future alive so it can resume without losing
+/// local state. Cancelling drops the operation immediately, which closes any
+/// in-flight HTTP response future owned by this process.
+async fn run_with_job_control<T>(
+    job: Arc<PreviewJob>,
+    operation: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::pin!(operation);
+
+    loop {
+        let control_changed = job.control_changed.notified();
+        tokio::pin!(control_changed);
+        control_changed.as_mut().enable();
+
+        if job.cancelled.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        if job.paused.load(Ordering::Relaxed) {
+            control_changed.await;
+            continue;
+        }
+
+        tokio::select! {
+            biased;
+            _ = &mut control_changed => continue,
+            result = &mut operation => return Some(result),
+        }
+    }
+}
+
+fn finish_cancelled_job(job: &PreviewJob) {
+    let mut snapshot = job
+        .snapshot
+        .lock()
+        .expect("preview job snapshot mutex should remain available");
+    snapshot.is_cancelled = true;
+    snapshot.is_finished = true;
+    snapshot.is_paused = false;
+    snapshot.phase_label = None;
+    snapshot.current_chunk = None;
+    snapshot.activity = None;
 }
 
 fn set_progress_percent(snapshot: &mut GenerationProgressSnapshot) {
@@ -334,16 +382,18 @@ fn is_skippable_chunk_error(error: &LlmServiceError) -> bool {
     )
 }
 
-type GraphStageAJobResult = (usize, Result<ExtractedKnowledge, LlmServiceError>);
+type GraphStageAJobResult = (usize, Option<Result<ExtractedKnowledge, LlmServiceError>>);
 
 /// Starts one independent graph-extraction request with owned task data.
 fn spawn_graph_stage_a_job(
     jobs: &mut JoinSet<GraphStageAJobResult>,
+    job: &Arc<PreviewJob>,
     order: usize,
     chunk: &MarkdownChunk,
     llm: &Arc<LlmService>,
     format_schema: &serde_json::Value,
 ) {
+    let job = Arc::clone(job);
     let chunk = chunk.clone();
     let llm = Arc::clone(llm);
     let format_schema = format_schema.clone();
@@ -358,13 +408,13 @@ fn spawn_graph_stage_a_job(
             schema: format_schema,
             payload_preview_chars: 800,
         };
-        let result = llm
-            .generate_json_with_retries(request, |raw_json| {
-                parse_stage_a_output(raw_json, chunk_id.clone())
-                    .map_err(|error| LlmServiceError::InvalidOutput(error.to_string()))
-            })
+        let operation = llm.generate_json_with_retries(request, |raw_json| {
+            parse_stage_a_output(raw_json, chunk_id.clone())
+                .map_err(|error| LlmServiceError::InvalidOutput(error.to_string()))
+        });
+        let result = run_with_job_control(job, operation)
             .await
-            .map(|(extracted, _, _)| extracted);
+            .map(|result| result.map(|(extracted, _, _)| extracted));
         (order, result)
     });
 }
@@ -380,7 +430,7 @@ fn update_parallel_stage_a_activity(
         .snapshot
         .lock()
         .expect("preview job snapshot mutex should remain available");
-    if snapshot.is_finished || snapshot.is_cancelled {
+    if snapshot.is_finished || snapshot.is_cancelled || snapshot.is_paused {
         return;
     }
     snapshot.current_chunk = None;
@@ -390,19 +440,21 @@ fn update_parallel_stage_a_activity(
     ));
 }
 
-type GraphStageBJobResult = (usize, Result<GeneratedMCQ, LlmServiceError>);
+type GraphStageBJobResult = (usize, Option<Result<GeneratedMCQ, LlmServiceError>>);
 
 /// Starts one independent question-generation request.
 fn spawn_graph_stage_b_job(
     jobs: &mut JoinSet<GraphStageBJobResult>,
+    job: &Arc<PreviewJob>,
     bundle_index: usize,
     bundle: &GraphContextBundle,
     llm: &Arc<LlmService>,
 ) {
+    let job = Arc::clone(job);
     let bundle = bundle.clone();
     let llm = Arc::clone(llm);
     jobs.spawn(async move {
-        let result = generate_mcq(&bundle, &llm).await;
+        let result = run_with_job_control(job, generate_mcq(&bundle, &llm)).await;
         (bundle_index, result)
     });
 }
@@ -418,7 +470,7 @@ fn update_parallel_stage_b_activity(
         .snapshot
         .lock()
         .expect("preview job snapshot mutex should remain available");
-    if snapshot.is_finished || snapshot.is_cancelled {
+    if snapshot.is_finished || snapshot.is_cancelled || snapshot.is_paused {
         return;
     }
     snapshot.current_chunk = None;
@@ -439,7 +491,7 @@ fn update_parallel_chunk_activity(
         .snapshot
         .lock()
         .expect("preview job snapshot mutex should remain available");
-    if snapshot.is_finished || snapshot.is_cancelled {
+    if snapshot.is_finished || snapshot.is_cancelled || snapshot.is_paused {
         return;
     }
     snapshot.current_chunk = None;
@@ -505,7 +557,7 @@ fn record_entity_resolution_progress(
         .snapshot
         .lock()
         .expect("preview job snapshot mutex should remain available");
-    if snapshot.is_finished || snapshot.is_cancelled {
+    if snapshot.is_finished || snapshot.is_cancelled || snapshot.is_paused {
         return;
     }
     snapshot.current_chunk = None;
@@ -523,7 +575,7 @@ fn llm_with_job_retry_activity(llm_service: &LlmService, job: &Arc<PreviewJob>) 
             .snapshot
             .lock()
             .expect("preview job snapshot mutex should remain available");
-        if snapshot.is_finished || snapshot.is_cancelled {
+        if snapshot.is_finished || snapshot.is_cancelled || snapshot.is_paused {
             return;
         }
         snapshot.activity = Some(retry_activity(&event));
@@ -646,6 +698,7 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
     let job = Arc::new(PreviewJob {
         paused: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
+        control_changed: Notify::new(),
         snapshot: Mutex::new(initial_snapshot),
     });
 
@@ -688,7 +741,11 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
                 let order = next_order;
                 let chunk = all_chunks[order].clone();
                 let processor = Arc::clone(&processor);
-                jobs.spawn(async move { (order, processor.process(&chunk).await) });
+                let worker_job = Arc::clone(&job);
+                jobs.spawn(async move {
+                    let result = run_with_job_control(worker_job, processor.process(&chunk)).await;
+                    (order, result)
+                });
                 next_order += 1;
             }
 
@@ -719,6 +776,11 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
                     );
                     return;
                 }
+            };
+
+            let Some(result) = result else {
+                jobs.abort_all();
+                break;
             };
 
             let preview = match result {
@@ -848,6 +910,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
     let job = Arc::new(PreviewJob {
         paused: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
+        control_changed: Notify::new(),
         snapshot: Mutex::new(initial_snapshot),
     });
 
@@ -886,6 +949,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             {
                 spawn_graph_stage_a_job(
                     &mut jobs,
+                    &job,
                     next_order,
                     &all_chunks[next_order],
                     llm_arc
@@ -923,6 +987,11 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                     );
                     return;
                 }
+            };
+
+            let Some(result) = result else {
+                jobs.abort_all();
+                break;
             };
 
             match result {
@@ -1011,7 +1080,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                     },
                     ..Default::default()
                 };
-                let resolution = resolve_graph_entities_with_progress(
+                let resolution_operation = resolve_graph_entities_with_progress(
                     &graph,
                     embedding_service,
                     llm_arc
@@ -1025,8 +1094,13 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                             llm_concurrency,
                         );
                     },
-                )
-                .await;
+                );
+                let Some(resolution) =
+                    run_with_job_control(Arc::clone(&job), resolution_operation).await
+                else {
+                    finish_cancelled_job(&job);
+                    return;
+                };
 
                 let resolution = match resolution {
                     Ok(result) => result,
@@ -1110,8 +1184,8 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 break;
             }
 
-            // Do not start new requests while paused. Requests already sent to
-            // the provider are allowed to finish and are still recorded.
+            // Do not schedule new work while paused. Existing workers retain
+            // their request futures and resume polling them after the signal.
             while job.paused.load(Ordering::Relaxed) && jobs.is_empty() {
                 if job.cancelled.load(Ordering::Relaxed) {
                     break;
@@ -1128,7 +1202,13 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 && next_bundle_idx < bundle_count
                 && jobs.len() < llm_concurrency
             {
-                spawn_graph_stage_b_job(&mut jobs, next_bundle_idx, &bundles[next_bundle_idx], llm);
+                spawn_graph_stage_b_job(
+                    &mut jobs,
+                    &job,
+                    next_bundle_idx,
+                    &bundles[next_bundle_idx],
+                    llm,
+                );
                 next_bundle_idx += 1;
             }
 
@@ -1159,6 +1239,11 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                     );
                     return;
                 }
+            };
+
+            let Some(result) = result else {
+                jobs.abort_all();
+                break;
             };
             let bundle = &bundles[bundle_idx];
 
@@ -1345,6 +1430,8 @@ pub fn set_preview_generation_paused(job_id: &str, paused: bool) -> Result<(), S
         .lock()
         .map_err(|_| String::from("Preview job snapshot is unavailable."))?;
     snapshot.is_paused = paused;
+    drop(snapshot);
+    job.control_changed.notify_waiters();
 
     Ok(())
 }
@@ -1361,6 +1448,15 @@ pub fn cancel_preview_generation(job_id: &str) -> Result<(), String> {
     job.cancelled.store(true, Ordering::Relaxed);
     // Also unpause so the loop can exit
     job.paused.store(false, Ordering::Relaxed);
+    let mut snapshot = job
+        .snapshot
+        .lock()
+        .map_err(|_| String::from("Preview job snapshot is unavailable."))?;
+    snapshot.is_cancelled = true;
+    snapshot.is_paused = false;
+    snapshot.activity = Some(String::from("Cancelling generation"));
+    drop(snapshot);
+    job.control_changed.notify_waiters();
 
     Ok(())
 }
@@ -1560,6 +1656,35 @@ mod tests {
     use super::*;
     use crate::services::llm::LlmFailureCode;
 
+    fn controllable_test_job() -> Arc<PreviewJob> {
+        Arc::new(PreviewJob {
+            paused: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+            control_changed: Notify::new(),
+            snapshot: Mutex::new(GenerationProgressSnapshot {
+                job_id: String::from("preview-control-test"),
+                total_notes: 1,
+                total_chunks: 1,
+                notes_with_chunks: 1,
+                completed_chunks: 0,
+                failed_chunks: 0,
+                mcq_generated: 0,
+                recall_mcq_generated: 0,
+                relational_mcq_generated: 0,
+                progress_percent: 0,
+                is_paused: false,
+                is_cancelled: false,
+                is_finished: false,
+                error: None,
+                warnings: Vec::new(),
+                summary: None,
+                phase_label: None,
+                current_chunk: None,
+                activity: None,
+            }),
+        })
+    }
+
     fn embedding_settings(model: &str) -> EmbeddingModelConfig {
         EmbeddingModelConfig {
             provider: String::from("ollama"),
@@ -1568,6 +1693,52 @@ mod tests {
             timeout_secs: 60,
             api_key: None,
         }
+    }
+
+    #[tokio::test]
+    async fn paused_job_holds_ready_work_until_resumed() {
+        let job = controllable_test_job();
+        let (complete_work, work_completed) = tokio::sync::oneshot::channel();
+        let worker_job = Arc::clone(&job);
+        let worker = tokio::spawn(async move {
+            run_with_job_control(worker_job, async move {
+                work_completed.await.expect("work signal should be sent");
+                42
+            })
+            .await
+        });
+
+        job.paused.store(true, Ordering::Relaxed);
+        job.control_changed.notify_waiters();
+        complete_work
+            .send(())
+            .expect("work should still be waiting");
+        sleep(Duration::from_millis(20)).await;
+
+        assert!(!worker.is_finished());
+
+        job.paused.store(false, Ordering::Relaxed);
+        job.control_changed.notify_waiters();
+        assert_eq!(worker.await.expect("worker should finish"), Some(42));
+    }
+
+    #[tokio::test]
+    async fn cancelled_job_drops_in_flight_work_promptly() {
+        let job = controllable_test_job();
+        let worker_job = Arc::clone(&job);
+        let worker = tokio::spawn(async move {
+            run_with_job_control(worker_job, std::future::pending::<()>()).await
+        });
+
+        tokio::task::yield_now().await;
+        job.cancelled.store(true, Ordering::Relaxed);
+        job.control_changed.notify_waiters();
+
+        let result = tokio::time::timeout(Duration::from_millis(100), worker)
+            .await
+            .expect("cancelled worker should stop promptly")
+            .expect("worker should not panic");
+        assert!(result.is_none());
     }
 
     #[test]
@@ -1618,6 +1789,7 @@ mod tests {
         let job = PreviewJob {
             paused: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
+            control_changed: Notify::new(),
             snapshot: Mutex::new(GenerationProgressSnapshot {
                 job_id: String::from("preview-resolution-progress"),
                 total_notes: 1,
@@ -1811,6 +1983,7 @@ mod tests {
         let job = PreviewJob {
             paused: AtomicBool::new(true),
             cancelled: AtomicBool::new(false),
+            control_changed: Notify::new(),
             snapshot: Mutex::new(GenerationProgressSnapshot {
                 job_id: String::from("preview-terminal-error"),
                 total_notes: 1,
@@ -1872,6 +2045,7 @@ mod tests {
         let job = PreviewJob {
             paused: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
+            control_changed: Notify::new(),
             snapshot: Mutex::new(GenerationProgressSnapshot {
                 job_id: String::from("preview-skipped-error"),
                 total_notes: 1,

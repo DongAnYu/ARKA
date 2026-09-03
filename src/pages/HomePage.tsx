@@ -19,6 +19,8 @@ import {
   Zap,
 } from 'lucide-react'
 import arkaLogo from '../assets/arka-logo.svg'
+import { useGeneration } from '../generation/context'
+import type { ChunkPreview, Note } from '../generation/types'
 
 const getWelcomeMessage = (date = new Date()) => {
   const hour = date.getHours()
@@ -61,99 +63,6 @@ const getWelcomeMessage = (date = new Date()) => {
     </>
   )
 }
-type GenerationMode = 'default' | 'graph'
-
-type Note = {
-  id: number | null
-  path: string
-  title: string
-  content: string
-  last_modified: string
-}
-
-type NoteGenerationReport = {
-  note_path: string
-  note_title: string
-  total_chunks: number
-}
-
-type ChunkLlmQuestionPreview = {
-  question: string
-  option_a: string
-  option_b: string
-  option_c: string
-  option_d: string
-  correct_answer: string
-  explanation: string
-}
-
-type ChunkLlmResult = {
-  status: string
-  key_points: string[]
-  questions: ChunkLlmQuestionPreview[]
-  error: string | null
-}
-
-type ChunkPreview = {
-  note_path: string
-  note_title: string
-  heading: string
-  section_index: number
-  chunk_index: number
-  start_line: number
-  end_line: number
-  char_count: number
-  preview_text: string
-  llm_result: ChunkLlmResult
-}
-
-type GenerationSummary = {
-  total_notes: number
-  total_chunks: number
-  notes_with_chunks: number
-  note_reports: NoteGenerationReport[]
-  chunk_previews: ChunkPreview[]
-}
-
-type LlmFailureCode =
-  | 'setup'
-  | 'account'
-  | 'connection'
-  | 'rate_limited'
-  | 'provider_unavailable'
-  | 'request_rejected'
-  | 'invalid_response'
-  | 'unknown'
-
-type LlmFailure = {
-  code: LlmFailureCode
-  message: string
-  retryable: boolean
-  retry_after_secs: number | null
-}
-
-type GenerationProgress = {
-  job_id: string
-  total_notes: number
-  total_chunks: number
-  notes_with_chunks: number
-  completed_chunks: number
-  mcq_generated: number
-  progress_percent: number
-  failed_chunks: number
-  warnings: LlmFailure[]
-  recall_mcq_generated: number
-  relational_mcq_generated: number
-  current_chunk: number | null
-  activity: string | null
-  is_paused: boolean
-  is_cancelled: boolean
-  is_finished: boolean
-  error: LlmFailure | null
-  summary: GenerationSummary | null
-  phase_label: string | null
-}
-
 type Question = {
   question: string
   option_a: string
@@ -178,15 +87,23 @@ type ModelConfig = {
 export function HomePage() {
   const welcomeMessage = getWelcomeMessage()
   const saveInFlightRef = useRef(false)
-  const [vaultPath, setVaultPath] = useState('')
-  const [notes, setNotes] = useState<Note[]>([])
-  const [selectedNote, setSelectedNote] = useState<Note | null>(null)
+  const {
+    notes,
+    selectedNote,
+    generationMode,
+    generationProgress,
+    generationSummary,
+    generationError,
+    isGenerating,
+    setSourceNotes,
+    selectNote,
+    setGenerationMode,
+    startGeneration,
+    togglePauseGeneration,
+    cancelGeneration,
+  } = useGeneration()
   const [isLoading, setIsLoading] = useState(false)
-  const [isGenerating, setIsGenerating] = useState(false)
   const [isSavingQuestions, setIsSavingQuestions] = useState(false)
-  const [generationJobId, setGenerationJobId] = useState<string | null>(null)
-  const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null)
-  const [generationSummary, setGenerationSummary] = useState<GenerationSummary | null>(null)
   const [showChunks, setShowChunks] = useState(false)
   const [selectedChunk, setSelectedChunk] = useState<ChunkPreview | null>(null)
   const [isLoadingRecallSpaces, setIsLoadingRecallSpaces] = useState(true)
@@ -199,7 +116,6 @@ export function HomePage() {
   const [saveStatusKind, setSaveStatusKind] = useState<'success' | 'error' | ''>('')
   const [hasSavedQuestions, setHasSavedQuestions] = useState(false)
   const [error, setError] = useState('')
-  const [generationMode, setGenerationMode] = useState<GenerationMode | null>(null)
 
   const generatedQuestionCount =
     generationSummary?.chunk_previews.reduce(
@@ -208,6 +124,7 @@ export function HomePage() {
     ) ?? 0
 
   const selectedSpace = recallSpaces.find((space) => space.id === selectedSpaceId)
+  const visibleError = error || generationError
 
   const noteBreadcrumbs = selectedNote
     ? selectedNote.path
@@ -286,7 +203,6 @@ export function HomePage() {
         return
       }
 
-      setVaultPath(selected)
       await loadNotes(selected)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to choose markdown file'
@@ -297,21 +213,16 @@ export function HomePage() {
   const loadNotes = async (path: string) => {
     setIsLoading(true)
     setError('')
-    setSelectedNote(null)
-    setGenerationSummary(null)
+    setSourceNotes(path, [])
     setShowChunks(false)
     setSelectedChunk(null)
     setSaveStatus('')
     setSaveStatusKind('')
     setHasSavedQuestions(false)
-    setGenerationMode(null)
 
     try {
       const data = await invoke<Note[]>('get_notes', { vaultPath: path })
-      setNotes(data)
-      if (data.length === 1) {
-        setSelectedNote(data[0])
-      }
+      setSourceNotes(path, data)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load notes'
       setError(message)
@@ -321,122 +232,10 @@ export function HomePage() {
   }
 
   const generatePreview = async () => {
-    if (!vaultPath || !selectedNote) {
-      setError('Choose a note before generating questions.')
-      return
-    }
-
-    if (!generationMode) {
-      setError('Choose a generation mode first.')
-      return
-    }
-
-    setIsGenerating(true)
     setError('')
-    setGenerationProgress(null)
-    setGenerationSummary(null)
     setShowChunks(false)
     setSelectedChunk(null)
-
-    const command = generationMode === 'graph' ? 'start_graph_generation_job' : 'start_preview_generation'
-    try {
-      const jobId = await invoke<string>(command, {
-        vaultPath,
-      })
-      setGenerationJobId(jobId)
-    } catch (err) {
-      const message =
-        typeof err === 'string'
-          ? err
-          : err instanceof Error
-            ? err.message
-            : 'Failed to start question generation'
-      setError(message)
-      setIsGenerating(false)
-    }
-  }
-
-  useEffect(() => {
-    if (!generationJobId) {
-      return
-    }
-
-    let disposed = false
-
-    const poll = async () => {
-      try {
-        const progress = await invoke<GenerationProgress>('get_preview_generation_progress', {
-          jobId: generationJobId,
-        })
-
-        if (disposed) {
-          return
-        }
-
-        setGenerationProgress(progress)
-        setIsGenerating(!progress.is_finished)
-
-        if (progress.is_finished) {
-          if (progress.summary) {
-            setGenerationSummary(progress.summary)
-          }
-          setGenerationJobId(null)
-        }
-      } catch (err) {
-        if (!disposed) {
-          const message = err instanceof Error ? err.message : 'Failed to load generation progress'
-          setError(message)
-          setIsGenerating(false)
-          setGenerationJobId(null)
-        }
-      }
-    }
-
-    poll()
-    const timer = window.setInterval(poll, 700)
-
-    return () => {
-      disposed = true
-      window.clearInterval(timer)
-    }
-  }, [generationJobId])
-
-  const togglePauseGeneration = async () => {
-    if (!generationProgress) {
-      return
-    }
-
-    const nextPaused = !generationProgress.is_paused
-    try {
-      await invoke('set_preview_generation_paused', {
-        jobId: generationProgress.job_id,
-        paused: nextPaused,
-      })
-      setGenerationProgress((current) =>
-        current ? { ...current, is_paused: nextPaused } : current,
-      )
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to toggle generation pause'
-      setError(message)
-    }
-  }
-
-  const cancelGeneration = async () => {
-    if (!generationProgress) {
-      return
-    }
-
-    try {
-      await invoke('cancel_preview_generation', {
-        jobId: generationProgress.job_id,
-      })
-      setGenerationProgress(null)
-      setGenerationJobId(null)
-      setIsGenerating(false)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to cancel generation'
-      setError(message)
-    }
+    await startGeneration()
   }
 
   const saveGeneratedQuestions = async () => {
@@ -603,7 +402,7 @@ export function HomePage() {
             </div>
           </div>
 
-          {error && <p className="error-text" role="alert">{error}</p>}
+          {visibleError && <p className="error-text" role="alert">{visibleError}</p>}
 
           <div className="notes-container" aria-live="polite">
             {notes.length > 1 && (
@@ -615,10 +414,7 @@ export function HomePage() {
                       <button
                         type="button"
                         className="note-item"
-                        onClick={() => {
-                          setGenerationMode(null)
-                          setSelectedNote(note)
-                        }}
+                        onClick={() => selectNote(note)}
                       >
                         {note.title}
                       </button>
@@ -663,7 +459,7 @@ export function HomePage() {
             </div>
           </header>
 
-          {error && <p className="error-text" role="alert">{error}</p>}
+          {visibleError && <p className="error-text" role="alert">{visibleError}</p>}
 
           {!isGenerating && !generationSummary && (
             <section className="generation-setup" aria-labelledby="generation-depth-title">
