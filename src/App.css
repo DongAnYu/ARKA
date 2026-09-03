@@ -55,7 +55,7 @@
 body {
   background-color: var(--color-abyss);
   color: var(--color-bright-gray);
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-ui);
   font-size: 16px;
   line-height: 1.5;
   letter-spacing: var(--tracking); /* inherited everywhere; per-rule overrides removed below */
@@ -67,7 +67,139 @@ body {
 
 .app-shell {
   display: flex;
+  flex-direction: column;
   height: 100vh;
+  overflow: hidden;
+}
+
+.app-titlebar {
+  position: relative;
+  z-index: 50;
+  height: 40px;
+  flex: 0 0 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--color-bright-gray);
+  background:
+    radial-gradient(500px circle at 50% -160%, rgba(var(--rgb-amethyst), 0.28), transparent 72%),
+    linear-gradient(100deg, #1a1820 0%, #221a35 48%, #19171f 100%);
+  box-shadow:
+    inset 0 -1px rgba(var(--rgb-white), 0.08),
+    0 4px 16px rgba(0, 0, 0, 0.18);
+  user-select: none;
+}
+
+.titlebar-brand {
+  min-width: 132px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.titlebar-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  box-shadow: var(--shadow-subtle);
+  pointer-events: none;
+}
+
+.titlebar-config {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  max-width: min(620px, calc(100vw - 340px));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgba(var(--rgb-white), 0.76);
+  white-space: nowrap;
+}
+
+.titlebar-config-item {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.titlebar-config-label {
+  flex: 0 0 auto;
+  color: var(--color-lavender);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.titlebar-config-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.titlebar-config-divider {
+  width: 1px;
+  height: 14px;
+  flex: 0 0 1px;
+  background-color: rgba(var(--rgb-lavender), 0.28);
+}
+
+.titlebar-controls {
+  align-self: stretch;
+  display: flex;
+  margin-left: auto;
+}
+
+.titlebar-control {
+  width: 46px;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(var(--rgb-white), 0.74);
+  cursor: default;
+  transition: var(--transition-colors);
+}
+
+.titlebar-control svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.6;
+}
+
+.titlebar-control:hover {
+  color: var(--color-white);
+  background-color: rgba(var(--rgb-white), 0.08);
+}
+
+.titlebar-control:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--color-lavender);
+  outline-offset: -3px;
+}
+
+.titlebar-control-close:hover {
+  background-color: #c42b1c;
+}
+
+.app-workspace {
+  min-height: 0;
+  flex: 1;
+  display: flex;
   overflow: hidden;
 }
 
@@ -79,7 +211,7 @@ body {
   border-right: 1px solid var(--color-graphite);
   background-color: var(--color-surface);
   box-shadow: var(--shadow-subtle);
-  height: 100vh;
+  height: 100%;
   overflow-y: auto;
   position: sticky;
   top: 0;
@@ -212,7 +344,7 @@ body {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  height: 100vh;
+  height: 100%;
   background:
     linear-gradient(150deg, #171717 0%, #1d1730 48%, #171717 100%),
     radial-gradient(900px circle at 10% -10%, rgba(var(--rgb-amethyst), 0.16), transparent 60%),
@@ -3371,7 +3503,36 @@ body {
 
 @media (max-width: 768px) {
   .app-shell {
+    min-height: 100vh;
+  }
+
+  .app-workspace {
     display: block;
+    overflow-y: auto;
+  }
+
+  .titlebar-brand {
+    min-width: 92px;
+  }
+
+  .titlebar-config {
+    max-width: calc(100vw - 300px);
+    gap: 8px;
+  }
+
+  .titlebar-config-item {
+    display: block;
+    overflow: hidden;
+  }
+
+  .titlebar-config-label {
+    display: block;
+    line-height: 1.1;
+  }
+
+  .titlebar-config-value {
+    display: block;
+    line-height: 1.25;
   }
 
   .app-sidebar {
@@ -3385,7 +3546,7 @@ body {
 
   .app-content {
     height: auto;
-    min-height: 100vh;
+    min-height: 100%;
   }
 
   .mobile-nav {
