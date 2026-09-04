@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
   ArrowRight,
@@ -19,8 +20,13 @@ import {
   Zap,
 } from 'lucide-react'
 import arkaLogo from '../assets/arka-logo.svg'
+import { BackToHome } from '../components/BackToHome'
 import { useGeneration } from '../generation/context'
 import type { ChunkPreview, Note } from '../generation/types'
+import {
+  MODEL_CONFIG_UPDATED_EVENT,
+  type PersistedModelConfig,
+} from '../modelConfig'
 
 const getWelcomeMessage = (date = new Date()) => {
   const hour = date.getHours()
@@ -80,8 +86,20 @@ type RecallSpace = {
   description: string | null
 }
 
-type ModelConfig = {
-  selected_model: string
+const providerNames: Record<string, string> = {
+  ollama: 'Ollama',
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+}
+
+const describeModel = (provider: string, model: string) => {
+  const selectedModel = model.trim()
+  if (!selectedModel) {
+    return 'No model selected'
+  }
+
+  const providerName = providerNames[provider] ?? provider
+  return providerName ? `${providerName} · ${selectedModel}` : selectedModel
 }
 
 export function HomePage() {
@@ -97,6 +115,7 @@ export function HomePage() {
     isGenerating,
     setSourceNotes,
     selectNote,
+    clearSelectedNote,
     setGenerationMode,
     startGeneration,
     togglePauseGeneration,
@@ -116,6 +135,9 @@ export function HomePage() {
   const [saveStatusKind, setSaveStatusKind] = useState<'success' | 'error' | ''>('')
   const [hasSavedQuestions, setHasSavedQuestions] = useState(false)
   const [error, setError] = useState('')
+  const [modelConfig, setModelConfig] = useState<PersistedModelConfig | null>(null)
+  const [isLoadingModelConfig, setIsLoadingModelConfig] = useState(true)
+  const [modelConfigError, setModelConfigError] = useState('')
 
   const generatedQuestionCount =
     generationSummary?.chunk_previews.reduce(
@@ -125,6 +147,16 @@ export function HomePage() {
 
   const selectedSpace = recallSpaces.find((space) => space.id === selectedSpaceId)
   const visibleError = error || generationError
+  const isLlmReady = Boolean(modelConfig?.selected_model.trim())
+  const isEmbeddingReady = Boolean(modelConfig?.embedding_selected_model.trim())
+  const areRequiredModelsReady =
+    generationMode === 'default'
+      ? isLlmReady
+      : generationMode === 'graph'
+        ? isLlmReady && isEmbeddingReady
+        : false
+  const canStartGeneration =
+    areRequiredModelsReady && !isLoadingModelConfig && !modelConfigError
 
   const noteBreadcrumbs = selectedNote
     ? selectedNote.path
@@ -183,6 +215,44 @@ export function HomePage() {
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    void invoke<PersistedModelConfig>('load_model_config')
+      .then((config) => {
+        if (cancelled) {
+          return
+        }
+
+        setModelConfig(config)
+        setModelConfigError('')
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setModelConfigError('Could not read the saved model configuration.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingModelConfig(false)
+        }
+      })
+
+    const handleConfigUpdate = (event: Event) => {
+      const configEvent = event as CustomEvent<PersistedModelConfig>
+      setModelConfig(configEvent.detail)
+      setModelConfigError('')
+      setIsLoadingModelConfig(false)
+    }
+
+    window.addEventListener(MODEL_CONFIG_UPDATED_EVENT, handleConfigUpdate)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener(MODEL_CONFIG_UPDATED_EVENT, handleConfigUpdate)
+    }
+  }, [])
+
   const chooseVault = async () => {
     setError('')
 
@@ -229,6 +299,16 @@ export function HomePage() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const returnToHome = () => {
+    clearSelectedNote()
+    setError('')
+    setShowChunks(false)
+    setSelectedChunk(null)
+    setSaveStatus('')
+    setSaveStatusKind('')
+    setHasSavedQuestions(false)
   }
 
   const generatePreview = async () => {
@@ -309,8 +389,8 @@ export function HomePage() {
       })
 
       // Load current model config to get model name
-      const modelConfig = await invoke<ModelConfig>('load_model_config')
-      const modelName = modelConfig.selected_model || 'unknown'
+      const latestModelConfig = await invoke<PersistedModelConfig>('load_model_config')
+      const modelName = latestModelConfig.selected_model || 'unknown'
 
       // Save to database
       await invoke('save_generated_questions', {
@@ -428,6 +508,8 @@ export function HomePage() {
       ) : (
         <main className="generation-workspace">
           <header className="selected-note-header">
+            <BackToHome onActivate={returnToHome} disabled={isGenerating} />
+
             {noteBreadcrumbs.length > 0 && (
               <nav className="note-breadcrumbs" aria-label="Note location">
                 {noteBreadcrumbs.map((part, index) => (
@@ -521,21 +603,155 @@ export function HomePage() {
               </div>
 
               {generationMode && (
-                <div className="generation-commit">
-                  <p>
-                    <strong>{generationMode === 'graph' ? 'Deep thinking' : 'Default generation'}</strong>
-                    <span>{generationMode === 'graph' ? 'Best for connected, concept-heavy notes.' : 'Best for a quick, focused study set.'}</span>
-                  </p>
-                  <button
-                    type="button"
-                    className="btn-primary btn-start-generation"
-                    onClick={generatePreview}
-                  >
-                    <span className="btn-content">
-                      <Sparkles className="size-4" aria-hidden="true" />
-                      Generate questions
-                    </span>
-                  </button>
+                <div
+                  className="generation-commit"
+                  aria-live="polite"
+                  aria-busy={isLoadingModelConfig}
+                >
+                  <div className="generation-commit-copy">
+                    <div className="generation-commit-heading">
+                      <strong>
+                        {generationMode === 'graph' ? 'Deep thinking' : 'Default generation'}
+                      </strong>
+                      <span>
+                        {generationMode === 'graph'
+                          ? 'Both models are required for connected, concept-heavy questions.'
+                          : 'One language model is required for a quick, focused study set.'}
+                      </span>
+                    </div>
+
+                    <dl className="generation-model-readiness">
+                      <div
+                        className={`generation-model-row${
+                          !isLoadingModelConfig && !modelConfigError && isLlmReady
+                            ? ' is-ready'
+                            : ' needs-setup'
+                        }`}
+                      >
+                        <dt>
+                          <Sparkles aria-hidden="true" />
+                          <span>Language model</span>
+                        </dt>
+                        <dd>
+                          <strong
+                            title={
+                              modelConfig
+                                ? describeModel(modelConfig.provider, modelConfig.selected_model)
+                                : undefined
+                            }
+                          >
+                            {isLoadingModelConfig
+                              ? 'Checking configuration…'
+                              : modelConfigError
+                                ? 'Unable to verify'
+                                : modelConfig
+                                  ? describeModel(modelConfig.provider, modelConfig.selected_model)
+                                  : 'No model selected'}
+                          </strong>
+                          <span className="generation-model-state">
+                            {!isLoadingModelConfig && !modelConfigError && isLlmReady ? (
+                              <Check aria-hidden="true" />
+                            ) : (
+                              <AlertTriangle aria-hidden="true" />
+                            )}
+                            {isLoadingModelConfig
+                              ? 'Checking'
+                              : modelConfigError
+                                ? 'Unavailable'
+                                : isLlmReady
+                                  ? 'Ready'
+                                  : 'Not configured'}
+                          </span>
+                        </dd>
+                      </div>
+
+                      {generationMode === 'graph' && (
+                        <div
+                          className={`generation-model-row${
+                            !isLoadingModelConfig && !modelConfigError && isEmbeddingReady
+                              ? ' is-ready'
+                              : ' needs-setup'
+                          }`}
+                        >
+                          <dt>
+                            <GitBranch aria-hidden="true" />
+                            <span>Embedding model</span>
+                          </dt>
+                          <dd>
+                            <strong
+                              title={
+                                modelConfig
+                                  ? describeModel(
+                                      modelConfig.embedding_provider,
+                                      modelConfig.embedding_selected_model,
+                                    )
+                                  : undefined
+                              }
+                            >
+                              {isLoadingModelConfig
+                                ? 'Checking configuration…'
+                                : modelConfigError
+                                  ? 'Unable to verify'
+                                  : modelConfig
+                                    ? describeModel(
+                                        modelConfig.embedding_provider,
+                                        modelConfig.embedding_selected_model,
+                                      )
+                                    : 'No model selected'}
+                            </strong>
+                            <span className="generation-model-state">
+                              {!isLoadingModelConfig &&
+                              !modelConfigError &&
+                              isEmbeddingReady ? (
+                                <Check aria-hidden="true" />
+                              ) : (
+                                <AlertTriangle aria-hidden="true" />
+                              )}
+                              {isLoadingModelConfig
+                                ? 'Checking'
+                                : modelConfigError
+                                  ? 'Unavailable'
+                                  : isEmbeddingReady
+                                    ? 'Ready'
+                                    : 'Not configured'}
+                            </span>
+                          </dd>
+                        </div>
+                      )}
+                    </dl>
+
+                    {!isLoadingModelConfig && !modelConfigError && !areRequiredModelsReady && (
+                      <Link className="generation-model-settings-link" to="/models">
+                        Configure model settings
+                        <ArrowRight aria-hidden="true" />
+                      </Link>
+                    )}
+                    {modelConfigError && (
+                      <span className="generation-model-config-error">{modelConfigError}</span>
+                    )}
+                  </div>
+
+                  <div className="generation-commit-actions">
+                    <button
+                      type="button"
+                      className="btn-primary btn-start-generation"
+                      onClick={generatePreview}
+                      disabled={!canStartGeneration}
+                      aria-describedby={!canStartGeneration ? 'generation-readiness-help' : undefined}
+                    >
+                      <span className="btn-content">
+                        <Sparkles className="size-4" aria-hidden="true" />
+                        Generate questions
+                      </span>
+                    </button>
+                    {!canStartGeneration && (
+                      <span className="generation-action-help" id="generation-readiness-help">
+                        {isLoadingModelConfig
+                          ? 'Checking your saved model settings…'
+                          : 'Configure the required models to continue.'}
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </section>

@@ -54,6 +54,14 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
     setMode(null)
   }, [])
 
+  const clearSelectedNote = useCallback(() => {
+    setSelectedNote(null)
+    setMode(null)
+    setGenerationProgress(null)
+    setGenerationSummary(null)
+    setGenerationError('')
+  }, [])
+
   const setGenerationMode = useCallback((mode: GenerationMode) => {
     setGenerationError('')
     setMode(mode)
@@ -191,6 +199,7 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
       isGenerating,
       setSourceNotes,
       selectNote,
+      clearSelectedNote,
       setGenerationMode,
       startGeneration,
       togglePauseGeneration,
@@ -207,6 +216,7 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
       isGenerating,
       setSourceNotes,
       selectNote,
+      clearSelectedNote,
       setGenerationMode,
       startGeneration,
       togglePauseGeneration,

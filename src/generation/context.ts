@@ -17,6 +17,7 @@ export type GenerationContextValue = {
   isGenerating: boolean
   setSourceNotes: (vaultPath: string, notes: Note[]) => void
   selectNote: (note: Note) => void
+  clearSelectedNote: () => void
   setGenerationMode: (mode: GenerationMode) => void
   startGeneration: () => Promise<void>
   togglePauseGeneration: () => Promise<void>

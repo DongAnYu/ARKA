@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ArrowLeft, ArrowRight, ChevronDown, Ellipsis, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { BackToHome } from '../components/BackToHome'
 
 type Question = {
   id: number
@@ -379,6 +380,7 @@ export function QuestionsPage() {
 
   return (
     <div className="app-container questions-page">
+      <BackToHome />
       <header className="settings-panel">
         <h1>{selectedSpace ? selectedSpace.name : 'Question Library'}</h1>
         <p className="settings-help-text">

@@ -1,7 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
 import { ArrowLeft, ArrowRight, BookOpenCheck, ChevronDown, RotateCcw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
+import { BackToHome } from '../components/BackToHome'
 import { ExplanationPanel } from '../components/session/ExplanationPanel'
 import { QuestionCard, type OptionId, type SessionQuestion } from '../components/session/QuestionCard'
 import { SessionComplete } from '../components/session/SessionComplete'
@@ -114,7 +115,6 @@ const toSessionQuestion = (question: StoredQuestion): SessionQuestion => ({
 
 export function SessionPage() {
   const location = useLocation()
-  const navigate = useNavigate()
   const requestedSpaceId =
     typeof location.state?.recallSpaceId === 'number' ? location.state.recallSpaceId : null
   const requestedSpaceName =
@@ -379,10 +379,7 @@ export function SessionPage() {
   return (
     <div className="app-container recall-page" aria-label="Recall dashboard">
       <header className="recall-page-header">
-        <button type="button" className="btn-back recall-back-btn" onClick={() => navigate(-1)}>
-          <ArrowLeft className="size-4" aria-hidden="true" />
-          Back
-        </button>
+        <BackToHome />
         <div>
           <h1>Recall</h1>
           <p>Keep your knowledge fresh with today&apos;s scheduled reviews.</p>

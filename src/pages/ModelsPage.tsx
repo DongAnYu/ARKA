@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { BackToHome } from '../components/BackToHome'
 import { announceModelConfigUpdate, type PersistedModelConfig } from '../modelConfig'
 
 type ProviderId = 'ollama' | 'openai' | 'openrouter'
@@ -688,6 +689,7 @@ export function ModelsPage() {
 
   return (
     <div className="app-container settings-page" aria-label="Models page">
+      <BackToHome />
       <header className="settings-panel settings-page-intro">
         <h1>Model settings</h1>
         <p className="settings-help-text">

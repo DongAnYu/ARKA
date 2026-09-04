@@ -4,6 +4,7 @@ import { check, type Update } from '@tauri-apps/plugin-updater'
 import { error as logError } from '@tauri-apps/plugin-log'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { Download, RefreshCw } from 'lucide-react'
+import { BackToHome } from '../components/BackToHome'
 
 type UpdateCheckStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'installing' | 'restart-needed' | 'error'
 
@@ -187,6 +188,7 @@ export function SettingsPage() {
 
   return (
     <div className="app-container settings-page" aria-label="Settings page">
+      <BackToHome />
       <header className="settings-panel settings-page-intro">
         <h1>Settings</h1>
         <p className="settings-help-text">Manage how A.R.K.A runs on this device.</p>

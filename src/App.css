@@ -931,7 +931,8 @@ body {
   gap: 8px;
 }
 
-.recall-back-btn {
+.recall-back-btn,
+.page-back-link {
   width: fit-content;
   min-height: 44px;
   display: inline-flex;
@@ -939,6 +940,20 @@ body {
   gap: 8px;
   padding: 0 4px;
   font-weight: 600;
+}
+
+.page-back-link {
+  text-decoration: none;
+}
+
+.page-back-link:hover {
+  color: var(--color-bright-gray);
+}
+
+.page-back-link:disabled {
+  color: var(--color-muted-gray);
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .recall-page-header h1 {
@@ -3793,6 +3808,10 @@ body {
   gap: 14px;
 }
 
+.selected-note-title-wrap > div {
+  min-width: 0;
+}
+
 .selected-note-icon {
   width: 26px;
   height: 26px;
@@ -3807,6 +3826,7 @@ body {
   line-height: 1.25;
   font-weight: 600;
   text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
 .selected-note-title-wrap p {
@@ -3976,10 +3996,10 @@ body {
 }
 
 .generation-commit {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 32px;
   padding-top: 20px;
   border-top: 1px solid rgba(var(--rgb-white), 0.08);
   animation: generation-commit-in var(--motion-base) var(--ease-standard);
@@ -3992,27 +4012,164 @@ body {
   }
 }
 
-.generation-commit p {
-  margin: 0;
+.generation-commit-copy {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.generation-commit-heading {
   display: grid;
   gap: 2px;
 }
 
-.generation-commit p strong {
+.generation-commit-heading strong {
   color: var(--color-bright-gray);
   font-size: 14px;
   line-height: 1.5;
 }
 
-.generation-commit p span {
+.generation-commit-heading span {
   color: var(--color-muted-gray);
   font-size: 13px;
   line-height: 1.5;
 }
 
+.generation-model-readiness {
+  min-width: 0;
+  margin: 0;
+  display: grid;
+}
+
+.generation-model-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(132px, 0.42fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 11px 0;
+  border-top: 1px solid rgba(var(--rgb-white), 0.07);
+}
+
+.generation-model-row:last-child {
+  border-bottom: 1px solid rgba(var(--rgb-white), 0.07);
+}
+
+.generation-model-row dt,
+.generation-model-row dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.generation-model-row dt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-medium-gray);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.generation-model-row dt svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--color-lavender);
+}
+
+.generation-model-row dd {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.generation-model-row dd > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-bright-gray);
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.generation-model-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-muted-gray);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.generation-model-state svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.generation-model-row.is-ready .generation-model-state {
+  color: var(--color-success-green);
+}
+
+.generation-model-row.needs-setup .generation-model-state,
+.generation-model-config-error {
+  color: var(--color-error-red);
+}
+
+.generation-model-settings-link {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-lavender);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.generation-model-settings-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.generation-model-settings-link:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-lavender);
+  outline-offset: 4px;
+}
+
+.generation-model-settings-link svg {
+  width: 14px;
+  height: 14px;
+}
+
+.generation-model-config-error {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.generation-commit-actions {
+  display: grid;
+  justify-items: end;
+  gap: 7px;
+}
+
 .btn-start-generation {
   min-width: 210px;
   min-height: 50px;
+}
+
+.generation-action-help {
+  max-width: 29ch;
+  color: var(--color-muted-gray);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: right;
+  text-wrap: pretty;
 }
 
 .generation-progress-focused {
@@ -4827,6 +4984,26 @@ body {
 }
 
 @media (max-width: 940px) {
+  .generation-commit {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 20px;
+  }
+
+  .generation-commit-actions {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .btn-start-generation {
+    width: 100%;
+  }
+
+  .generation-action-help {
+    max-width: none;
+    text-align: center;
+  }
+
   .generation-progress-focused {
     min-height: auto;
   }
@@ -4859,8 +5036,7 @@ body {
 }
 
 @media (max-width: 720px) {
-  .selected-note-row,
-  .generation-commit {
+  .selected-note-row {
     align-items: stretch;
     flex-direction: column;
   }
@@ -4872,6 +5048,23 @@ body {
 
   .generation-mode-grid {
     grid-template-columns: 1fr;
+  }
+
+  .generation-model-row,
+  .generation-model-row dd {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .generation-model-row dd {
+    padding-left: 24px;
+  }
+
+  .generation-model-row dd > strong {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .generation-progress-focused {
