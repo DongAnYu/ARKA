@@ -1,0 +1,527 @@
+/* Recall-space and question library management */
+.questions-page {
+  gap: 16px;
+}
+
+.questions-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-manage-questions {
+  padding: 8px 12px;
+}
+
+.btn-manage-questions.is-active {
+  color: var(--color-bright-gray);
+  background-color: rgba(var(--rgb-lavender), 0.16);
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.42), var(--shadow-subtle);
+}
+
+.recall-spaces-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
+}
+
+.recall-space-card {
+  background-color: var(--color-surface);
+  border-radius: 12px;
+  box-shadow: var(--shadow-subtle);
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.recall-space-card.is-managing {
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.35);
+}
+
+.recall-space-button {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 18px 20px;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 16px;
+  transition: background-color var(--motion-fast) var(--ease-standard);
+}
+
+.recall-space-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.recall-space-button:hover {
+  background-color: rgba(var(--rgb-white), 0.02);
+}
+
+.recall-space-trash-btn {
+  position: absolute;
+  right: 12px;
+  top: 10px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background-color: rgba(190, 18, 60, 0.2);
+  color: #fecdd3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition-interactive-full);
+}
+
+.recall-space-trash-btn:hover:not(:disabled) {
+  background-color: rgba(190, 18, 60, 0.34);
+  color: #ffe4e6;
+  transform: translateY(-1px);
+}
+
+.recall-space-trash-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.recall-space-more-btn {
+  position: absolute;
+  right: 12px;
+  top: 10px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background-color: rgba(var(--rgb-white), 0.06);
+  color: var(--color-muted-gray);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: var(--transition-interactive-full);
+}
+
+.recall-space-card:hover .recall-space-more-btn,
+.recall-space-more-btn:focus-visible {
+  opacity: 1;
+}
+
+.recall-space-more-btn:hover:not(:disabled) {
+  background-color: rgba(var(--rgb-white), 0.12);
+  color: var(--color-bright-gray);
+}
+
+.recall-space-more-btn:disabled {
+  opacity: 0;
+  cursor: not-allowed;
+}
+
+.recall-space-card.is-managing .recall-space-more-btn {
+  right: 52px;
+}
+
+.library-space-workload {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 20px;
+  border-top: 1px solid rgba(var(--rgb-white), 0.08);
+  background-color: rgba(var(--rgb-white), 0.015);
+}
+
+.library-space-workload > span {
+  color: var(--color-medium-gray);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.library-space-workload > span.is-overdue {
+  color: var(--color-error-red);
+  font-weight: 600;
+}
+
+.library-space-recall-btn {
+  min-width: 118px;
+  justify-content: center;
+}
+
+.edit-space-modal {
+  box-shadow:
+    rgba(0, 0, 0, 0.45) 0 28px 80px,
+    inset 0 0 0 1px rgba(var(--rgb-lavender), 0.25) !important;
+}
+
+.edit-space-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.edit-space-label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-medium-gray);
+}
+
+.edit-space-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background-color: rgba(var(--rgb-white), 0.06);
+  color: var(--color-bright-gray);
+  font-size: 15px;
+  line-height: 1.5;
+  font-family: inherit;
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-white), 0.1);
+  transition: box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+.edit-space-input:focus {
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.6);
+}
+
+.edit-space-input:disabled {
+  opacity: 0.6;
+}
+
+.edit-space-textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.delete-space-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  animation: fade-overlay-in 220ms var(--ease-standard);
+}
+
+.delete-space-modal {
+  width: min(560px, 100%);
+  border-radius: 14px;
+  padding: 26px;
+  background:
+    linear-gradient(180deg, rgba(var(--rgb-white), 0.04), transparent 42%),
+    var(--color-surface);
+  box-shadow:
+    rgba(0, 0, 0, 0.45) 0 28px 80px,
+    inset 0 0 0 1px rgba(251, 113, 133, 0.35);
+  animation: pop-in 240ms var(--ease-standard);
+}
+
+.delete-space-modal h2 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.2;
+  color: var(--color-bright-gray);
+}
+
+.delete-space-modal p {
+  margin: 14px 0 0;
+  font-size: 16px;
+  line-height: 1.6;
+  color: #fecdd3;
+}
+
+.edit-space-modal h2 {
+  color: var(--color-bright-gray);
+}
+
+.edit-space-modal p {
+  color: var(--color-medium-gray);
+}
+
+.delete-space-modal-actions {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.delete-space-cancel-btn,
+.delete-space-confirm-btn {
+  min-height: 40px;
+  padding: 10px 14px;
+}
+
+.delete-space-confirm-btn {
+  background-color: #be123c;
+}
+
+.delete-space-confirm-btn:hover:not(:disabled) {
+  background-color: #9f1239;
+}
+
+@keyframes fade-overlay-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.recall-space-meta {
+  width: 100%;
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.recall-space-meta h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.4;
+  color: var(--color-bright-gray);
+  text-wrap: pretty;
+}
+
+.recall-space-meta p {
+  margin: 0;
+  color: var(--color-medium-gray);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.questions-list {
+  display: grid;
+  gap: 12px;
+}
+
+.question-card {
+  background-color: var(--color-surface);
+  border-radius: 12px;
+  box-shadow: var(--shadow-subtle);
+  overflow: hidden;
+}
+
+.question-card-head {
+  display: flex;
+  align-items: stretch;
+}
+
+.question-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  background-color: rgba(var(--rgb-white), 0.015);
+}
+
+.question-select input {
+  width: 17px;
+  height: 17px;
+  cursor: pointer;
+  accent-color: var(--color-amethyst);
+}
+
+.question-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px;
+  text-align: left;
+}
+
+.question-summary {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.question-id {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 9999px;
+  padding: 2px 8px;
+  background-color: rgba(138, 92, 245, 0.15);
+  color: var(--color-lavender);
+  font-size: 12px;
+}
+
+.question-summary h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--color-bright-gray);
+  text-wrap: pretty;
+}
+
+.question-more-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background-color: transparent;
+  color: var(--color-muted-gray);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: var(--transition-interactive-full);
+}
+
+.question-card:hover .question-more-btn,
+.question-more-btn:focus-visible {
+  opacity: 1;
+}
+
+.question-more-btn:hover:not(:disabled) {
+  background-color: rgba(var(--rgb-white), 0.08);
+  color: var(--color-bright-gray);
+}
+
+.question-more-btn:disabled {
+  opacity: 0;
+  cursor: not-allowed;
+}
+
+.edit-question-modal {
+  width: min(720px, 100%);
+}
+
+.edit-question-options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.edit-question-modal .edit-space-textarea {
+  min-height: 80px;
+}
+
+.edit-question-option-textarea {
+  resize: vertical;
+  min-height: 52px;
+  field-sizing: content;
+}
+
+.questions-manage-actions {
+  margin-top: 4px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-delete-questions {
+  background-color: #be123c;
+}
+
+.btn-delete-questions:hover:not(:disabled) {
+  background-color: #9f1239;
+}
+
+@media (max-width: 640px) {
+  .recall-space-button {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.settings-field label {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-bright-gray);
+  font-weight: 600;
+}
+
+.settings-input {
+  width: 100%;
+  border: 1px solid var(--color-graphite);
+  border-radius: 8px;
+  background-color: var(--color-abyss);
+  color: var(--color-bright-gray);
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  box-shadow: var(--shadow-subtle);
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: var(--color-amethyst);
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-lavender), 0.45), var(--shadow-subtle);
+}
+
+.settings-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.settings-fetch-btn {
+  align-self: stretch;
+  padding: 10px 12px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.model-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.model-input {
+  flex: 1;
+}
+
+.settings-status {
+  margin: 0;
+  color: var(--color-lavender);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-status.is-success {
+  color: var(--color-success-green);
+}
+
+.settings-status.is-error {
+  color: var(--color-error-red);
+}

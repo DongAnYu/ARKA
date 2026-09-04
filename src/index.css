@@ -14,6 +14,11 @@
   --color-warning-yellow: #facc15;
   --color-error-red: #f87171;
 
+  /* RGB tuples for alpha compositing */
+  --rgb-white: 255, 255, 255;
+  --rgb-amethyst: 124, 58, 237;
+  --rgb-lavender: 167, 139, 250;
+
   /* Typography — Font Families */
   --font-ui: 'IBM Plex Sans Variable', 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
 
@@ -48,6 +53,8 @@
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
   --font-weight-bold: 700;
+  --tracking: -0.02em;
+  --tracking-loose: 0.05em;
 
   /* Spacing */
   --spacing-unit: 4px;
@@ -73,8 +80,25 @@
   --radius-full: 9999px;
 
   /* Shadows */
-  --shadow-subtle: rgba(255, 255, 255, 0.05) 0px 0px 0px 1px inset;
+  --shadow-subtle: rgba(var(--rgb-white), 0.05) 0px 0px 0px 1px inset;
   --shadow-xl: rgba(0, 0, 0, 0.1) 0px 20px 25px -5px, rgba(0, 0, 0, 0.1) 0px 8px 10px -6px;
+  --ring-focus: rgba(var(--rgb-amethyst), 0.8);
+  --ring-focus-soft: rgba(var(--rgb-amethyst), 0.25);
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-move: cubic-bezier(0.25, 1, 0.5, 1);
+  --motion-fast: 140ms;
+  --motion-base: 220ms;
+  --transition-colors: color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard);
+  --transition-interactive: color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+  --transition-interactive-full: color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 
   /* Layout */
   --page-max-width: 1120px;
