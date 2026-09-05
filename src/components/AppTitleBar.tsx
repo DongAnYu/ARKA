@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Copy, Minus, Square, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import arkaLogo from '../assets/arka-logo.svg'
+import arkaAppIcon from '../assets/arka-app-icon.png'
 import {
   MODEL_CONFIG_UPDATED_EVENT,
   type PersistedModelConfig,
@@ -117,8 +117,8 @@ export function AppTitleBar() {
   return (
     <header className="app-titlebar" data-tauri-drag-region>
       <div className="titlebar-brand" data-tauri-drag-region>
-        <img src={arkaLogo} alt="" className="titlebar-logo" draggable={false} />
-        <span data-tauri-drag-region>A.R.K.A</span>
+        <img src={arkaAppIcon} alt="" className="titlebar-logo" draggable={false} />
+        <span data-tauri-drag-region>A.R.K.A.</span>
       </div>
 
       <div

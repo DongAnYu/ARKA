@@ -57,12 +57,28 @@
   gap: 12px;
 }
 
+.home-brand-lockup {
+  display: inline-grid;
+  justify-items: center;
+  gap: 9px;
+}
+
 .brand-logo {
-  width: 72px;
-  height: 72px;
-  border-radius: 18px;
+  width: 88px;
+  height: 88px;
+  border-radius: 22px;
+  object-fit: cover;
   box-shadow: var(--shadow-subtle);
   flex-shrink: 0;
+}
+
+.home-brand-wordmark {
+  color: var(--color-bright-gray);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.24em;
+  padding-left: 0.24em;
 }
 
 .welcome-description {
@@ -844,9 +860,13 @@
   }
 
   .brand-logo {
-    width: 56px;
-    height: 56px;
-    border-radius: 14px;
+    width: 72px;
+    height: 72px;
+    border-radius: 18px;
+  }
+
+  .home-brand-wordmark {
+    font-size: 13px;
   }
 
   .app-header {

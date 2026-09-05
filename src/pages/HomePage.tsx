@@ -19,7 +19,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import arkaLogo from '../assets/arka-logo.svg'
+import arkaAppIcon from '../assets/arka-app-icon.png'
 import { BackToHome } from '../components/BackToHome'
 import { useGeneration } from '../generation/context'
 import type { ChunkPreview, Note } from '../generation/types'
@@ -455,7 +455,10 @@ export function HomePage() {
         <>
           <div className="app-header">
             <div className="brand-title">
-              <img src={arkaLogo} alt="ARKA logo" className="brand-logo" />
+              <div className="home-brand-lockup">
+                <img src={arkaAppIcon} alt="" className="brand-logo" />
+                <span className="home-brand-wordmark">A.R.K.A.</span>
+              </div>
               <h1>{welcomeMessage}</h1>
             </div>
             <p className="welcome-description">

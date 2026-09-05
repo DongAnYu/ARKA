@@ -164,20 +164,22 @@ body {
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: 12px;
+  padding: 18px 16px;
 }
 
 .sidebar-logo {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
   box-shadow: var(--shadow-subtle);
 }
 
 .sidebar-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.06em;
   color: var(--color-bright-gray);
 }
 
@@ -291,4 +293,3 @@ body {
     scroll-behavior: auto !important;
   }
 }
-

@@ -1,6 +1,6 @@
 import { FolderOpen, HelpCircle, Home, Plug, Settings } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
-import arkaLogo from '../assets/arka-logo.svg'
+import arkaAppIcon from '../assets/arka-app-icon.png'
 
 const navItems = [
   { to: '/', label: 'Home', icon: Home, end: true },
@@ -39,8 +39,8 @@ export function AppSidebar({ variant = 'sidebar' }: AppSidebarProps) {
   return (
     <aside className="app-sidebar" aria-label="App navigation">
       <div className="sidebar-brand">
-        <img src={arkaLogo} alt="Recall logo" className="sidebar-logo" />
-        <span className="sidebar-title">Recall</span>
+        <img src={arkaAppIcon} alt="" className="sidebar-logo" />
+        <span className="sidebar-title">A.R.K.A.</span>
       </div>
 
       <nav className="sidebar-nav">
