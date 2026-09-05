@@ -31,6 +31,11 @@ REQUIREMENTS:
 4. All four options must be grammatically parallel and plausible.
 5. Exactly one option is correct; the other three are convincing distractors.
 6. Avoid "none of the above" or "all of the above" options.
+7. The question stem must be self-contained and answerable without access to the source note.
+8. Include any essential facts from an example, code block, image, diagram, figure, or table directly in the question stem.
+9. Never refer to unspecified context with wording such as "the example", "shown above", "shown below", or "the following configuration".
+10. Do not rely on the answer options to supply context missing from the question stem.
+11. Base the question only on source information that can be restated faithfully as text.
 
 QUESTION TYPES:
 
@@ -268,6 +273,21 @@ mod tests {
         assert!(prompt.contains("studied the material"));
         assert!(prompt.contains("retrieval"));
         assert!(prompt.contains("not guessing"));
+    }
+
+    #[test]
+    fn test_system_prompt_requires_source_examples_to_be_self_contained() {
+        let prompt = system_prompt();
+
+        assert!(prompt.contains("self-contained and answerable without access to the source note"));
+        assert!(prompt.contains(
+            "essential facts from an example, code block, image, diagram, figure, or table"
+        ));
+        assert!(prompt.contains("Never refer to unspecified context"));
+        assert!(prompt.contains("Do not rely on the answer options to supply context"));
+        assert!(prompt.contains(
+            "Base the question only on source information that can be restated faithfully as text"
+        ));
     }
 
     #[test]
