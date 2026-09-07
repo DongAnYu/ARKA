@@ -4,23 +4,29 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Check,
-  ChevronDown,
   ChevronRight,
   FileText,
   FolderOpen,
   GitBranch,
   Pause,
   Play,
-  Plus,
-  Save,
   Sparkles,
   X,
   Zap,
 } from 'lucide-react'
 import arkaAppIcon from '../assets/arka-app-icon.png'
 import { BackToHome } from '../components/BackToHome'
+import {
+  GeneratedQuestionReview,
+} from '../components/GeneratedQuestionReview'
+import {
+  createReviewQuestionDrafts,
+  getReviewQuestionError,
+  type ReviewQuestionDraft,
+} from '../generation/review'
 import { useGeneration } from '../generation/context'
 import type { ChunkPreview, Note } from '../generation/types'
 import {
@@ -69,7 +75,7 @@ const getWelcomeMessage = (date = new Date()) => {
     </>
   )
 }
-type Question = {
+type QuestionInput = {
   question: string
   option_a: string
   option_b: string
@@ -77,7 +83,6 @@ type Question = {
   option_d: string
   correct_answer: string
   explanation: string | null
-  space_id: number
 }
 
 type RecallSpace = {
@@ -134,6 +139,9 @@ export function HomePage() {
   const [saveStatus, setSaveStatus] = useState('')
   const [saveStatusKind, setSaveStatusKind] = useState<'success' | 'error' | ''>('')
   const [hasSavedQuestions, setHasSavedQuestions] = useState(false)
+  const [reviewQuestions, setReviewQuestions] = useState<ReviewQuestionDraft[]>([])
+  const [isReviewingQuestions, setIsReviewingQuestions] = useState(false)
+  const [reviewResumeIndex, setReviewResumeIndex] = useState(0)
   const [error, setError] = useState('')
   const [modelConfig, setModelConfig] = useState<PersistedModelConfig | null>(null)
   const [isLoadingModelConfig, setIsLoadingModelConfig] = useState(true)
@@ -146,6 +154,18 @@ export function HomePage() {
     ) ?? 0
 
   const selectedSpace = recallSpaces.find((space) => space.id === selectedSpaceId)
+  const destinationName =
+    saveDestinationMode === 'new'
+      ? newSpaceName.trim()
+      : selectedSpace?.name ?? ''
+  const keptReviewCount = reviewQuestions.filter(
+    (question) => question.decision === 'kept',
+  ).length
+  const discardedReviewCount = reviewQuestions.filter(
+    (question) => question.decision === 'discarded',
+  ).length
+  const remainingReviewCount =
+    reviewQuestions.length - keptReviewCount - discardedReviewCount
   const visibleError = error || generationError
   const isLlmReady = Boolean(modelConfig?.selected_model.trim())
   const isEmbeddingReady = Boolean(modelConfig?.embedding_selected_model.trim())
@@ -289,6 +309,9 @@ export function HomePage() {
     setSaveStatus('')
     setSaveStatusKind('')
     setHasSavedQuestions(false)
+    setReviewQuestions([])
+    setIsReviewingQuestions(false)
+    setReviewResumeIndex(0)
 
     try {
       const data = await invoke<Note[]>('get_notes', { vaultPath: path })
@@ -309,28 +332,89 @@ export function HomePage() {
     setSaveStatus('')
     setSaveStatusKind('')
     setHasSavedQuestions(false)
+    setReviewQuestions([])
+    setIsReviewingQuestions(false)
+    setReviewResumeIndex(0)
   }
 
   const generatePreview = async () => {
     setError('')
     setShowChunks(false)
     setSelectedChunk(null)
+    setReviewQuestions([])
+    setIsReviewingQuestions(false)
+    setReviewResumeIndex(0)
+    setSaveStatus('')
+    setSaveStatusKind('')
+    setHasSavedQuestions(false)
     await startGeneration()
   }
 
-  const saveGeneratedQuestions = async () => {
+  const beginQuestionReview = () => {
+    if (!generationSummary || generatedQuestionCount === 0 || hasSavedQuestions) {
+      return
+    }
+
+    setSaveStatus('')
+    setSaveStatusKind('')
+    if (reviewQuestions.length === 0) {
+      setReviewQuestions(createReviewQuestionDrafts(generationSummary))
+      setReviewResumeIndex(0)
+    }
+    setIsReviewingQuestions(true)
+  }
+
+  const closeQuestionReview = (activeIndex: number) => {
+    setReviewResumeIndex(activeIndex)
+    setIsReviewingQuestions(false)
+  }
+
+  const updateReviewQuestion = (
+    reviewId: string,
+    updates: Partial<ReviewQuestionDraft>,
+  ) => {
+    setReviewQuestions((current) =>
+      current.map((question) =>
+        question.reviewId === reviewId ? { ...question, ...updates } : question,
+      ),
+    )
+    setSaveStatus('')
+    setSaveStatusKind('')
+  }
+
+  const keepRemainingQuestions = () => {
+    setReviewQuestions((current) =>
+      current.map((question) =>
+        question.decision === 'pending'
+          ? { ...question, decision: 'kept' }
+          : question,
+      ),
+    )
+  }
+
+  const keepRemainingFromResults = () => {
+    const invalidIndex = reviewQuestions.findIndex(
+      (question) =>
+        question.decision === 'pending' && Boolean(getReviewQuestionError(question)),
+    )
+
+    if (invalidIndex !== -1) {
+      setReviewResumeIndex(invalidIndex)
+      setIsReviewingQuestions(true)
+      return
+    }
+
+    keepRemainingQuestions()
+    setIsReviewingQuestions(true)
+  }
+
+  const saveGeneratedQuestions = async (questionsToSave: QuestionInput[]) => {
     if (saveInFlightRef.current || isSavingQuestions || hasSavedQuestions) {
       return
     }
 
-    if (!generationSummary) {
-      setSaveStatus('No questions to save.')
-      setSaveStatusKind('error')
-      return
-    }
-
-    if (generatedQuestionCount === 0) {
-      setSaveStatus('No generated questions were found in this preview.')
+    if (questionsToSave.length === 0) {
+      setSaveStatus('No kept questions are ready to add.')
       setSaveStatusKind('error')
       return
     }
@@ -354,6 +438,7 @@ export function HomePage() {
 
     try {
       let destinationSpaceId = selectedSpaceId
+      let destinationSpaceName = selectedSpace?.name ?? `space ${selectedSpaceId}`
 
       if (saveDestinationMode === 'new') {
         const trimmedName = newSpaceName.trim()
@@ -364,6 +449,7 @@ export function HomePage() {
         })
 
         destinationSpaceId = createdSpace.id
+        destinationSpaceName = createdSpace.name
         setSelectedSpaceId(createdSpace.id)
         setSaveDestinationMode('existing')
         setNewSpaceName('')
@@ -371,22 +457,16 @@ export function HomePage() {
         await loadRecallSpaces()
       }
 
-      // Extract all questions from chunks
-      const questionsToSave: Question[] = []
-      generationSummary.chunk_previews.forEach((chunk) => {
-        chunk.llm_result.questions.forEach((q) => {
-          questionsToSave.push({
-            question: q.question,
-            option_a: q.option_a,
-            option_b: q.option_b,
-            option_c: q.option_c,
-            option_d: q.option_d,
-            correct_answer: q.correct_answer,
-            explanation: q.explanation,
-            space_id: destinationSpaceId,
-          })
-        })
-      })
+      const preparedQuestions = questionsToSave.map((question) => ({
+        question: question.question.trim(),
+        option_a: question.option_a.trim(),
+        option_b: question.option_b.trim(),
+        option_c: question.option_c.trim(),
+        option_d: question.option_d.trim(),
+        correct_answer: question.correct_answer.trim().toUpperCase(),
+        explanation: question.explanation?.trim() || null,
+        space_id: destinationSpaceId,
+      }))
 
       // Load current model config to get model name
       const latestModelConfig = await invoke<PersistedModelConfig>('load_model_config')
@@ -394,17 +474,15 @@ export function HomePage() {
 
       // Save to database
       await invoke('save_generated_questions', {
-        questions: questionsToSave,
+        questions: preparedQuestions,
         model: modelName,
       })
 
-      // Success feedback
-      const spaceName =
-        saveDestinationMode === 'new'
-          ? newSpaceName.trim()
-          : selectedSpace?.name ?? `space ${destinationSpaceId}`
       setHasSavedQuestions(true)
-      setSaveStatus(`Saved ${questionsToSave.length} questions to ${spaceName}.`)
+      setIsReviewingQuestions(false)
+      setSaveStatus(
+        `Added ${preparedQuestions.length} ${preparedQuestions.length === 1 ? 'question' : 'questions'} to ${destinationSpaceName}.`,
+      )
       setSaveStatusKind('success')
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save questions'
@@ -415,6 +493,51 @@ export function HomePage() {
       saveInFlightRef.current = false
       setIsSavingQuestions(false)
     }
+  }
+
+  const keepAllQuestions = () => {
+    if (!generationSummary) {
+      setSaveStatus('No questions are ready to add.')
+      setSaveStatusKind('error')
+      return
+    }
+
+    setSaveStatus('')
+    setSaveStatusKind('')
+    setReviewQuestions(
+      createReviewQuestionDrafts(generationSummary).map((question) => ({
+        ...question,
+        decision: 'kept',
+      })),
+    )
+    setReviewResumeIndex(0)
+    setIsReviewingQuestions(true)
+  }
+
+  const saveReviewedQuestions = () => {
+    const keptQuestions = reviewQuestions.filter(
+      (question) => question.decision === 'kept',
+    )
+    const invalidQuestionIndex = keptQuestions.findIndex((question) =>
+      Boolean(getReviewQuestionError(question)),
+    )
+
+    if (invalidQuestionIndex !== -1) {
+      setSaveStatus(
+        `Kept question ${invalidQuestionIndex + 1} needs attention before it can be added.`,
+      )
+      setSaveStatusKind('error')
+      return
+    }
+
+    void saveGeneratedQuestions(keptQuestions)
+  }
+
+  const finishReviewWithoutSaving = () => {
+    setHasSavedQuestions(true)
+    setIsReviewingQuestions(false)
+    setSaveStatus('Review complete. No questions were added to your library.')
+    setSaveStatusKind('success')
   }
 
   const generationPercent = generationProgress?.progress_percent ?? 0
@@ -1117,105 +1240,108 @@ export function HomePage() {
           <div className="generation-summary-actions generation-complete-save">
             <div className="generation-save-heading">
               <span className="generation-save-symbol" aria-hidden="true">
-                <Save />
+                <Check />
               </span>
               <div>
-                <h3>Save to Recall Space</h3>
-                <p>{generatedQuestionCount} questions ready to save</p>
-              </div>
-              <div className="save-mode-toggle" role="group" aria-label="Save destination">
-                <button
-                  type="button"
-                  className={`save-mode-btn${saveDestinationMode === 'existing' ? ' is-active' : ''}`}
-                  onClick={() => setSaveDestinationMode('existing')}
-                  disabled={isSavingQuestions || hasSavedQuestions}
-                >
-                  Existing
-                </button>
-                <button
-                  type="button"
-                  className={`save-mode-btn${saveDestinationMode === 'new' ? ' is-active' : ''}`}
-                  onClick={() => setSaveDestinationMode('new')}
-                  disabled={isSavingQuestions || hasSavedQuestions}
-                >
-                  New
-                </button>
+                <h3>{hasSavedQuestions ? 'Review finished' : 'Choose what to keep'}</h3>
+                <p>
+                  {hasSavedQuestions
+                    ? 'This generated batch has been handled.'
+                    : `${generatedQuestionCount} ${generatedQuestionCount === 1 ? 'draft is' : 'drafts are'} ready for your library`}
+                </p>
               </div>
             </div>
 
-            <div className={`generation-save-controls${saveDestinationMode === 'new' ? ' is-new-space' : ''}`}>
-              {saveDestinationMode === 'existing' ? (
-                <label className="recall-space-select-wrap">
-                  <span>{isLoadingRecallSpaces ? 'Loading spaces…' : 'Destination'}</span>
-                  <select
-                    className="recall-space-select"
-                    value={selectedSpaceId}
-                    onChange={(event) => setSelectedSpaceId(Number(event.target.value))}
-                    disabled={
-                      isLoadingRecallSpaces ||
-                      isSavingQuestions ||
-                      hasSavedQuestions ||
-                      recallSpaces.length === 0
-                    }
-                  >
-                    {recallSpaces.map((space) => (
-                      <option key={space.id} value={space.id}>
-                        {space.name}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="recall-space-chevron" aria-hidden="true" />
-                </label>
-              ) : (
-                <div className="new-space-fields">
-                  <label className="settings-field">
-                    <span>Name</span>
-                    <input
-                      className="settings-input"
-                      value={newSpaceName}
-                      onChange={(event) => setNewSpaceName(event.target.value)}
-                      placeholder="Exam prep, Algorithms, Week 4..."
-                      disabled={isSavingQuestions || hasSavedQuestions}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Description</span>
-                    <input
-                      className="settings-input"
-                      value={newSpaceDescription}
-                      onChange={(event) => setNewSpaceDescription(event.target.value)}
-                      placeholder="Optional"
-                      disabled={isSavingQuestions || hasSavedQuestions}
-                    />
-                  </label>
-                </div>
-              )}
-
-              <button
-                type="button"
-                className="btn-primary btn-save-questions"
-                onClick={saveGeneratedQuestions}
-                disabled={isSavingQuestions || hasSavedQuestions || generatedQuestionCount === 0}
-              >
-                {isSavingQuestions ? (
-                  'Saving...'
-                ) : hasSavedQuestions ? (
-                  <span className="btn-content">
-                    <Check className="btn-icon" aria-hidden="true" />
-                    Saved
-                  </span>
-                ) : (
-                  <span className="btn-content">
-                    {saveDestinationMode === 'new' ? (
-                      <Plus className="btn-icon" aria-hidden="true" />
-                    ) : (
-                      <Save className="btn-icon" aria-hidden="true" />
-                    )}
-                    {saveDestinationMode === 'new' ? 'Create Space & Save' : 'Save Questions'}
-                  </span>
+            {!isReviewingQuestions && (
+              <div className="generation-save-review-controls">
+                {reviewQuestions.length > 0 && !hasSavedQuestions && (
+                  <div className="question-review-resume-status" aria-live="polite">
+                    <span><strong>{keptReviewCount}</strong> kept</span>
+                    <span><strong>{discardedReviewCount}</strong> discarded</span>
+                    <span><strong>{remainingReviewCount}</strong> remaining</span>
+                  </div>
                 )}
-              </button>
-            </div>
+                <div className="question-staging-actions">
+                {hasSavedQuestions ? (
+                  <>
+                    <button type="button" className="btn-primary" onClick={returnToHome}>
+                      <ArrowLeft className="btn-icon" aria-hidden="true" />
+                      Back Home
+                    </button>
+                    <Link
+                      to="/questions"
+                      className="btn-secondary question-library-link"
+                      onClick={returnToHome}
+                    >
+                      Open Question Library
+                      <ArrowRight className="btn-icon" aria-hidden="true" />
+                    </Link>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-primary question-review-start"
+                      onClick={beginQuestionReview}
+                      disabled={isSavingQuestions || generatedQuestionCount === 0}
+                    >
+                      {reviewQuestions.length > 0 ? (
+                        <>Continue Review</>
+                      ) : (
+                        <>
+                          Review {generatedQuestionCount}{' '}
+                          {generatedQuestionCount === 1 ? 'Question' : 'Questions'}
+                        </>
+                      )}
+                      <ArrowRight className="btn-icon" aria-hidden="true" />
+                    </button>
+                    {(reviewQuestions.length === 0 || remainingReviewCount > 0) && (
+                      <button
+                        type="button"
+                        className="btn-secondary question-keep-all"
+                        onClick={
+                          reviewQuestions.length > 0
+                            ? keepRemainingFromResults
+                            : keepAllQuestions
+                        }
+                        disabled={isSavingQuestions || generatedQuestionCount === 0}
+                      >
+                        {isSavingQuestions
+                          ? 'Adding questions…'
+                          : reviewQuestions.length > 0
+                            ? 'Keep remaining'
+                            : 'Keep All'}
+                      </button>
+                    )}
+                  </>
+                )}
+                </div>
+              </div>
+            )}
+
+            {isReviewingQuestions && (
+              <GeneratedQuestionReview
+                questions={reviewQuestions}
+                destinationName={destinationName}
+                saveDestinationMode={saveDestinationMode}
+                onSaveDestinationModeChange={setSaveDestinationMode}
+                recallSpaces={recallSpaces}
+                isLoadingRecallSpaces={isLoadingRecallSpaces}
+                selectedSpaceId={selectedSpaceId}
+                onSelectedSpaceChange={setSelectedSpaceId}
+                newSpaceName={newSpaceName}
+                onNewSpaceNameChange={setNewSpaceName}
+                newSpaceDescription={newSpaceDescription}
+                onNewSpaceDescriptionChange={setNewSpaceDescription}
+                isSaving={isSavingQuestions}
+                initialActiveIndex={reviewResumeIndex}
+                onUpdateQuestion={updateReviewQuestion}
+                onKeepRemaining={keepRemainingQuestions}
+                onSaveKept={saveReviewedQuestions}
+                onFinishWithoutSaving={finishReviewWithoutSaving}
+                onClose={closeQuestionReview}
+              />
+            )}
 
             {saveStatus && (
               <p className={`settings-status save-status${saveStatusKind ? ` is-${saveStatusKind}` : ''}`}>
