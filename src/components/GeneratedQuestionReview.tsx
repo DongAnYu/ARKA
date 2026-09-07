@@ -15,6 +15,9 @@ import {
   type ReviewDecision,
   type ReviewQuestionDraft,
 } from '../generation/review'
+import { commands } from '../commands/commands'
+import { getAriaKeyShortcut, getShortcut } from '../shortcuts/defaultShortcuts'
+import { useKeyboardShortcuts } from '../shortcuts/useKeyboardShortcuts'
 
 type EditableQuestionField =
   | 'question'
@@ -106,16 +109,20 @@ export function GeneratedQuestionReview({
     }
   }, [])
 
-  if (!activeQuestion) {
-    return null
-  }
-
   const updateField = (field: EditableQuestionField, value: string) => {
+    if (!activeQuestion) {
+      return
+    }
+
     setValidationMessage('')
     onUpdateQuestion(activeQuestion.reviewId, { [field]: value })
   }
 
   const decideQuestion = (decision: Exclude<ReviewDecision, 'pending'>) => {
+    if (!activeQuestion) {
+      return false
+    }
+
     const nextDecision: ReviewDecision =
       activeQuestion.decision === decision ? 'pending' : decision
 
@@ -123,12 +130,13 @@ export function GeneratedQuestionReview({
       const message = getReviewQuestionError(activeQuestion)
       if (message) {
         setValidationMessage(message)
-        return
+        return false
       }
     }
 
     onUpdateQuestion(activeQuestion.reviewId, { decision: nextDecision })
     setValidationMessage('')
+    return true
   }
 
   const keepRemaining = () => {
@@ -158,6 +166,46 @@ export function GeneratedQuestionReview({
       onClose(activeIndex)
     }
   }
+
+  const goToPreviousQuestion = () => {
+    if (activeIndex === 0 || isSaving) {
+      return false
+    }
+
+    setActiveIndex((index) => Math.max(0, index - 1))
+    setValidationMessage('')
+    return true
+  }
+
+  const goToNextQuestion = () => {
+    if (activeIndex === questions.length - 1 || isSaving) {
+      return false
+    }
+
+    setActiveIndex((index) => Math.min(questions.length - 1, index + 1))
+    setValidationMessage('')
+    return true
+  }
+
+  useKeyboardShortcuts({
+    scope: 'question-review',
+    enabled: Boolean(activeQuestion) && !isSaving,
+    handlers: {
+      [commands.reviewPrevious]: goToPreviousQuestion,
+      [commands.reviewNext]: goToNextQuestion,
+      [commands.reviewDiscard]: () => decideQuestion('discarded'),
+      [commands.reviewKeep]: () => decideQuestion('kept'),
+    },
+  })
+
+  if (!activeQuestion) {
+    return null
+  }
+
+  const previousShortcut = getShortcut(commands.reviewPrevious)
+  const nextShortcut = getShortcut(commands.reviewNext)
+  const discardShortcut = getShortcut(commands.reviewDiscard)
+  const keepShortcut = getShortcut(commands.reviewKeep)
 
   return (
     <dialog
@@ -344,23 +392,19 @@ export function GeneratedQuestionReview({
             <div className="question-review-pagination" aria-label="Question navigation">
               <button
                 type="button"
-                onClick={() => {
-                  setActiveIndex((index) => Math.max(0, index - 1))
-                  setValidationMessage('')
-                }}
+                onClick={goToPreviousQuestion}
                 disabled={activeIndex === 0 || isSaving}
                 aria-label="Previous question"
+                aria-keyshortcuts={getAriaKeyShortcut(commands.reviewPrevious)}
               >
                 <ChevronLeft aria-hidden="true" />
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setActiveIndex((index) => Math.min(questions.length - 1, index + 1))
-                  setValidationMessage('')
-                }}
+                onClick={goToNextQuestion}
                 disabled={activeIndex === questions.length - 1 || isSaving}
                 aria-label="Next question"
+                aria-keyshortcuts={getAriaKeyShortcut(commands.reviewNext)}
               >
                 <ChevronRight aria-hidden="true" />
               </button>
@@ -428,6 +472,22 @@ export function GeneratedQuestionReview({
             </p>
           )}
 
+          <div className="question-review-shortcuts" aria-label="Question review keyboard shortcuts">
+            <span>
+              <kbd>{previousShortcut?.display}</kbd>
+              <kbd>{nextShortcut?.display}</kbd>
+              Navigate
+            </span>
+            <span>
+              <kbd>{discardShortcut?.display}</kbd>
+              Discard
+            </span>
+            <span>
+              <kbd>{keepShortcut?.display}</kbd>
+              Keep
+            </span>
+          </div>
+
           <footer className="question-review-actions">
             <button
               type="button"
@@ -435,6 +495,7 @@ export function GeneratedQuestionReview({
               onClick={() => decideQuestion('discarded')}
               disabled={isSaving}
               aria-pressed={activeQuestion.decision === 'discarded'}
+              aria-keyshortcuts={getAriaKeyShortcut(commands.reviewDiscard)}
             >
               <X aria-hidden="true" />
               Discard
@@ -445,6 +506,7 @@ export function GeneratedQuestionReview({
               onClick={() => decideQuestion('kept')}
               disabled={isSaving}
               aria-pressed={activeQuestion.decision === 'kept'}
+              aria-keyshortcuts={getAriaKeyShortcut(commands.reviewKeep)}
             >
               <Check aria-hidden="true" />
               Keep

@@ -1815,6 +1815,39 @@
   font-size: 13px;
 }
 
+.question-review-shortcuts {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 14px;
+  color: var(--color-muted-gray);
+  font-size: 11px;
+}
+
+.question-review-shortcuts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.question-review-shortcuts kbd {
+  min-width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 5px;
+  background-color: rgba(var(--rgb-white), 0.045);
+  color: var(--color-medium-gray);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-white), 0.09);
+}
+
 .question-review-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(120px, 156px));
