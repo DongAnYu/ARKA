@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FolderOpen,
+  Sparkles,
   X,
 } from 'lucide-react'
 import {
@@ -46,6 +47,7 @@ type GeneratedQuestionReviewProps = {
   newSpaceDescription: string
   onNewSpaceDescriptionChange: (description: string) => void
   isSaving: boolean
+  isGenerationActive: boolean
   initialActiveIndex: number
   onUpdateQuestion: (
     reviewId: string,
@@ -71,6 +73,7 @@ export function GeneratedQuestionReview({
   newSpaceDescription,
   onNewSpaceDescriptionChange,
   isSaving,
+  isGenerationActive,
   initialActiveIndex,
   onUpdateQuestion,
   onKeepRemaining,
@@ -79,12 +82,22 @@ export function GeneratedQuestionReview({
   onClose,
 }: GeneratedQuestionReviewProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
+  const maxInitialIndex = isGenerationActive
+    ? questions.length
+    : Math.max(questions.length - 1, 0)
   const [activeIndex, setActiveIndex] = useState(
-    Math.min(Math.max(initialActiveIndex, 0), Math.max(questions.length - 1, 0)),
+    Math.min(Math.max(initialActiveIndex, 0), maxInitialIndex),
   )
   const [validationMessage, setValidationMessage] = useState('')
 
-  const activeQuestion = questions[activeIndex]
+  const lastAvailableIndex = Math.max(questions.length - 1, 0)
+  const displayedActiveIndex = isGenerationActive
+    ? activeIndex
+    : Math.min(activeIndex, lastAvailableIndex)
+  const isCaughtUp = isGenerationActive && activeIndex >= questions.length
+  const activeQuestion = questions[
+    Math.min(displayedActiveIndex, lastAvailableIndex)
+  ]
   const keptCount = questions.filter((question) => question.decision === 'kept').length
   const discardedCount = questions.filter(
     (question) => question.decision === 'discarded',
@@ -110,7 +123,7 @@ export function GeneratedQuestionReview({
   }, [])
 
   const updateField = (field: EditableQuestionField, value: string) => {
-    if (!activeQuestion) {
+    if (!activeQuestion || isCaughtUp) {
       return
     }
 
@@ -119,7 +132,7 @@ export function GeneratedQuestionReview({
   }
 
   const decideQuestion = (decision: Exclude<ReviewDecision, 'pending'>) => {
-    if (!activeQuestion) {
+    if (!activeQuestion || isCaughtUp) {
       return false
     }
 
@@ -163,26 +176,36 @@ export function GeneratedQuestionReview({
 
   const closeReview = () => {
     if (!isSaving) {
-      onClose(activeIndex)
+      onClose(displayedActiveIndex)
     }
   }
 
   const goToPreviousQuestion = () => {
-    if (activeIndex === 0 || isSaving) {
+    if (displayedActiveIndex === 0 || isSaving) {
       return false
     }
 
-    setActiveIndex((index) => Math.max(0, index - 1))
+    setActiveIndex(Math.max(0, displayedActiveIndex - 1))
     setValidationMessage('')
     return true
   }
 
   const goToNextQuestion = () => {
-    if (activeIndex === questions.length - 1 || isSaving) {
+    if (isSaving || isCaughtUp) {
       return false
     }
 
-    setActiveIndex((index) => Math.min(questions.length - 1, index + 1))
+    if (displayedActiveIndex === lastAvailableIndex) {
+      if (!isGenerationActive) {
+        return false
+      }
+
+      setActiveIndex(questions.length)
+      setValidationMessage('')
+      return true
+    }
+
+    setActiveIndex(Math.min(lastAvailableIndex, displayedActiveIndex + 1))
     setValidationMessage('')
     return true
   }
@@ -227,12 +250,19 @@ export function GeneratedQuestionReview({
           <div className="question-review-title-group">
             <div>
               <h3 id="question-review-title">Question review</h3>
-              <p>Refine each draft before anything is added to your library.</p>
+              <p>
+                {isGenerationActive
+                  ? 'Review complete drafts while ARKA keeps generating in the background.'
+                  : 'Refine each draft before anything is added to your library.'}
+              </p>
             </div>
             <div className="question-review-counts" aria-live="polite">
               <span className="is-kept"><strong>{keptCount}</strong> kept</span>
               <span className="is-discarded"><strong>{discardedCount}</strong> discarded</span>
               <span className="is-remaining"><strong>{remainingCount}</strong> remaining</span>
+              {isGenerationActive && (
+                <span className="is-generating"><i aria-hidden="true" />Generating more…</span>
+              )}
             </div>
           </div>
 
@@ -340,6 +370,11 @@ export function GeneratedQuestionReview({
                 <CheckCheck aria-hidden="true" />
                 Keep remaining
               </button>
+            ) : isGenerationActive ? (
+              <span className="question-review-waiting">
+                <i aria-hidden="true" />
+                Waiting for more
+              </span>
             ) : keptCount > 0 ? (
               <button
                 type="button"
@@ -382,18 +417,24 @@ export function GeneratedQuestionReview({
         <div className="question-review-workspace">
           <div className="question-review-position-row">
             <div>
-              <span className="question-review-position">
-                Question {activeIndex + 1} of {questions.length}
-              </span>
-              <span className={`question-review-decision is-${activeQuestion.decision}`}>
-                {activeQuestion.decision}
-              </span>
+              {isCaughtUp ? (
+                <span className="question-review-position">All {questions.length} available questions viewed</span>
+              ) : (
+                <>
+                  <span className="question-review-position">
+                    Question {displayedActiveIndex + 1} of {questions.length}
+                  </span>
+                  <span className={`question-review-decision is-${activeQuestion.decision}`}>
+                    {activeQuestion.decision}
+                  </span>
+                </>
+              )}
             </div>
             <div className="question-review-pagination" aria-label="Question navigation">
               <button
                 type="button"
                 onClick={goToPreviousQuestion}
-                disabled={activeIndex === 0 || isSaving}
+                disabled={displayedActiveIndex === 0 || isSaving}
                 aria-label="Previous question"
                 aria-keyshortcuts={getAriaKeyShortcut(commands.reviewPrevious)}
               >
@@ -402,7 +443,7 @@ export function GeneratedQuestionReview({
               <button
                 type="button"
                 onClick={goToNextQuestion}
-                disabled={activeIndex === questions.length - 1 || isSaving}
+                disabled={isCaughtUp || (!isGenerationActive && displayedActiveIndex === lastAvailableIndex) || isSaving}
                 aria-label="Next question"
                 aria-keyshortcuts={getAriaKeyShortcut(commands.reviewNext)}
               >
@@ -411,6 +452,17 @@ export function GeneratedQuestionReview({
             </div>
           </div>
 
+          {isCaughtUp ? (
+            <div className="question-review-caught-up" role="status">
+              <span className="question-review-caught-up-icon" aria-hidden="true">
+                <Sparkles />
+              </span>
+              <div>
+                <strong>You’re caught up</strong>
+                <p>Generating the next question… it will appear here automatically.</p>
+              </div>
+            </div>
+          ) : (
           <div className="question-review-form">
             <label className="question-review-field question-review-prompt">
               <span>Question</span>
@@ -465,6 +517,7 @@ export function GeneratedQuestionReview({
               </div>
             )}
           </div>
+          )}
 
           {validationMessage && (
             <p className="question-review-validation" role="alert">
@@ -473,45 +526,56 @@ export function GeneratedQuestionReview({
           )}
 
           <div className="question-review-shortcuts" aria-label="Question review keyboard shortcuts">
-            <span>
-              <kbd>{previousShortcut?.display}</kbd>
-              <kbd>{nextShortcut?.display}</kbd>
-              Navigate
-            </span>
-            <span>
-              <kbd>{discardShortcut?.display}</kbd>
-              Discard
-            </span>
-            <span>
-              <kbd>{keepShortcut?.display}</kbd>
-              Keep
-            </span>
+            {isCaughtUp ? (
+              <span>
+                <kbd>{previousShortcut?.display}</kbd>
+                Back to last question
+              </span>
+            ) : (
+              <>
+                <span>
+                  <kbd>{previousShortcut?.display}</kbd>
+                  <kbd>{nextShortcut?.display}</kbd>
+                  Navigate
+                </span>
+                <span>
+                  <kbd>{discardShortcut?.display}</kbd>
+                  Discard
+                </span>
+                <span>
+                  <kbd>{keepShortcut?.display}</kbd>
+                  Keep
+                </span>
+              </>
+            )}
           </div>
 
-          <footer className="question-review-actions">
-            <button
-              type="button"
-              className={`btn-secondary question-review-discard${activeQuestion.decision === 'discarded' ? ' is-active' : ''}`}
-              onClick={() => decideQuestion('discarded')}
-              disabled={isSaving}
-              aria-pressed={activeQuestion.decision === 'discarded'}
-              aria-keyshortcuts={getAriaKeyShortcut(commands.reviewDiscard)}
-            >
-              <X aria-hidden="true" />
-              Discard
-            </button>
-            <button
-              type="button"
-              className={`btn-secondary question-review-keep${activeQuestion.decision === 'kept' ? ' is-active' : ''}`}
-              onClick={() => decideQuestion('kept')}
-              disabled={isSaving}
-              aria-pressed={activeQuestion.decision === 'kept'}
-              aria-keyshortcuts={getAriaKeyShortcut(commands.reviewKeep)}
-            >
-              <Check aria-hidden="true" />
-              Keep
-            </button>
-          </footer>
+          {!isCaughtUp && (
+            <footer className="question-review-actions">
+              <button
+                type="button"
+                className={`btn-secondary question-review-discard${activeQuestion.decision === 'discarded' ? ' is-active' : ''}`}
+                onClick={() => decideQuestion('discarded')}
+                disabled={isSaving}
+                aria-pressed={activeQuestion.decision === 'discarded'}
+                aria-keyshortcuts={getAriaKeyShortcut(commands.reviewDiscard)}
+              >
+                <X aria-hidden="true" />
+                Discard
+              </button>
+              <button
+                type="button"
+                className={`btn-secondary question-review-keep${activeQuestion.decision === 'kept' ? ' is-active' : ''}`}
+                onClick={() => decideQuestion('kept')}
+                disabled={isSaving}
+                aria-pressed={activeQuestion.decision === 'kept'}
+                aria-keyshortcuts={getAriaKeyShortcut(commands.reviewKeep)}
+              >
+                <Check aria-hidden="true" />
+                Keep
+              </button>
+            </footer>
+          )}
         </div>
       </section>
     </dialog>

@@ -1,4 +1,4 @@
-import type { GenerationSummary } from './types'
+import type { ChunkPreview, GenerationSummary } from './types'
 
 export type ReviewDecision = 'pending' | 'kept' | 'discarded'
 
@@ -23,12 +23,12 @@ function normalizeCorrectAnswer(answer: string) {
     : 'A'
 }
 
-export function createReviewQuestionDrafts(
-  summary: GenerationSummary,
+export function createReviewQuestionDraftsFromPreviews(
+  previews: ChunkPreview[],
 ): ReviewQuestionDraft[] {
-  return summary.chunk_previews.flatMap((chunk, chunkIndex) =>
+  return previews.flatMap((chunk) =>
     chunk.llm_result.questions.map((question, questionIndex) => ({
-      reviewId: `${chunk.note_path}:${chunk.section_index}:${chunk.chunk_index}:${chunkIndex}:${questionIndex}`,
+      reviewId: `${chunk.note_path}:${chunk.section_index}:${chunk.chunk_index}:${chunk.start_line}:${chunk.end_line}:${chunk.heading}:${questionIndex}:${question.question}`,
       question: question.question,
       option_a: question.option_a,
       option_b: question.option_b,
@@ -39,6 +39,12 @@ export function createReviewQuestionDrafts(
       decision: 'pending',
     })),
   )
+}
+
+export function createReviewQuestionDrafts(
+  summary: GenerationSummary,
+): ReviewQuestionDraft[] {
+  return createReviewQuestionDraftsFromPreviews(summary.chunk_previews)
 }
 
 export function getReviewQuestionError(question: ReviewQuestionDraft) {

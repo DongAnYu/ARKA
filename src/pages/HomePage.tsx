@@ -24,6 +24,7 @@ import {
 } from '../components/GeneratedQuestionReview'
 import {
   createReviewQuestionDrafts,
+  createReviewQuestionDraftsFromPreviews,
   getReviewQuestionError,
   type ReviewQuestionDraft,
 } from '../generation/review'
@@ -107,6 +108,16 @@ const describeModel = (provider: string, model: string) => {
   return providerName ? `${providerName} · ${selectedModel}` : selectedModel
 }
 
+function mergeReviewQuestionDrafts(
+  current: ReviewQuestionDraft[],
+  incoming: ReviewQuestionDraft[],
+) {
+  const existingIds = new Set(current.map((question) => question.reviewId))
+  const additions = incoming.filter((question) => !existingIds.has(question.reviewId))
+
+  return additions.length > 0 ? [...current, ...additions] : current
+}
+
 export function HomePage() {
   const welcomeMessage = getWelcomeMessage()
   const saveInFlightRef = useRef(false)
@@ -141,6 +152,7 @@ export function HomePage() {
   const [hasSavedQuestions, setHasSavedQuestions] = useState(false)
   const [reviewQuestions, setReviewQuestions] = useState<ReviewQuestionDraft[]>([])
   const [isReviewingQuestions, setIsReviewingQuestions] = useState(false)
+  const [hasStartedQuestionReview, setHasStartedQuestionReview] = useState(false)
   const [reviewResumeIndex, setReviewResumeIndex] = useState(0)
   const [error, setError] = useState('')
   const [modelConfig, setModelConfig] = useState<PersistedModelConfig | null>(null)
@@ -177,6 +189,29 @@ export function HomePage() {
         : false
   const canStartGeneration =
     areRequiredModelsReady && !isLoadingModelConfig && !modelConfigError
+
+  useEffect(() => {
+    if (hasSavedQuestions) {
+      return
+    }
+
+    const previews = generationSummary?.chunk_previews ?? generationProgress?.ready_previews ?? []
+    if (previews.length === 0) {
+      return
+    }
+
+    const incoming = createReviewQuestionDraftsFromPreviews(previews)
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setReviewQuestions((current) => mergeReviewQuestionDrafts(current, incoming))
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [generationProgress?.ready_previews, generationSummary, hasSavedQuestions])
 
   const noteBreadcrumbs = selectedNote
     ? selectedNote.path
@@ -311,6 +346,7 @@ export function HomePage() {
     setHasSavedQuestions(false)
     setReviewQuestions([])
     setIsReviewingQuestions(false)
+    setHasStartedQuestionReview(false)
     setReviewResumeIndex(0)
 
     try {
@@ -334,6 +370,7 @@ export function HomePage() {
     setHasSavedQuestions(false)
     setReviewQuestions([])
     setIsReviewingQuestions(false)
+    setHasStartedQuestionReview(false)
     setReviewResumeIndex(0)
   }
 
@@ -343,6 +380,7 @@ export function HomePage() {
     setSelectedChunk(null)
     setReviewQuestions([])
     setIsReviewingQuestions(false)
+    setHasStartedQuestionReview(false)
     setReviewResumeIndex(0)
     setSaveStatus('')
     setSaveStatusKind('')
@@ -351,16 +389,27 @@ export function HomePage() {
   }
 
   const beginQuestionReview = () => {
-    if (!generationSummary || generatedQuestionCount === 0 || hasSavedQuestions) {
+    if (hasSavedQuestions) {
       return
+    }
+
+    if (reviewQuestions.length === 0) {
+      if (!generationSummary) {
+        return
+      }
+
+      const finalDrafts = createReviewQuestionDrafts(generationSummary)
+      if (finalDrafts.length === 0) {
+        return
+      }
+
+      setReviewQuestions(finalDrafts)
+      setReviewResumeIndex(0)
     }
 
     setSaveStatus('')
     setSaveStatusKind('')
-    if (reviewQuestions.length === 0) {
-      setReviewQuestions(createReviewQuestionDrafts(generationSummary))
-      setReviewResumeIndex(0)
-    }
+    setHasStartedQuestionReview(true)
     setIsReviewingQuestions(true)
   }
 
@@ -405,6 +454,7 @@ export function HomePage() {
     }
 
     keepRemainingQuestions()
+    setHasStartedQuestionReview(true)
     setIsReviewingQuestions(true)
   }
 
@@ -504,17 +554,23 @@ export function HomePage() {
 
     setSaveStatus('')
     setSaveStatusKind('')
-    setReviewQuestions(
-      createReviewQuestionDrafts(generationSummary).map((question) => ({
+    const finalDrafts = createReviewQuestionDrafts(generationSummary)
+    setReviewQuestions((current) =>
+      mergeReviewQuestionDrafts(current, finalDrafts).map((question) => ({
         ...question,
         decision: 'kept',
       })),
     )
     setReviewResumeIndex(0)
+    setHasStartedQuestionReview(true)
     setIsReviewingQuestions(true)
   }
 
   const saveReviewedQuestions = () => {
+    if (isGenerating) {
+      return
+    }
+
     const keptQuestions = reviewQuestions.filter(
       (question) => question.decision === 'kept',
     )
@@ -546,6 +602,7 @@ export function HomePage() {
   const skippedWork = generationProgress?.failed_chunks ?? 0
   const successfulWork = Math.max(completedWork - skippedWork, 0)
   const questionsGenerated = generationProgress?.mcq_generated ?? 0
+  const readyQuestionCount = reviewQuestions.length
   const recallQuestions = generationProgress?.recall_mcq_generated ?? 0
   const relationalQuestions = generationProgress?.relational_mcq_generated ?? 0
   const workScale = Math.max(totalWork, 1)
@@ -994,6 +1051,27 @@ export function HomePage() {
                     )}
                   </div>
 
+                  {readyQuestionCount > 0 && !hasSavedQuestions && (
+                    <div className="generation-review-ready" aria-live="polite">
+                      <div>
+                        <span>Ready now</span>
+                        <strong>
+                          {readyQuestionCount} {readyQuestionCount === 1 ? 'question' : 'questions'} available
+                        </strong>
+                        <small>Review now while ARKA generates the rest.</small>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-secondary generation-review-ready-btn"
+                        onClick={beginQuestionReview}
+                        disabled={isSavingQuestions}
+                      >
+                        {hasStartedQuestionReview ? 'Continue Review' : 'Start Review'} · {readyQuestionCount} ready
+                        <ArrowRight aria-hidden="true" />
+                      </button>
+                    </div>
+                  )}
+
                   <div className="generation-work-summary">
                     <div className="generation-work-heading">
                       <span>{generationMode === 'graph' ? 'Knowledge work' : 'Chunk work'}</span>
@@ -1285,7 +1363,7 @@ export function HomePage() {
                       onClick={beginQuestionReview}
                       disabled={isSavingQuestions || generatedQuestionCount === 0}
                     >
-                      {reviewQuestions.length > 0 ? (
+                      {hasStartedQuestionReview ? (
                         <>Continue Review</>
                       ) : (
                         <>
@@ -1317,30 +1395,6 @@ export function HomePage() {
                 )}
                 </div>
               </div>
-            )}
-
-            {isReviewingQuestions && (
-              <GeneratedQuestionReview
-                questions={reviewQuestions}
-                destinationName={destinationName}
-                saveDestinationMode={saveDestinationMode}
-                onSaveDestinationModeChange={setSaveDestinationMode}
-                recallSpaces={recallSpaces}
-                isLoadingRecallSpaces={isLoadingRecallSpaces}
-                selectedSpaceId={selectedSpaceId}
-                onSelectedSpaceChange={setSelectedSpaceId}
-                newSpaceName={newSpaceName}
-                onNewSpaceNameChange={setNewSpaceName}
-                newSpaceDescription={newSpaceDescription}
-                onNewSpaceDescriptionChange={setNewSpaceDescription}
-                isSaving={isSavingQuestions}
-                initialActiveIndex={reviewResumeIndex}
-                onUpdateQuestion={updateReviewQuestion}
-                onKeepRemaining={keepRemainingQuestions}
-                onSaveKept={saveReviewedQuestions}
-                onFinishWithoutSaving={finishReviewWithoutSaving}
-                onClose={closeQuestionReview}
-              />
             )}
 
             {saveStatus && (
@@ -1425,6 +1479,31 @@ export function HomePage() {
             </div>
           )}
         </section>
+      )}
+
+      {isReviewingQuestions && reviewQuestions.length > 0 && (
+        <GeneratedQuestionReview
+          questions={reviewQuestions}
+          destinationName={destinationName}
+          saveDestinationMode={saveDestinationMode}
+          onSaveDestinationModeChange={setSaveDestinationMode}
+          recallSpaces={recallSpaces}
+          isLoadingRecallSpaces={isLoadingRecallSpaces}
+          selectedSpaceId={selectedSpaceId}
+          onSelectedSpaceChange={setSelectedSpaceId}
+          newSpaceName={newSpaceName}
+          onNewSpaceNameChange={setNewSpaceName}
+          newSpaceDescription={newSpaceDescription}
+          onNewSpaceDescriptionChange={setNewSpaceDescription}
+          isSaving={isSavingQuestions}
+          isGenerationActive={isGenerating}
+          initialActiveIndex={reviewResumeIndex}
+          onUpdateQuestion={updateReviewQuestion}
+          onKeepRemaining={keepRemainingQuestions}
+          onSaveKept={saveReviewedQuestions}
+          onFinishWithoutSaving={finishReviewWithoutSaving}
+          onClose={closeQuestionReview}
+        />
       )}
 
         </main>

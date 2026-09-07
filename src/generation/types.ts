@@ -87,6 +87,7 @@ export type GenerationProgress = {
   is_cancelled: boolean
   is_finished: boolean
   error: LlmFailure | null
+  ready_previews: ChunkPreview[]
   summary: GenerationSummary | null
   phase_label: string | null
 }

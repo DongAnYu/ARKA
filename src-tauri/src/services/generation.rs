@@ -198,6 +198,9 @@ pub struct GenerationProgressSnapshot {
     pub error: Option<LlmFailure>,
     /// Non-terminal failures for chunks that were skipped while the job continued.
     pub warnings: Vec<LlmFailure>,
+    /// Completed previews that already contain validated questions and are safe
+    /// for the frontend to review before the full generation job finishes.
+    pub ready_previews: Vec<ChunkPreview>,
     pub summary: Option<GenerationSummary>,
     /// Human-readable phase description (e.g. "Extracting knowledge" / "Generating questions").
     /// None for the default single-phase pipeline.
@@ -689,6 +692,7 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         is_finished: false,
         error: None,
         warnings: Vec::new(),
+        ready_previews: Vec::new(),
         summary: None,
         phase_label: None,
         current_chunk: None,
@@ -805,6 +809,10 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
             };
             let mcq_count = preview.llm_result.questions.len();
             ordered_previews[order] = Some(preview);
+            let ready_preview = ordered_previews[order]
+                .as_ref()
+                .filter(|preview| !preview.llm_result.questions.is_empty())
+                .cloned();
 
             let mut snapshot = job
                 .snapshot
@@ -812,6 +820,9 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
                 .expect("preview job snapshot mutex should remain available");
             snapshot.completed_chunks += 1;
             snapshot.mcq_generated += mcq_count;
+            if let Some(preview) = ready_preview {
+                snapshot.ready_previews.push(preview);
+            }
             set_progress_percent(&mut snapshot);
         }
 
@@ -901,6 +912,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
         is_finished: false,
         error: None,
         warnings: embedding_warning.into_iter().collect(),
+        ready_previews: Vec::new(),
         summary: None,
         phase_label: Some(String::from("Extracting knowledge")),
         current_chunk: None,
@@ -1349,6 +1361,10 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                 preview_text,
                 llm_result,
             });
+            let ready_preview = ordered_previews[bundle_idx]
+                .as_ref()
+                .filter(|preview| !preview.llm_result.questions.is_empty())
+                .cloned();
 
             let mut snapshot = job
                 .snapshot
@@ -1359,6 +1375,9 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
             match bundle.question_type {
                 QuestionType::Recall => snapshot.recall_mcq_generated += mcq_count,
                 QuestionType::Relational => snapshot.relational_mcq_generated += mcq_count,
+            }
+            if let Some(preview) = ready_preview {
+                snapshot.ready_previews.push(preview);
             }
             // Question generation occupies the remaining 35%.
             snapshot.progress_percent = phase_percent(
@@ -1677,6 +1696,7 @@ mod tests {
                 is_finished: false,
                 error: None,
                 warnings: Vec::new(),
+                ready_previews: Vec::new(),
                 summary: None,
                 phase_label: None,
                 current_chunk: None,
@@ -1806,6 +1826,7 @@ mod tests {
                 is_finished: false,
                 error: None,
                 warnings: Vec::new(),
+                ready_previews: Vec::new(),
                 summary: None,
                 phase_label: Some(String::from("Resolving entities")),
                 current_chunk: None,
@@ -1958,6 +1979,7 @@ mod tests {
                 retry_after_secs: None,
             }),
             warnings: Vec::new(),
+            ready_previews: Vec::new(),
             summary: None,
             phase_label: None,
             current_chunk: None,
@@ -2000,6 +2022,7 @@ mod tests {
                 is_finished: false,
                 error: None,
                 warnings: Vec::new(),
+                ready_previews: Vec::new(),
                 summary: None,
                 phase_label: Some(String::from("Generating questions")),
                 current_chunk: Some(2),
@@ -2062,6 +2085,7 @@ mod tests {
                 is_finished: false,
                 error: None,
                 warnings: Vec::new(),
+                ready_previews: Vec::new(),
                 summary: None,
                 phase_label: None,
                 current_chunk: Some(1),
