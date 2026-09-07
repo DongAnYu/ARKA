@@ -103,6 +103,11 @@ fn format_stage_b_user_prompt(chunk_markdown: &str, key_points_json: &str) -> St
             "Use at most one question per key point and prioritize the strongest distinct concepts. ",
             "If concepts overlap, generate fewer questions instead of duplicates. ",
             "All questions must be grounded in the chunk content. ",
+            "Every question stem must be self-contained and answerable without access to the source chunk. ",
+            "Include any essential facts from an example, code block, image, diagram, figure, or table directly in the question stem. ",
+            "Never refer to unspecified context with wording such as 'the example', 'shown above', 'shown below', or 'the following configuration'. ",
+            "Do not rely on the answer options to supply context missing from the question stem. ",
+            "Base questions only on source information that can be restated faithfully as text. ",
             "Each question must have exactly four options (A-D), exactly one correct answer, and no duplicate options. ",
             "Avoid 'all of the above', 'none of the above', and trick wording. ",
             "Do not always use A as correct; distribute correct answers across A/B/C/D when reasonable. ",
@@ -114,4 +119,36 @@ fn format_stage_b_user_prompt(chunk_markdown: &str, key_points_json: &str) -> St
         chunk_markdown,
         key_points_json,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_b_prompt_requires_source_examples_to_be_self_contained() {
+        let chunk = r#"#### HPA Example (`hpa.yaml`)
+```yaml
+scaleTargetRef:
+  kind: Deployment
+  name: php-apache
+minReplicas: 1
+maxReplicas: 10
+```"#;
+        let prompt = format_stage_b_user_prompt(
+            chunk,
+            r#"["The HPA scales the php-apache Deployment between 1 and 10 replicas."]"#,
+        );
+
+        assert!(prompt.contains("self-contained and answerable without access to the source chunk"));
+        assert!(prompt.contains(
+            "essential facts from an example, code block, image, diagram, figure, or table"
+        ));
+        assert!(prompt.contains("Never refer to unspecified context"));
+        assert!(prompt.contains("Do not rely on the answer options to supply context"));
+        assert!(prompt.contains(
+            "Base questions only on source information that can be restated faithfully as text"
+        ));
+        assert!(prompt.contains("name: php-apache"));
+    }
 }

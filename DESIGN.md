@@ -3,7 +3,7 @@
 
 **Theme:** dark
 
-The design feels like being inside a piece of precision software—a dark, focused digital workspace where thoughts crystallize. The foundation is a near-black, void-like background (#171717), creating a high-contrast canvas. A single, electric violet accent (#7c3aed, #a78bfa) is used strictly for interactive elements like CTAs and links, acting as functional beacons in the dark. Typography is exclusively the system's native UI font, reinforcing its identity as a functional tool rather than a stylized marketing site. Instead of drop shadows, surfaces use a subtle, 1px white inset highlight, giving them an internal luminescence as if lit from within.
+The design feels like being inside a piece of precision software—a dark, focused digital workspace where thoughts crystallize. The foundation is a near-black, void-like background (#171717), creating a high-contrast canvas. A single, electric violet accent (#7c3aed, #a78bfa) is used strictly for interactive elements like CTAs and links, acting as functional beacons in the dark. Typography uses IBM Plex Sans, giving the interface a scholarly, technical voice while preserving the clarity of native productivity software. Instead of drop shadows, surfaces use a subtle, 1px white inset highlight, giving them an internal luminescence as if lit from within.
 
 ## Tokens — Colors
 
@@ -25,13 +25,13 @@ The design feels like being inside a piece of precision software—a dark, focus
 
 ## Tokens — Typography
 
-### ui-sans-serif, system-ui — Used for all text. The choice of a system font is deliberate, making the website feel like a native application—a functional tool for thought. · `--font-ui-sans-serif-system-ui`
-- **Substitute:** "SF Pro Display", "Roboto", "Segoe UI", sans-serif
+### IBM Plex Sans Variable — Used for all interface text. Its open forms and technical character suit a focused knowledge tool while remaining highly legible in dense controls. · `--font-ui`
+- **Fallback:** "IBM Plex Sans", "Segoe UI", system-ui, sans-serif
 - **Weights:** 400, 500, 600, 700
 - **Sizes:** 8px, 9px, 10px, 11px, 12px, 13px, 14px, 16px, 18px, 20px, 24px, 28px, 36px, 60px
 - **Line height:** 1.25-1.5
 - **Letter spacing:** Negative tracking (-0.02em) on larger sizes tightens headlines for a more compact, solid appearance.
-- **Role:** Used for all text. The choice of a system font is deliberate, making the website feel like a native application—a functional tool for thought.
+- **Role:** Used for all interface text, from compact title-bar metadata to long-form explanations. Monospace remains reserved for Markdown and code.
 
 ### Type Scale
 
@@ -133,12 +133,12 @@ A squircle-shaped icon (approx 20% border-radius) depicting a faceted purple and
 ### Navigation Link
 **Role:** Text links in the main header navigation.
 
-Medium Gray (#bcbcbc) text using the system UI font at 16px. No background or borders. Hover state is likely a color change to Bright Gray (#eeeeee).
+Medium Gray (#bcbcbc) text using IBM Plex Sans at 16px. No background or borders. Hover state is likely a color change to Bright Gray (#eeeeee).
 
 ## Do's and Don'ts
 
 ### Do
-- Use the system UI font for all text to maintain the native-app feel.
+- Use IBM Plex Sans for all interface text to maintain the precise, knowledge-focused voice.
 - Reserve Amethyst (#7c3aed) and Lavender (#a78bfa) exclusively for interactive elements like buttons and links.
 - Employ subtle 1px inset white glows for definition on dark cards and buttons.
 - Maintain high contrast with light gray text (#eeeeee) on near-black backgrounds (#171717).
@@ -168,13 +168,13 @@ Elevation is achieved through internal luminescence, not external shadows. Most 
 - **Border Glow**: `rgba(255, 255, 255, 0.05)`
 
 ### Example Component Prompts
-1.  **Hero Section:** Create a hero section with a full-bleed Abyss (#171717) background. Add a centered headline 'Knowledge, connected.' in 60px system UI font, weight 600, color Bright Gray (#eeeeee), with -1.2px letter-spacing. Below it, add a sub-headline 'Your second brain, for life.' in 24px system font, weight 400, color Medium Gray (#bcbcbc), with -0.48px letter-spacing. Add a primary CTA button below that.
-2.  **Primary CTA Button:** Create a button with text 'Get Started'. The background is Amethyst (#7c3aed) with White (#ffffff) text. Use a 16px system UI font, weight 500. Padding is 16px vertical and 24px horizontal. Corner radius is 8px.
+1.  **Hero Section:** Create a hero section with a full-bleed Abyss (#171717) background. Add a centered headline 'Knowledge, connected.' in 60px IBM Plex Sans, weight 600, color Bright Gray (#eeeeee), with -1.2px letter-spacing. Below it, add a sub-headline 'Your second brain, for life.' in 24px IBM Plex Sans, weight 400, color Medium Gray (#bcbcbc), with -0.48px letter-spacing. Add a primary CTA button below that.
+2.  **Primary CTA Button:** Create a button with text 'Get Started'. The background is Amethyst (#7c3aed) with White (#ffffff) text. Use a 16px IBM Plex Sans, weight 500. Padding is 16px vertical and 24px horizontal. Corner radius is 8px.
 3.  **Feature Card:** Create a feature card with a Surface (#1e1e1e) background. Padding is 24px. The corner radius is 12px. Add an inset box-shadow of `rgba(255, 255, 255, 0.05) 0px 0px 0px 1px inset`. Inside, add a heading in Bright Gray (#eeeeee) and body text in Medium Gray (#bcbcbc).
 
 ## Similar Brands
 
-- **Raycast** — Shares the dark UI, native-app feel from using system fonts, and a focus on utility and speed.
+- **Raycast** — Shares the dark UI, compact native-app feel, and a focus on utility and speed.
 - **Linear** — Similar dark, high-contrast aesthetic with a single sharp violet/purple accent and subtle internal glow effects.
 - **VS Code** — Directly echoes the visual language of a code editor, appealing to a developer-adjacent audience with its dark theme and focus on plaintext.
 - **Superhuman** — Another productivity tool with a premium, dark-mode-first interface that emphasizes speed and function over adornment.
@@ -201,7 +201,7 @@ Elevation is achieved through internal luminescence, not external shadows. Most 
   --color-error-red: #f87171;
 
   /* Typography — Font Families */
-  --font-ui-sans-serif-system-ui: 'ui-sans-serif, system-ui', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-ui: 'IBM Plex Sans Variable', 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
 
   /* Typography — Scale */
   --text-caption: 12px;
@@ -304,7 +304,7 @@ Elevation is achieved through internal luminescence, not external shadows. Most 
   --color-error-red: #f87171;
 
   /* Typography */
-  --font-ui-sans-serif-system-ui: 'ui-sans-serif, system-ui', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-ui: 'IBM Plex Sans Variable', 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
 
   /* Typography — Scale */
   --text-caption: 12px;

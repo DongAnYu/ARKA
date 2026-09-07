@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { BackToHome } from '../components/BackToHome'
+import { announceModelConfigUpdate, type PersistedModelConfig } from '../modelConfig'
 
 type ProviderId = 'ollama' | 'openai' | 'openrouter'
 type ConfigScope = 'generation' | 'embedding'
@@ -27,15 +29,6 @@ type PersistedProviderConfig = {
   selected_model: string
   timeout_secs: number
   api_key: string | null
-}
-
-type DbModelConfig = PersistedProviderConfig & {
-  llm_concurrency: number
-  embedding_provider: string
-  embedding_base_url: string
-  embedding_selected_model: string
-  embedding_timeout_secs: number
-  embedding_api_key: string | null
 }
 
 type EmbeddingConnectionResult = {
@@ -116,7 +109,7 @@ const formConfig = (config: PersistedProviderConfig): ProviderConfig => ({
   apiKey: config.api_key ?? '',
 })
 
-const embeddingFormConfig = (config: DbModelConfig): ProviderConfig => ({
+const embeddingFormConfig = (config: PersistedModelConfig): ProviderConfig => ({
   provider: parseProvider(config.embedding_provider),
   baseUrl: config.embedding_base_url,
   modelId: config.embedding_selected_model,
@@ -482,7 +475,7 @@ export function ModelsPage() {
   const [isTestingEmbedding, setIsTestingEmbedding] = useState(false)
 
   useEffect(() => {
-    invoke<DbModelConfig>('load_model_config')
+    invoke<PersistedModelConfig>('load_model_config')
       .then((config) => {
         const loadedGeneration = formConfig(config)
         const loadedEmbedding = embeddingFormConfig(config)
@@ -655,17 +648,19 @@ export function ModelsPage() {
         timeoutSecs: generation.timeout_secs,
         apiKey: generation.api_key,
       })
+      const persistedConfig: PersistedModelConfig = {
+        ...generation,
+        llm_concurrency: concurrency,
+        embedding_provider: embedding.provider,
+        embedding_base_url: embedding.base_url,
+        embedding_selected_model: embedding.selected_model,
+        embedding_timeout_secs: embedding.timeout_secs,
+        embedding_api_key: embedding.api_key,
+      }
       await invoke('save_model_config', {
-        config: {
-          ...generation,
-          llm_concurrency: concurrency,
-          embedding_provider: embedding.provider,
-          embedding_base_url: embedding.base_url,
-          embedding_selected_model: embedding.selected_model,
-          embedding_timeout_secs: embedding.timeout_secs,
-          embedding_api_key: embedding.api_key,
-        },
+        config: persistedConfig,
       })
+      announceModelConfigUpdate(persistedConfig)
 
       const savedGeneration = formConfig(generation)
       const savedEmbedding = formConfig(embedding)
@@ -694,6 +689,7 @@ export function ModelsPage() {
 
   return (
     <div className="app-container settings-page" aria-label="Models page">
+      <BackToHome />
       <header className="settings-panel settings-page-intro">
         <h1>Model settings</h1>
         <p className="settings-help-text">

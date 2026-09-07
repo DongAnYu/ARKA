@@ -1,24 +1,39 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Check,
-  ChevronDown,
   ChevronRight,
   FileText,
   FolderOpen,
   GitBranch,
   Pause,
   Play,
-  Plus,
-  Save,
   Sparkles,
   X,
   Zap,
 } from 'lucide-react'
-import arkaLogo from '../assets/arka-logo.svg'
+import arkaAppIcon from '../assets/arka-app-icon.png'
+import { BackToHome } from '../components/BackToHome'
+import {
+  GeneratedQuestionReview,
+} from '../components/GeneratedQuestionReview'
+import {
+  createReviewQuestionDrafts,
+  createReviewQuestionDraftsFromPreviews,
+  getReviewQuestionError,
+  type ReviewQuestionDraft,
+} from '../generation/review'
+import { useGeneration } from '../generation/context'
+import type { ChunkPreview, Note } from '../generation/types'
+import {
+  MODEL_CONFIG_UPDATED_EVENT,
+  type PersistedModelConfig,
+} from '../modelConfig'
 
 const getWelcomeMessage = (date = new Date()) => {
   const hour = date.getHours()
@@ -61,100 +76,7 @@ const getWelcomeMessage = (date = new Date()) => {
     </>
   )
 }
-type GenerationMode = 'default' | 'graph'
-
-type Note = {
-  id: number | null
-  path: string
-  title: string
-  content: string
-  last_modified: string
-}
-
-type NoteGenerationReport = {
-  note_path: string
-  note_title: string
-  total_chunks: number
-}
-
-type ChunkLlmQuestionPreview = {
-  question: string
-  option_a: string
-  option_b: string
-  option_c: string
-  option_d: string
-  correct_answer: string
-  explanation: string
-}
-
-type ChunkLlmResult = {
-  status: string
-  key_points: string[]
-  questions: ChunkLlmQuestionPreview[]
-  error: string | null
-}
-
-type ChunkPreview = {
-  note_path: string
-  note_title: string
-  heading: string
-  section_index: number
-  chunk_index: number
-  start_line: number
-  end_line: number
-  char_count: number
-  preview_text: string
-  llm_result: ChunkLlmResult
-}
-
-type GenerationSummary = {
-  total_notes: number
-  total_chunks: number
-  notes_with_chunks: number
-  note_reports: NoteGenerationReport[]
-  chunk_previews: ChunkPreview[]
-}
-
-type LlmFailureCode =
-  | 'setup'
-  | 'account'
-  | 'connection'
-  | 'rate_limited'
-  | 'provider_unavailable'
-  | 'request_rejected'
-  | 'invalid_response'
-  | 'unknown'
-
-type LlmFailure = {
-  code: LlmFailureCode
-  message: string
-  retryable: boolean
-  retry_after_secs: number | null
-}
-
-type GenerationProgress = {
-  job_id: string
-  total_notes: number
-  total_chunks: number
-  notes_with_chunks: number
-  completed_chunks: number
-  mcq_generated: number
-  progress_percent: number
-  failed_chunks: number
-  warnings: LlmFailure[]
-  recall_mcq_generated: number
-  relational_mcq_generated: number
-  current_chunk: number | null
-  activity: string | null
-  is_paused: boolean
-  is_cancelled: boolean
-  is_finished: boolean
-  error: LlmFailure | null
-  summary: GenerationSummary | null
-  phase_label: string | null
-}
-
-type Question = {
+type QuestionInput = {
   question: string
   option_a: string
   option_b: string
@@ -162,7 +84,6 @@ type Question = {
   option_d: string
   correct_answer: string
   explanation: string | null
-  space_id: number
 }
 
 type RecallSpace = {
@@ -171,22 +92,53 @@ type RecallSpace = {
   description: string | null
 }
 
-type ModelConfig = {
-  selected_model: string
+const providerNames: Record<string, string> = {
+  ollama: 'Ollama',
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+}
+
+const describeModel = (provider: string, model: string) => {
+  const selectedModel = model.trim()
+  if (!selectedModel) {
+    return 'No model selected'
+  }
+
+  const providerName = providerNames[provider] ?? provider
+  return providerName ? `${providerName} · ${selectedModel}` : selectedModel
+}
+
+function mergeReviewQuestionDrafts(
+  current: ReviewQuestionDraft[],
+  incoming: ReviewQuestionDraft[],
+) {
+  const existingIds = new Set(current.map((question) => question.reviewId))
+  const additions = incoming.filter((question) => !existingIds.has(question.reviewId))
+
+  return additions.length > 0 ? [...current, ...additions] : current
 }
 
 export function HomePage() {
   const welcomeMessage = getWelcomeMessage()
   const saveInFlightRef = useRef(false)
-  const [vaultPath, setVaultPath] = useState('')
-  const [notes, setNotes] = useState<Note[]>([])
-  const [selectedNote, setSelectedNote] = useState<Note | null>(null)
+  const {
+    notes,
+    selectedNote,
+    generationMode,
+    generationProgress,
+    generationSummary,
+    generationError,
+    isGenerating,
+    setSourceNotes,
+    selectNote,
+    clearSelectedNote,
+    setGenerationMode,
+    startGeneration,
+    togglePauseGeneration,
+    cancelGeneration,
+  } = useGeneration()
   const [isLoading, setIsLoading] = useState(false)
-  const [isGenerating, setIsGenerating] = useState(false)
   const [isSavingQuestions, setIsSavingQuestions] = useState(false)
-  const [generationJobId, setGenerationJobId] = useState<string | null>(null)
-  const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null)
-  const [generationSummary, setGenerationSummary] = useState<GenerationSummary | null>(null)
   const [showChunks, setShowChunks] = useState(false)
   const [selectedChunk, setSelectedChunk] = useState<ChunkPreview | null>(null)
   const [isLoadingRecallSpaces, setIsLoadingRecallSpaces] = useState(true)
@@ -198,8 +150,14 @@ export function HomePage() {
   const [saveStatus, setSaveStatus] = useState('')
   const [saveStatusKind, setSaveStatusKind] = useState<'success' | 'error' | ''>('')
   const [hasSavedQuestions, setHasSavedQuestions] = useState(false)
+  const [reviewQuestions, setReviewQuestions] = useState<ReviewQuestionDraft[]>([])
+  const [isReviewingQuestions, setIsReviewingQuestions] = useState(false)
+  const [hasStartedQuestionReview, setHasStartedQuestionReview] = useState(false)
+  const [reviewResumeIndex, setReviewResumeIndex] = useState(0)
   const [error, setError] = useState('')
-  const [generationMode, setGenerationMode] = useState<GenerationMode | null>(null)
+  const [modelConfig, setModelConfig] = useState<PersistedModelConfig | null>(null)
+  const [isLoadingModelConfig, setIsLoadingModelConfig] = useState(true)
+  const [modelConfigError, setModelConfigError] = useState('')
 
   const generatedQuestionCount =
     generationSummary?.chunk_previews.reduce(
@@ -208,6 +166,52 @@ export function HomePage() {
     ) ?? 0
 
   const selectedSpace = recallSpaces.find((space) => space.id === selectedSpaceId)
+  const destinationName =
+    saveDestinationMode === 'new'
+      ? newSpaceName.trim()
+      : selectedSpace?.name ?? ''
+  const keptReviewCount = reviewQuestions.filter(
+    (question) => question.decision === 'kept',
+  ).length
+  const discardedReviewCount = reviewQuestions.filter(
+    (question) => question.decision === 'discarded',
+  ).length
+  const remainingReviewCount =
+    reviewQuestions.length - keptReviewCount - discardedReviewCount
+  const visibleError = error || generationError
+  const isLlmReady = Boolean(modelConfig?.selected_model.trim())
+  const isEmbeddingReady = Boolean(modelConfig?.embedding_selected_model.trim())
+  const areRequiredModelsReady =
+    generationMode === 'default'
+      ? isLlmReady
+      : generationMode === 'graph'
+        ? isLlmReady && isEmbeddingReady
+        : false
+  const canStartGeneration =
+    areRequiredModelsReady && !isLoadingModelConfig && !modelConfigError
+
+  useEffect(() => {
+    if (hasSavedQuestions) {
+      return
+    }
+
+    const previews = generationSummary?.chunk_previews ?? generationProgress?.ready_previews ?? []
+    if (previews.length === 0) {
+      return
+    }
+
+    const incoming = createReviewQuestionDraftsFromPreviews(previews)
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setReviewQuestions((current) => mergeReviewQuestionDrafts(current, incoming))
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [generationProgress?.ready_previews, generationSummary, hasSavedQuestions])
 
   const noteBreadcrumbs = selectedNote
     ? selectedNote.path
@@ -266,6 +270,44 @@ export function HomePage() {
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    void invoke<PersistedModelConfig>('load_model_config')
+      .then((config) => {
+        if (cancelled) {
+          return
+        }
+
+        setModelConfig(config)
+        setModelConfigError('')
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setModelConfigError('Could not read the saved model configuration.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingModelConfig(false)
+        }
+      })
+
+    const handleConfigUpdate = (event: Event) => {
+      const configEvent = event as CustomEvent<PersistedModelConfig>
+      setModelConfig(configEvent.detail)
+      setModelConfigError('')
+      setIsLoadingModelConfig(false)
+    }
+
+    window.addEventListener(MODEL_CONFIG_UPDATED_EVENT, handleConfigUpdate)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener(MODEL_CONFIG_UPDATED_EVENT, handleConfigUpdate)
+    }
+  }, [])
+
   const chooseVault = async () => {
     setError('')
 
@@ -286,7 +328,6 @@ export function HomePage() {
         return
       }
 
-      setVaultPath(selected)
       await loadNotes(selected)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to choose markdown file'
@@ -297,21 +338,20 @@ export function HomePage() {
   const loadNotes = async (path: string) => {
     setIsLoading(true)
     setError('')
-    setSelectedNote(null)
-    setGenerationSummary(null)
+    setSourceNotes(path, [])
     setShowChunks(false)
     setSelectedChunk(null)
     setSaveStatus('')
     setSaveStatusKind('')
     setHasSavedQuestions(false)
-    setGenerationMode(null)
+    setReviewQuestions([])
+    setIsReviewingQuestions(false)
+    setHasStartedQuestionReview(false)
+    setReviewResumeIndex(0)
 
     try {
       const data = await invoke<Note[]>('get_notes', { vaultPath: path })
-      setNotes(data)
-      if (data.length === 1) {
-        setSelectedNote(data[0])
-      }
+      setSourceNotes(path, data)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load notes'
       setError(message)
@@ -320,138 +360,111 @@ export function HomePage() {
     }
   }
 
-  const generatePreview = async () => {
-    if (!vaultPath || !selectedNote) {
-      setError('Choose a note before generating questions.')
-      return
-    }
-
-    if (!generationMode) {
-      setError('Choose a generation mode first.')
-      return
-    }
-
-    setIsGenerating(true)
+  const returnToHome = () => {
+    clearSelectedNote()
     setError('')
-    setGenerationProgress(null)
-    setGenerationSummary(null)
     setShowChunks(false)
     setSelectedChunk(null)
-
-    const command = generationMode === 'graph' ? 'start_graph_generation_job' : 'start_preview_generation'
-    try {
-      const jobId = await invoke<string>(command, {
-        vaultPath,
-      })
-      setGenerationJobId(jobId)
-    } catch (err) {
-      const message =
-        typeof err === 'string'
-          ? err
-          : err instanceof Error
-            ? err.message
-            : 'Failed to start question generation'
-      setError(message)
-      setIsGenerating(false)
-    }
+    setSaveStatus('')
+    setSaveStatusKind('')
+    setHasSavedQuestions(false)
+    setReviewQuestions([])
+    setIsReviewingQuestions(false)
+    setHasStartedQuestionReview(false)
+    setReviewResumeIndex(0)
   }
 
-  useEffect(() => {
-    if (!generationJobId) {
+  const generatePreview = async () => {
+    setError('')
+    setShowChunks(false)
+    setSelectedChunk(null)
+    setReviewQuestions([])
+    setIsReviewingQuestions(false)
+    setHasStartedQuestionReview(false)
+    setReviewResumeIndex(0)
+    setSaveStatus('')
+    setSaveStatusKind('')
+    setHasSavedQuestions(false)
+    await startGeneration()
+  }
+
+  const beginQuestionReview = () => {
+    if (hasSavedQuestions) {
       return
     }
 
-    let disposed = false
-
-    const poll = async () => {
-      try {
-        const progress = await invoke<GenerationProgress>('get_preview_generation_progress', {
-          jobId: generationJobId,
-        })
-
-        if (disposed) {
-          return
-        }
-
-        setGenerationProgress(progress)
-        setIsGenerating(!progress.is_finished)
-
-        if (progress.is_finished) {
-          if (progress.summary) {
-            setGenerationSummary(progress.summary)
-          }
-          setGenerationJobId(null)
-        }
-      } catch (err) {
-        if (!disposed) {
-          const message = err instanceof Error ? err.message : 'Failed to load generation progress'
-          setError(message)
-          setIsGenerating(false)
-          setGenerationJobId(null)
-        }
+    if (reviewQuestions.length === 0) {
+      if (!generationSummary) {
+        return
       }
+
+      const finalDrafts = createReviewQuestionDrafts(generationSummary)
+      if (finalDrafts.length === 0) {
+        return
+      }
+
+      setReviewQuestions(finalDrafts)
+      setReviewResumeIndex(0)
     }
 
-    poll()
-    const timer = window.setInterval(poll, 700)
+    setSaveStatus('')
+    setSaveStatusKind('')
+    setHasStartedQuestionReview(true)
+    setIsReviewingQuestions(true)
+  }
 
-    return () => {
-      disposed = true
-      window.clearInterval(timer)
-    }
-  }, [generationJobId])
+  const closeQuestionReview = (activeIndex: number) => {
+    setReviewResumeIndex(activeIndex)
+    setIsReviewingQuestions(false)
+  }
 
-  const togglePauseGeneration = async () => {
-    if (!generationProgress) {
+  const updateReviewQuestion = (
+    reviewId: string,
+    updates: Partial<ReviewQuestionDraft>,
+  ) => {
+    setReviewQuestions((current) =>
+      current.map((question) =>
+        question.reviewId === reviewId ? { ...question, ...updates } : question,
+      ),
+    )
+    setSaveStatus('')
+    setSaveStatusKind('')
+  }
+
+  const keepRemainingQuestions = () => {
+    setReviewQuestions((current) =>
+      current.map((question) =>
+        question.decision === 'pending'
+          ? { ...question, decision: 'kept' }
+          : question,
+      ),
+    )
+  }
+
+  const keepRemainingFromResults = () => {
+    const invalidIndex = reviewQuestions.findIndex(
+      (question) =>
+        question.decision === 'pending' && Boolean(getReviewQuestionError(question)),
+    )
+
+    if (invalidIndex !== -1) {
+      setReviewResumeIndex(invalidIndex)
+      setIsReviewingQuestions(true)
       return
     }
 
-    const nextPaused = !generationProgress.is_paused
-    try {
-      await invoke('set_preview_generation_paused', {
-        jobId: generationProgress.job_id,
-        paused: nextPaused,
-      })
-      setGenerationProgress((current) =>
-        current ? { ...current, is_paused: nextPaused } : current,
-      )
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to toggle generation pause'
-      setError(message)
-    }
+    keepRemainingQuestions()
+    setHasStartedQuestionReview(true)
+    setIsReviewingQuestions(true)
   }
 
-  const cancelGeneration = async () => {
-    if (!generationProgress) {
-      return
-    }
-
-    try {
-      await invoke('cancel_preview_generation', {
-        jobId: generationProgress.job_id,
-      })
-      setGenerationProgress(null)
-      setGenerationJobId(null)
-      setIsGenerating(false)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to cancel generation'
-      setError(message)
-    }
-  }
-
-  const saveGeneratedQuestions = async () => {
+  const saveGeneratedQuestions = async (questionsToSave: QuestionInput[]) => {
     if (saveInFlightRef.current || isSavingQuestions || hasSavedQuestions) {
       return
     }
 
-    if (!generationSummary) {
-      setSaveStatus('No questions to save.')
-      setSaveStatusKind('error')
-      return
-    }
-
-    if (generatedQuestionCount === 0) {
-      setSaveStatus('No generated questions were found in this preview.')
+    if (questionsToSave.length === 0) {
+      setSaveStatus('No kept questions are ready to add.')
       setSaveStatusKind('error')
       return
     }
@@ -475,6 +488,7 @@ export function HomePage() {
 
     try {
       let destinationSpaceId = selectedSpaceId
+      let destinationSpaceName = selectedSpace?.name ?? `space ${selectedSpaceId}`
 
       if (saveDestinationMode === 'new') {
         const trimmedName = newSpaceName.trim()
@@ -485,6 +499,7 @@ export function HomePage() {
         })
 
         destinationSpaceId = createdSpace.id
+        destinationSpaceName = createdSpace.name
         setSelectedSpaceId(createdSpace.id)
         setSaveDestinationMode('existing')
         setNewSpaceName('')
@@ -492,40 +507,32 @@ export function HomePage() {
         await loadRecallSpaces()
       }
 
-      // Extract all questions from chunks
-      const questionsToSave: Question[] = []
-      generationSummary.chunk_previews.forEach((chunk) => {
-        chunk.llm_result.questions.forEach((q) => {
-          questionsToSave.push({
-            question: q.question,
-            option_a: q.option_a,
-            option_b: q.option_b,
-            option_c: q.option_c,
-            option_d: q.option_d,
-            correct_answer: q.correct_answer,
-            explanation: q.explanation,
-            space_id: destinationSpaceId,
-          })
-        })
-      })
+      const preparedQuestions = questionsToSave.map((question) => ({
+        question: question.question.trim(),
+        option_a: question.option_a.trim(),
+        option_b: question.option_b.trim(),
+        option_c: question.option_c.trim(),
+        option_d: question.option_d.trim(),
+        correct_answer: question.correct_answer.trim().toUpperCase(),
+        explanation: question.explanation?.trim() || null,
+        space_id: destinationSpaceId,
+      }))
 
       // Load current model config to get model name
-      const modelConfig = await invoke<ModelConfig>('load_model_config')
-      const modelName = modelConfig.selected_model || 'unknown'
+      const latestModelConfig = await invoke<PersistedModelConfig>('load_model_config')
+      const modelName = latestModelConfig.selected_model || 'unknown'
 
       // Save to database
       await invoke('save_generated_questions', {
-        questions: questionsToSave,
+        questions: preparedQuestions,
         model: modelName,
       })
 
-      // Success feedback
-      const spaceName =
-        saveDestinationMode === 'new'
-          ? newSpaceName.trim()
-          : selectedSpace?.name ?? `space ${destinationSpaceId}`
       setHasSavedQuestions(true)
-      setSaveStatus(`Saved ${questionsToSave.length} questions to ${spaceName}.`)
+      setIsReviewingQuestions(false)
+      setSaveStatus(
+        `Added ${preparedQuestions.length} ${preparedQuestions.length === 1 ? 'question' : 'questions'} to ${destinationSpaceName}.`,
+      )
       setSaveStatusKind('success')
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save questions'
@@ -538,12 +545,64 @@ export function HomePage() {
     }
   }
 
+  const keepAllQuestions = () => {
+    if (!generationSummary) {
+      setSaveStatus('No questions are ready to add.')
+      setSaveStatusKind('error')
+      return
+    }
+
+    setSaveStatus('')
+    setSaveStatusKind('')
+    const finalDrafts = createReviewQuestionDrafts(generationSummary)
+    setReviewQuestions((current) =>
+      mergeReviewQuestionDrafts(current, finalDrafts).map((question) => ({
+        ...question,
+        decision: 'kept',
+      })),
+    )
+    setReviewResumeIndex(0)
+    setHasStartedQuestionReview(true)
+    setIsReviewingQuestions(true)
+  }
+
+  const saveReviewedQuestions = () => {
+    if (isGenerating) {
+      return
+    }
+
+    const keptQuestions = reviewQuestions.filter(
+      (question) => question.decision === 'kept',
+    )
+    const invalidQuestionIndex = keptQuestions.findIndex((question) =>
+      Boolean(getReviewQuestionError(question)),
+    )
+
+    if (invalidQuestionIndex !== -1) {
+      setSaveStatus(
+        `Kept question ${invalidQuestionIndex + 1} needs attention before it can be added.`,
+      )
+      setSaveStatusKind('error')
+      return
+    }
+
+    void saveGeneratedQuestions(keptQuestions)
+  }
+
+  const finishReviewWithoutSaving = () => {
+    setHasSavedQuestions(true)
+    setIsReviewingQuestions(false)
+    setSaveStatus('Review complete. No questions were added to your library.')
+    setSaveStatusKind('success')
+  }
+
   const generationPercent = generationProgress?.progress_percent ?? 0
   const completedWork = generationProgress?.completed_chunks ?? 0
   const totalWork = generationProgress?.total_chunks ?? 0
   const skippedWork = generationProgress?.failed_chunks ?? 0
   const successfulWork = Math.max(completedWork - skippedWork, 0)
   const questionsGenerated = generationProgress?.mcq_generated ?? 0
+  const readyQuestionCount = reviewQuestions.length
   const recallQuestions = generationProgress?.recall_mcq_generated ?? 0
   const relationalQuestions = generationProgress?.relational_mcq_generated ?? 0
   const workScale = Math.max(totalWork, 1)
@@ -576,7 +635,10 @@ export function HomePage() {
         <>
           <div className="app-header">
             <div className="brand-title">
-              <img src={arkaLogo} alt="ARKA logo" className="brand-logo" />
+              <div className="home-brand-lockup">
+                <img src={arkaAppIcon} alt="" className="brand-logo" />
+                <span className="home-brand-wordmark">A.R.K.A.</span>
+              </div>
               <h1>{welcomeMessage}</h1>
             </div>
             <p className="welcome-description">
@@ -603,7 +665,7 @@ export function HomePage() {
             </div>
           </div>
 
-          {error && <p className="error-text" role="alert">{error}</p>}
+          {visibleError && <p className="error-text" role="alert">{visibleError}</p>}
 
           <div className="notes-container" aria-live="polite">
             {notes.length > 1 && (
@@ -615,10 +677,7 @@ export function HomePage() {
                       <button
                         type="button"
                         className="note-item"
-                        onClick={() => {
-                          setGenerationMode(null)
-                          setSelectedNote(note)
-                        }}
+                        onClick={() => selectNote(note)}
                       >
                         {note.title}
                       </button>
@@ -632,6 +691,8 @@ export function HomePage() {
       ) : (
         <main className="generation-workspace">
           <header className="selected-note-header">
+            <BackToHome onActivate={returnToHome} disabled={isGenerating} />
+
             {noteBreadcrumbs.length > 0 && (
               <nav className="note-breadcrumbs" aria-label="Note location">
                 {noteBreadcrumbs.map((part, index) => (
@@ -663,7 +724,7 @@ export function HomePage() {
             </div>
           </header>
 
-          {error && <p className="error-text" role="alert">{error}</p>}
+          {visibleError && <p className="error-text" role="alert">{visibleError}</p>}
 
           {!isGenerating && !generationSummary && (
             <section className="generation-setup" aria-labelledby="generation-depth-title">
@@ -725,21 +786,155 @@ export function HomePage() {
               </div>
 
               {generationMode && (
-                <div className="generation-commit">
-                  <p>
-                    <strong>{generationMode === 'graph' ? 'Deep thinking' : 'Default generation'}</strong>
-                    <span>{generationMode === 'graph' ? 'Best for connected, concept-heavy notes.' : 'Best for a quick, focused study set.'}</span>
-                  </p>
-                  <button
-                    type="button"
-                    className="btn-primary btn-start-generation"
-                    onClick={generatePreview}
-                  >
-                    <span className="btn-content">
-                      <Sparkles className="size-4" aria-hidden="true" />
-                      Generate questions
-                    </span>
-                  </button>
+                <div
+                  className="generation-commit"
+                  aria-live="polite"
+                  aria-busy={isLoadingModelConfig}
+                >
+                  <div className="generation-commit-copy">
+                    <div className="generation-commit-heading">
+                      <strong>
+                        {generationMode === 'graph' ? 'Deep thinking' : 'Default generation'}
+                      </strong>
+                      <span>
+                        {generationMode === 'graph'
+                          ? 'Both models are required for connected, concept-heavy questions.'
+                          : 'One language model is required for a quick, focused study set.'}
+                      </span>
+                    </div>
+
+                    <dl className="generation-model-readiness">
+                      <div
+                        className={`generation-model-row${
+                          !isLoadingModelConfig && !modelConfigError && isLlmReady
+                            ? ' is-ready'
+                            : ' needs-setup'
+                        }`}
+                      >
+                        <dt>
+                          <Sparkles aria-hidden="true" />
+                          <span>Language model</span>
+                        </dt>
+                        <dd>
+                          <strong
+                            title={
+                              modelConfig
+                                ? describeModel(modelConfig.provider, modelConfig.selected_model)
+                                : undefined
+                            }
+                          >
+                            {isLoadingModelConfig
+                              ? 'Checking configuration…'
+                              : modelConfigError
+                                ? 'Unable to verify'
+                                : modelConfig
+                                  ? describeModel(modelConfig.provider, modelConfig.selected_model)
+                                  : 'No model selected'}
+                          </strong>
+                          <span className="generation-model-state">
+                            {!isLoadingModelConfig && !modelConfigError && isLlmReady ? (
+                              <Check aria-hidden="true" />
+                            ) : (
+                              <AlertTriangle aria-hidden="true" />
+                            )}
+                            {isLoadingModelConfig
+                              ? 'Checking'
+                              : modelConfigError
+                                ? 'Unavailable'
+                                : isLlmReady
+                                  ? 'Ready'
+                                  : 'Not configured'}
+                          </span>
+                        </dd>
+                      </div>
+
+                      {generationMode === 'graph' && (
+                        <div
+                          className={`generation-model-row${
+                            !isLoadingModelConfig && !modelConfigError && isEmbeddingReady
+                              ? ' is-ready'
+                              : ' needs-setup'
+                          }`}
+                        >
+                          <dt>
+                            <GitBranch aria-hidden="true" />
+                            <span>Embedding model</span>
+                          </dt>
+                          <dd>
+                            <strong
+                              title={
+                                modelConfig
+                                  ? describeModel(
+                                      modelConfig.embedding_provider,
+                                      modelConfig.embedding_selected_model,
+                                    )
+                                  : undefined
+                              }
+                            >
+                              {isLoadingModelConfig
+                                ? 'Checking configuration…'
+                                : modelConfigError
+                                  ? 'Unable to verify'
+                                  : modelConfig
+                                    ? describeModel(
+                                        modelConfig.embedding_provider,
+                                        modelConfig.embedding_selected_model,
+                                      )
+                                    : 'No model selected'}
+                            </strong>
+                            <span className="generation-model-state">
+                              {!isLoadingModelConfig &&
+                              !modelConfigError &&
+                              isEmbeddingReady ? (
+                                <Check aria-hidden="true" />
+                              ) : (
+                                <AlertTriangle aria-hidden="true" />
+                              )}
+                              {isLoadingModelConfig
+                                ? 'Checking'
+                                : modelConfigError
+                                  ? 'Unavailable'
+                                  : isEmbeddingReady
+                                    ? 'Ready'
+                                    : 'Not configured'}
+                            </span>
+                          </dd>
+                        </div>
+                      )}
+                    </dl>
+
+                    {!isLoadingModelConfig && !modelConfigError && !areRequiredModelsReady && (
+                      <Link className="generation-model-settings-link" to="/models">
+                        Configure model settings
+                        <ArrowRight aria-hidden="true" />
+                      </Link>
+                    )}
+                    {modelConfigError && (
+                      <span className="generation-model-config-error">{modelConfigError}</span>
+                    )}
+                  </div>
+
+                  <div className="generation-commit-actions">
+                    <button
+                      type="button"
+                      className="btn-primary btn-start-generation"
+                      onClick={generatePreview}
+                      disabled={!canStartGeneration}
+                      aria-describedby={!canStartGeneration ? 'generation-readiness-help' : undefined}
+                    >
+                      <span className="btn-content">
+                        <Sparkles className="size-4" aria-hidden="true" />
+                        Generate questions
+                      </span>
+                    </button>
+                    {!canStartGeneration && (
+                      <span className="generation-action-help" id="generation-readiness-help">
+                        {isLoadingModelConfig
+                          ? 'Checking your saved model settings…'
+                          : 'Configure the required models to continue.'}
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </section>
@@ -855,6 +1050,27 @@ export function HomePage() {
                       </div>
                     )}
                   </div>
+
+                  {readyQuestionCount > 0 && !hasSavedQuestions && (
+                    <div className="generation-review-ready" aria-live="polite">
+                      <div>
+                        <span>Ready now</span>
+                        <strong>
+                          {readyQuestionCount} {readyQuestionCount === 1 ? 'question' : 'questions'} available
+                        </strong>
+                        <small>Review now while ARKA generates the rest.</small>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-secondary generation-review-ready-btn"
+                        onClick={beginQuestionReview}
+                        disabled={isSavingQuestions}
+                      >
+                        {hasStartedQuestionReview ? 'Continue Review' : 'Start Review'} · {readyQuestionCount} ready
+                        <ArrowRight aria-hidden="true" />
+                      </button>
+                    </div>
+                  )}
 
                   <div className="generation-work-summary">
                     <div className="generation-work-heading">
@@ -1102,105 +1318,84 @@ export function HomePage() {
           <div className="generation-summary-actions generation-complete-save">
             <div className="generation-save-heading">
               <span className="generation-save-symbol" aria-hidden="true">
-                <Save />
+                <Check />
               </span>
               <div>
-                <h3>Save to Recall Space</h3>
-                <p>{generatedQuestionCount} questions ready to save</p>
-              </div>
-              <div className="save-mode-toggle" role="group" aria-label="Save destination">
-                <button
-                  type="button"
-                  className={`save-mode-btn${saveDestinationMode === 'existing' ? ' is-active' : ''}`}
-                  onClick={() => setSaveDestinationMode('existing')}
-                  disabled={isSavingQuestions || hasSavedQuestions}
-                >
-                  Existing
-                </button>
-                <button
-                  type="button"
-                  className={`save-mode-btn${saveDestinationMode === 'new' ? ' is-active' : ''}`}
-                  onClick={() => setSaveDestinationMode('new')}
-                  disabled={isSavingQuestions || hasSavedQuestions}
-                >
-                  New
-                </button>
+                <h3>{hasSavedQuestions ? 'Review finished' : 'Choose what to keep'}</h3>
+                <p>
+                  {hasSavedQuestions
+                    ? 'This generated batch has been handled.'
+                    : `${generatedQuestionCount} ${generatedQuestionCount === 1 ? 'draft is' : 'drafts are'} ready for your library`}
+                </p>
               </div>
             </div>
 
-            <div className={`generation-save-controls${saveDestinationMode === 'new' ? ' is-new-space' : ''}`}>
-              {saveDestinationMode === 'existing' ? (
-                <label className="recall-space-select-wrap">
-                  <span>{isLoadingRecallSpaces ? 'Loading spaces…' : 'Destination'}</span>
-                  <select
-                    className="recall-space-select"
-                    value={selectedSpaceId}
-                    onChange={(event) => setSelectedSpaceId(Number(event.target.value))}
-                    disabled={
-                      isLoadingRecallSpaces ||
-                      isSavingQuestions ||
-                      hasSavedQuestions ||
-                      recallSpaces.length === 0
-                    }
-                  >
-                    {recallSpaces.map((space) => (
-                      <option key={space.id} value={space.id}>
-                        {space.name}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="recall-space-chevron" aria-hidden="true" />
-                </label>
-              ) : (
-                <div className="new-space-fields">
-                  <label className="settings-field">
-                    <span>Name</span>
-                    <input
-                      className="settings-input"
-                      value={newSpaceName}
-                      onChange={(event) => setNewSpaceName(event.target.value)}
-                      placeholder="Exam prep, Algorithms, Week 4..."
-                      disabled={isSavingQuestions || hasSavedQuestions}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Description</span>
-                    <input
-                      className="settings-input"
-                      value={newSpaceDescription}
-                      onChange={(event) => setNewSpaceDescription(event.target.value)}
-                      placeholder="Optional"
-                      disabled={isSavingQuestions || hasSavedQuestions}
-                    />
-                  </label>
-                </div>
-              )}
-
-              <button
-                type="button"
-                className="btn-primary btn-save-questions"
-                onClick={saveGeneratedQuestions}
-                disabled={isSavingQuestions || hasSavedQuestions || generatedQuestionCount === 0}
-              >
-                {isSavingQuestions ? (
-                  'Saving...'
-                ) : hasSavedQuestions ? (
-                  <span className="btn-content">
-                    <Check className="btn-icon" aria-hidden="true" />
-                    Saved
-                  </span>
-                ) : (
-                  <span className="btn-content">
-                    {saveDestinationMode === 'new' ? (
-                      <Plus className="btn-icon" aria-hidden="true" />
-                    ) : (
-                      <Save className="btn-icon" aria-hidden="true" />
-                    )}
-                    {saveDestinationMode === 'new' ? 'Create Space & Save' : 'Save Questions'}
-                  </span>
+            {!isReviewingQuestions && (
+              <div className="generation-save-review-controls">
+                {reviewQuestions.length > 0 && !hasSavedQuestions && (
+                  <div className="question-review-resume-status" aria-live="polite">
+                    <span><strong>{keptReviewCount}</strong> kept</span>
+                    <span><strong>{discardedReviewCount}</strong> discarded</span>
+                    <span><strong>{remainingReviewCount}</strong> remaining</span>
+                  </div>
                 )}
-              </button>
-            </div>
+                <div className="question-staging-actions">
+                {hasSavedQuestions ? (
+                  <>
+                    <button type="button" className="btn-primary" onClick={returnToHome}>
+                      <ArrowLeft className="btn-icon" aria-hidden="true" />
+                      Back Home
+                    </button>
+                    <Link
+                      to="/questions"
+                      className="btn-secondary question-library-link"
+                      onClick={returnToHome}
+                    >
+                      Open Question Library
+                      <ArrowRight className="btn-icon" aria-hidden="true" />
+                    </Link>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-primary question-review-start"
+                      onClick={beginQuestionReview}
+                      disabled={isSavingQuestions || generatedQuestionCount === 0}
+                    >
+                      {hasStartedQuestionReview ? (
+                        <>Continue Review</>
+                      ) : (
+                        <>
+                          Review {generatedQuestionCount}{' '}
+                          {generatedQuestionCount === 1 ? 'Question' : 'Questions'}
+                        </>
+                      )}
+                      <ArrowRight className="btn-icon" aria-hidden="true" />
+                    </button>
+                    {(reviewQuestions.length === 0 || remainingReviewCount > 0) && (
+                      <button
+                        type="button"
+                        className="btn-secondary question-keep-all"
+                        onClick={
+                          reviewQuestions.length > 0
+                            ? keepRemainingFromResults
+                            : keepAllQuestions
+                        }
+                        disabled={isSavingQuestions || generatedQuestionCount === 0}
+                      >
+                        {isSavingQuestions
+                          ? 'Adding questions…'
+                          : reviewQuestions.length > 0
+                            ? 'Keep remaining'
+                            : 'Keep All'}
+                      </button>
+                    )}
+                  </>
+                )}
+                </div>
+              </div>
+            )}
 
             {saveStatus && (
               <p className={`settings-status save-status${saveStatusKind ? ` is-${saveStatusKind}` : ''}`}>
@@ -1284,6 +1479,31 @@ export function HomePage() {
             </div>
           )}
         </section>
+      )}
+
+      {isReviewingQuestions && reviewQuestions.length > 0 && (
+        <GeneratedQuestionReview
+          questions={reviewQuestions}
+          destinationName={destinationName}
+          saveDestinationMode={saveDestinationMode}
+          onSaveDestinationModeChange={setSaveDestinationMode}
+          recallSpaces={recallSpaces}
+          isLoadingRecallSpaces={isLoadingRecallSpaces}
+          selectedSpaceId={selectedSpaceId}
+          onSelectedSpaceChange={setSelectedSpaceId}
+          newSpaceName={newSpaceName}
+          onNewSpaceNameChange={setNewSpaceName}
+          newSpaceDescription={newSpaceDescription}
+          onNewSpaceDescriptionChange={setNewSpaceDescription}
+          isSaving={isSavingQuestions}
+          isGenerationActive={isGenerating}
+          initialActiveIndex={reviewResumeIndex}
+          onUpdateQuestion={updateReviewQuestion}
+          onKeepRemaining={keepRemainingQuestions}
+          onSaveKept={saveReviewedQuestions}
+          onFinishWithoutSaving={finishReviewWithoutSaving}
+          onClose={closeQuestionReview}
+        />
       )}
 
         </main>
