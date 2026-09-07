@@ -179,20 +179,35 @@ Open a pull request into `main`.
 
 Use a concise Conventional Commit-style PR title when appropriate.
 
-The PR description should contain:
+Write the PR description for both product users and technical reviewers. Lead with the user-visible problem and resulting behavior in plain language, then explain the implementation details needed to review the change. Assume the reader has not seen the task conversation.
+
+* Describe what users can now do, what becomes easier, or what no longer goes wrong. Use a concrete before/after example when it clarifies the change.
+* Connect technical changes to their purpose. Include architecture, data flow, or tradeoffs only when they help reviewers assess correctness or risk; avoid inventories of files, functions, or internal terminology without explaining their relevance.
+* For internal maintenance with no direct user-visible change, state that plainly and explain the developer or operational benefit without inventing a user benefit.
+* Scale detail to the change. Small PRs can use a short summary and testing section; use the fuller structure below when technical context adds value. Follow an existing repository PR template while preserving this balance.
+
+Suggested structure:
 
 ```markdown
 ## Summary
 
-- What changed
-- Why it changed
+- The user problem and what users experience after this change
+- Why this matters, with a concrete example when useful
+
+## Technical details
+
+- Key implementation decisions and how they support the outcome above
+- Relevant tradeoffs or compatibility considerations
 
 ## Testing
 
-- Checks actually executed
+- Checks actually executed and the behavior they verify
+- Manual user-flow checks, if performed
 ```
 
 Add important limitations or follow-up work only when relevant.
+
+For example, lead with "When an update check fails, Settings now explains the failure and lets users retry" rather than "Refactor updater error handling." Follow with the relevant technical detail, such as "Keep failed checks separate from the no-update state so a connection error does not appear as 'up to date.'" Use examples only when supported by the actual diff.
 
 Do not claim a test passed unless it was actually executed successfully.
 
