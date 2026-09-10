@@ -5,10 +5,7 @@ import {
   Check,
   CheckCheck,
   ChevronDown,
-  CreditCard,
   FolderOpen,
-  Info,
-  ListChecks,
   Sparkles,
   X,
 } from 'lucide-react'
@@ -17,10 +14,10 @@ import {
   type ReviewDecision,
   type ReviewLearningItemDraft,
 } from '../generation/review'
-import type { GeneratedItem } from '../generation/types'
 import { commands } from '../commands/commands'
 import { getAriaKeyShortcut, getShortcut } from '../shortcuts/defaultShortcuts'
 import { useKeyboardShortcuts } from '../shortcuts/useKeyboardShortcuts'
+import { LearningItemEditor } from './LearningItemEditor'
 
 type RecallSpaceOption = {
   id: number
@@ -115,20 +112,6 @@ export function GeneratedLearningItemReview({
       }
     }
   }, [])
-
-  const updateContent = (updates: Partial<GeneratedItem>) => {
-    if (!activeItem || isCaughtUp) {
-      return
-    }
-
-    setValidationMessage('')
-    onUpdateItem(activeItem.draft_id, {
-      content: {
-        ...activeItem.content,
-        ...updates,
-      },
-    })
-  }
 
   const decideItem = (decision: Exclude<ReviewDecision, 'pending'>) => {
     if (!activeItem || isCaughtUp) {
@@ -228,8 +211,6 @@ export function GeneratedLearningItemReview({
   const nextShortcut = getShortcut(commands.reviewNext)
   const discardShortcut = getShortcut(commands.reviewDiscard)
   const keepShortcut = getShortcut(commands.reviewKeep)
-  const mcq = activeItem.content.mcq
-  const distractors = mcq?.distractors ?? []
 
   return (
     <dialog
@@ -441,175 +422,50 @@ export function GeneratedLearningItemReview({
               </div>
             </div>
           ) : (
-            <div className="learning-item-review-columns">
-              <section className="learning-item-review-panel" aria-labelledby="core-knowledge-title">
-                <div className="learning-item-review-section-heading">
-                  <h4 id="core-knowledge-title">Core knowledge</h4>
-                  <p>Shared content for every practice variant in this learning item.</p>
-                </div>
-
-                <div className="learning-item-review-fields">
-                  <label className="question-review-field">
-                    <span>Learning target</span>
-                    <textarea
-                      className="edit-space-input edit-space-textarea"
-                      value={activeItem.content.target}
-                      onChange={(event) => updateContent({ target: event.target.value })}
-                      rows={3}
-                      disabled={isSaving}
-                    />
-                  </label>
-
-                  <label className="question-review-field">
-                    <span>Answer</span>
-                    <textarea
-                      className="edit-space-input edit-space-textarea"
-                      value={activeItem.content.answer}
-                      onChange={(event) => updateContent({ answer: event.target.value })}
-                      rows={4}
-                      disabled={isSaving}
-                    />
-                  </label>
-
-                  <label className="question-review-field">
-                    <span>Explanation <small>(optional)</small></span>
-                    <textarea
-                      className="edit-space-input edit-space-textarea"
-                      value={activeItem.content.explanation ?? ''}
-                      onChange={(event) => updateContent({
-                        explanation: event.target.value || null,
-                      })}
-                      rows={4}
-                      disabled={isSaving}
-                    />
-                  </label>
-                </div>
-              </section>
-
-              <section className="learning-item-review-panel" aria-labelledby="practice-variants-title">
-                <div className="learning-item-review-section-heading">
-                  <h4 id="practice-variants-title">Practice variants</h4>
-                  <p>Different formats for active recall, using the same core knowledge.</p>
-                </div>
-
-                <article className="learning-item-variant-card">
-                  <div className="learning-item-variant-heading">
-                    <CreditCard aria-hidden="true" />
-                    <strong>Flashcard</strong>
-                    <span className="learning-item-variant-badge is-required">Required</span>
-                  </div>
-                  <label className="question-review-field">
-                    <span>Prompt</span>
-                    <textarea
-                      className="edit-space-input edit-space-textarea"
-                      value={activeItem.content.flashcard.prompt}
-                      onChange={(event) => updateContent({
-                        flashcard: { prompt: event.target.value },
-                      })}
-                      rows={2}
-                      disabled={isSaving}
-                    />
-                  </label>
-                  <p className="learning-item-shared-answer-note">
-                    <Info aria-hidden="true" />
-                    Uses the shared answer on the left. The answer is not duplicated here.
-                  </p>
-                </article>
-
-                {mcq ? (
-                  <article className="learning-item-variant-card">
-                    <div className="learning-item-variant-heading">
-                      <ListChecks aria-hidden="true" />
-                      <strong>Multiple choice</strong>
-                      <span className="learning-item-variant-badge">Optional</span>
-                    </div>
-                    <label className="question-review-field">
-                      <span>Question</span>
-                      <textarea
-                        className="edit-space-input edit-space-textarea"
-                        value={mcq.prompt ?? activeItem.content.flashcard.prompt}
-                        onChange={(event) => updateContent({
-                          mcq: { ...mcq, prompt: event.target.value },
-                        })}
-                        rows={2}
-                        disabled={isSaving}
-                      />
-                    </label>
-                    <fieldset className="learning-item-mcq-options">
-                      <legend>Answer options</legend>
-                      <div className="is-correct">
-                        <input
-                          type="radio"
-                          name={`correct-answer-${activeItem.draft_id}`}
-                          checked
-                          readOnly
-                          aria-label="Shared answer is correct"
-                        />
-                        <span>Correct</span>
-                        <p title="Edit this value in the shared Answer field">
-                          {activeItem.content.answer}
-                        </p>
-                      </div>
-                      {Array.from({ length: 3 }, (_, distractorIndex) => (
-                        <label key={`${activeItem.draft_id}-distractor-${distractorIndex}`}>
-                          <input
-                            type="radio"
-                            name={`correct-answer-${activeItem.draft_id}`}
-                            checked={false}
-                            onChange={() => {
-                              const nextAnswer = distractors[distractorIndex] ?? ''
-                              const nextDistractors = [...distractors]
-                              nextDistractors[distractorIndex] = activeItem.content.answer
-                              updateContent({
-                                answer: nextAnswer,
-                                mcq: { ...mcq, distractors: nextDistractors },
-                              })
-                            }}
-                            aria-label={`Make distractor ${distractorIndex + 1} the correct answer`}
-                            disabled={isSaving}
-                          />
-                          <span>{distractorIndex + 1}</span>
-                          <textarea
-                            className="edit-space-input edit-question-option-textarea"
-                            value={distractors[distractorIndex] ?? ''}
-                            onChange={(event) => {
-                              const nextDistractors = [...distractors]
-                              nextDistractors[distractorIndex] = event.target.value
-                              updateContent({
-                                mcq: { ...mcq, distractors: nextDistractors },
-                              })
-                            }}
-                            rows={1}
-                            aria-label={`Distractor ${distractorIndex + 1}`}
-                            disabled={isSaving}
-                          />
-                        </label>
-                      ))}
-                      <small>The answer order is mixed when the item is saved.</small>
-                    </fieldset>
-                  </article>
-                ) : (
-                  <article className="learning-item-variant-card is-omitted">
-                    <div className="learning-item-variant-heading">
-                      <X aria-hidden="true" />
-                      <strong>Multiple choice omitted</strong>
-                    </div>
-                    <label className="question-review-field">
-                      <span>Reason</span>
-                      <textarea
-                        className="edit-space-input edit-space-textarea"
-                        value={activeItem.content.mcq_omission_reason ?? ''}
-                        onChange={(event) => updateContent({
-                          mcq_omission_reason: event.target.value,
-                        })}
-                        rows={3}
-                        disabled={isSaving}
-                      />
-                    </label>
-                  </article>
-                )}
-              </section>
-            </div>
+            <LearningItemEditor
+              idPrefix={activeItem.draft_id}
+              disabled={isSaving}
+              flashcardRequired
+              editMcqOmissionReason
+              value={{
+                target: activeItem.content.target,
+                answer: activeItem.content.answer,
+                explanation: activeItem.content.explanation,
+                flashcard: { prompt: activeItem.content.flashcard.prompt },
+                mcq: activeItem.content.mcq
+                  ? {
+                      prompt:
+                        activeItem.content.mcq.prompt ?? activeItem.content.flashcard.prompt,
+                      distractors: activeItem.content.mcq.distractors,
+                    }
+                  : null,
+                mcqOmissionReason: activeItem.content.mcq_omission_reason,
+              }}
+              onChange={(value) => {
+                setValidationMessage('')
+                onUpdateItem(activeItem.draft_id, {
+                  content: {
+                    ...activeItem.content,
+                    target: value.target,
+                    answer: value.answer,
+                    explanation: value.explanation,
+                    flashcard: value.flashcard ?? activeItem.content.flashcard,
+                    mcq: value.mcq
+                      ? {
+                          // Preserve null as the semantic "reuse flashcard prompt" value.
+                          prompt:
+                            activeItem.content.mcq?.prompt === null &&
+                            value.mcq.prompt === activeItem.content.flashcard.prompt
+                              ? null
+                              : value.mcq.prompt,
+                          distractors: value.mcq.distractors,
+                        }
+                      : null,
+                    mcq_omission_reason: value.mcq ? null : value.mcqOmissionReason,
+                  },
+                })
+              }}
+            />
           )}
 
           {validationMessage && (

@@ -3,19 +3,16 @@ import { invoke } from '@tauri-apps/api/core'
 import { ArrowLeft, ArrowRight, ChevronDown, Ellipsis, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BackToHome } from '../components/BackToHome'
-
-type Question = {
-  id: number
-  question: string
-  option_a: string
-  option_b: string
-  option_c: string
-  option_d: string
-  correct_answer: string
-  explanation: string | null
-  model: string | null
-  space_id: number
-}
+import { LearningItemEditor } from '../components/LearningItemEditor'
+import {
+  getLearningItemEditorError,
+  type LearningItemEditorValue,
+} from '../learning-items/editor'
+import type {
+  LearningItem,
+  LearningItemEditInput,
+  LearningItemVariantInput,
+} from '../learning-items/types'
 
 type RecallSpace = {
   id: number
@@ -34,13 +31,96 @@ type RecallDashboard = {
   spaces: RecallSpaceSummary[]
 }
 
-const questionLabel = (count: number) => `${count} ${count === 1 ? 'question' : 'questions'}`
+const learningItemLabel = (count: number) =>
+  `${count} ${count === 1 ? 'learning item' : 'learning items'}`
+
+const getLearningItemSummary = (item: LearningItem) => {
+  const flashcard = item.variants.find((variant) => variant.format === 'flashcard')
+  if (flashcard?.prompt.trim()) {
+    return flashcard.prompt
+  }
+
+  const mcq = item.variants.find((variant) => variant.format === 'mcq')
+  if (mcq?.prompt.trim()) {
+    return mcq.prompt
+  }
+
+  return item.target?.trim() || `Learning item #${item.id}`
+}
+
+const toEditorValue = (item: LearningItem): LearningItemEditorValue => {
+  const flashcard = item.variants.find((variant) => variant.format === 'flashcard')
+  const mcq = item.variants.find((variant) => variant.format === 'mcq')
+  const correctOption = mcq?.options.find((option) => option.id === mcq.correct_option_id)
+
+  return {
+    target: item.target ?? '',
+    answer: item.answer ?? correctOption?.text ?? '',
+    explanation: item.explanation,
+    flashcard: flashcard ? { prompt: flashcard.prompt } : null,
+    mcq: mcq
+      ? {
+          prompt: mcq.prompt,
+          distractors: mcq.options
+            .filter((option) => option.id !== mcq.correct_option_id)
+            .map((option) => option.text),
+        }
+      : null,
+    mcqOmissionReason: null,
+  }
+}
+
+const toEditInput = (
+  item: LearningItem,
+  value: LearningItemEditorValue,
+  spaceId: number,
+): LearningItemEditInput => {
+  const variants: LearningItemVariantInput[] = []
+  const existingFlashcard = item.variants.find((variant) => variant.format === 'flashcard')
+  const existingMcq = item.variants.find((variant) => variant.format === 'mcq')
+
+  if (existingFlashcard && value.flashcard) {
+    variants.push({
+      format: 'flashcard',
+      prompt: value.flashcard.prompt.trim(),
+    })
+  }
+
+  if (existingMcq && value.mcq) {
+    let distractorIndex = 0
+    variants.push({
+      format: 'mcq',
+      prompt: value.mcq.prompt.trim(),
+      correct_option_id: existingMcq.correct_option_id,
+      options: existingMcq.options.map((option) => {
+        if (option.id === existingMcq.correct_option_id) {
+          return { ...option, text: value.answer.trim() }
+        }
+
+        const text = value.mcq?.distractors[distractorIndex]?.trim() ?? ''
+        distractorIndex += 1
+        return { ...option, text }
+      }),
+    })
+  }
+
+  const target = value.target.trim()
+  const explanation = value.explanation?.trim() ?? ''
+
+  return {
+    target: target || null,
+    answer: value.answer.trim(),
+    explanation: explanation || null,
+    space_id: spaceId,
+    variants,
+  }
+}
 
 export function QuestionsPage() {
   const navigate = useNavigate()
   const [spaces, setSpaces] = useState<RecallSpace[]>([])
-  const [questions, setQuestions] = useState<Question[]>([])
-  const [allQuestions, setAllQuestions] = useState<Question[]>([])
+  const [questions, setQuestions] = useState<LearningItem[]>([])
+  const [allQuestions, setAllQuestions] = useState<LearningItem[]>([])
   const [spaceSummaries, setSpaceSummaries] = useState<RecallSpaceSummary[]>([])
   const [isLoadingSpaces, setIsLoadingSpaces] = useState(true)
   const [isLoadingQuestions, setIsLoadingQuestions] = useState(false)
@@ -54,14 +134,11 @@ export function QuestionsPage() {
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [isSavingSpace, setIsSavingSpace] = useState(false)
-  const [editingQuestion, setEditingQuestion] = useState<Question | null>(null)
-  const [editQuestionText, setEditQuestionText] = useState('')
-  const [editOptionA, setEditOptionA] = useState('')
-  const [editOptionB, setEditOptionB] = useState('')
-  const [editOptionC, setEditOptionC] = useState('')
-  const [editOptionD, setEditOptionD] = useState('')
-  const [editCorrectAnswer, setEditCorrectAnswer] = useState<'A' | 'B' | 'C' | 'D'>('A')
-  const [isSavingQuestion, setIsSavingQuestion] = useState(false)
+  const [editingItem, setEditingItem] = useState<LearningItem | null>(null)
+  const [editValue, setEditValue] = useState<LearningItemEditorValue | null>(null)
+  const [editSpaceId, setEditSpaceId] = useState(1)
+  const [editItemError, setEditItemError] = useState('')
+  const [isSavingItem, setIsSavingItem] = useState(false)
   const [isManagingSpaces, setIsManagingSpaces] = useState(false)
   const [deletingSpaceId, setDeletingSpaceId] = useState<number | null>(null)
   const [pendingDeleteSpaceId, setPendingDeleteSpaceId] = useState<number | null>(null)
@@ -86,13 +163,13 @@ export function QuestionsPage() {
       setError('')
 
       try {
-        const [spaceRows, questionRows, dashboard] = await Promise.all([
+        const [spaceRows, itemRows, dashboard] = await Promise.all([
           invoke<RecallSpace[]>('get_spaces'),
-          invoke<Question[]>('get_questions'),
+          invoke<LearningItem[]>('get_learning_items', { spaceId: null }),
           invoke<RecallDashboard>('get_recall_dashboard'),
         ])
         setSpaces(spaceRows)
-        setAllQuestions(questionRows)
+        setAllQuestions(itemRows)
         setSpaceSummaries(dashboard.spaces)
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to load recall spaces'
@@ -113,12 +190,12 @@ export function QuestionsPage() {
     setIsLoadingQuestions(true)
 
     try {
-      const rows = await invoke<Question[]>('get_questions_by_space', {
+      const rows = await invoke<LearningItem[]>('get_learning_items', {
         spaceId: space.id,
       })
       setQuestions(rows)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load questions'
+      const message = err instanceof Error ? err.message : 'Failed to load learning items'
       setError(message)
       setQuestions([])
     } finally {
@@ -303,78 +380,55 @@ export function QuestionsPage() {
     }
   }
 
-  const openEditQuestion = (question: Question) => {
-    setEditingQuestion(question)
-    setEditQuestionText(question.question)
-    setEditOptionA(question.option_a)
-    setEditOptionB(question.option_b)
-    setEditOptionC(question.option_c)
-    setEditOptionD(question.option_d)
-    const normalizedAnswer = question.correct_answer.trim().toUpperCase()
-    if (
-      normalizedAnswer === 'A' ||
-      normalizedAnswer === 'B' ||
-      normalizedAnswer === 'C' ||
-      normalizedAnswer === 'D'
-    ) {
-      setEditCorrectAnswer(normalizedAnswer)
-    } else {
-      setEditCorrectAnswer('A')
-    }
-    setError('')
+  const openEditItem = (item: LearningItem) => {
+    setEditingItem(item)
+    setEditValue(toEditorValue(item))
+    setEditSpaceId(item.space_id)
+    setEditItemError('')
   }
 
-  const cancelEditQuestion = () => {
-    if (isSavingQuestion) return
-    setEditingQuestion(null)
+  const cancelEditItem = () => {
+    if (isSavingItem) return
+    setEditingItem(null)
+    setEditValue(null)
+    setEditItemError('')
   }
 
-  const saveEditQuestion = async () => {
-    if (!editingQuestion || isSavingQuestion) return
+  const saveEditItem = async () => {
+    if (!editingItem || !editValue || isSavingItem) return
 
-    const trimmedQuestion = editQuestionText.trim()
-    if (trimmedQuestion.length === 0) {
-      setError('Question text cannot be empty.')
+    const validationMessage = getLearningItemEditorError(editValue)
+    if (validationMessage) {
+      setEditItemError(validationMessage)
       return
     }
 
-    if (
-      editCorrectAnswer !== 'A' &&
-      editCorrectAnswer !== 'B' &&
-      editCorrectAnswer !== 'C' &&
-      editCorrectAnswer !== 'D'
-    ) {
-      setError('Correct answer must be one of A, B, C, or D.')
-      return
-    }
-
-    setError('')
-    setIsSavingQuestion(true)
+    setEditItemError('')
+    setIsSavingItem(true)
 
     try {
-      const updated = await invoke<Question>('modify_question', {
-        id: editingQuestion.id,
-        questionInput: {
-          question: trimmedQuestion,
-          option_a: editOptionA.trim(),
-          option_b: editOptionB.trim(),
-          option_c: editOptionC.trim(),
-          option_d: editOptionD.trim(),
-          correct_answer: editCorrectAnswer,
-          explanation: editingQuestion.explanation,
-          space_id: editingQuestion.space_id,
-        },
+      const updated = await invoke<LearningItem>('modify_learning_item', {
+        id: editingItem.id,
+        item: toEditInput(editingItem, editValue, editSpaceId),
       })
 
-      setQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
-      setAllQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+      setAllQuestions((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      )
+      setQuestions((current) => {
+        if (selectedSpace && updated.space_id !== selectedSpace.id) {
+          return current.filter((item) => item.id !== updated.id)
+        }
+        return current.map((item) => (item.id === updated.id ? updated : item))
+      })
       void refreshSpaceSummaries()
-      setEditingQuestion(null)
+      setEditingItem(null)
+      setEditValue(null)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to update question'
-      setError(message)
+      const message = err instanceof Error ? err.message : 'Failed to update learning item'
+      setEditItemError(message)
     } finally {
-      setIsSavingQuestion(false)
+      setIsSavingItem(false)
     }
   }
 
@@ -382,11 +436,11 @@ export function QuestionsPage() {
     <div className="app-container questions-page">
       <BackToHome />
       <header className="settings-panel">
-        <h1>{selectedSpace ? selectedSpace.name : 'Question Library'}</h1>
+        <h1>{selectedSpace ? selectedSpace.name : 'Learning Item Library'}</h1>
         <p className="settings-help-text">
           {selectedSpace
-            ? 'Questions saved inside this recall space.'
-            : 'Browse, edit, and manage questions by recall space.'}
+            ? 'Learning items saved inside this recall space.'
+            : 'Browse, edit, and manage learning items by recall space.'}
         </p>
       </header>
 
@@ -406,25 +460,25 @@ export function QuestionsPage() {
               onClick={toggleManageQuestions}
               aria-pressed={isManagingQuestions}
             >
-              {isManagingQuestions ? 'Cancel Selection' : 'Manage questions'}
+              {isManagingQuestions ? 'Cancel Selection' : 'Manage learning items'}
             </button>
           </section>
 
           {isLoadingQuestions ? (
             <section className="settings-panel">
-              <p className="settings-help-text">Loading questions...</p>
+              <p className="settings-help-text">Loading learning items...</p>
             </section>
           ) : questions.length === 0 ? (
             <section className="settings-panel">
-              <p className="settings-help-text">No questions found for this space.</p>
+              <p className="settings-help-text">No learning items found for this space.</p>
             </section>
           ) : (
-            <section className="questions-list" aria-label="Questions list">
+            <section className="questions-list" aria-label="Learning items list">
               {questions.map((item) => (
                 <article className="question-card" key={item.id}>
                   <div className="question-card-head">
                     {isManagingQuestions && (
-                      <label className="question-select" aria-label={`Select question ${item.id}`}>
+                      <label className="question-select" aria-label={`Select learning item ${item.id}`}>
                         <input
                           type="checkbox"
                           checked={selectedQuestionIds.includes(item.id)}
@@ -436,13 +490,13 @@ export function QuestionsPage() {
                     <div className="question-toggle">
                       <div className="question-summary">
                         <span className="question-id">#{item.id}</span>
-                        <h2>{item.question}</h2>
+                        <h2>{getLearningItemSummary(item)}</h2>
                       </div>
                       <button
                         type="button"
                         className="question-more-btn"
-                        onClick={() => openEditQuestion(item)}
-                        aria-label={`Edit question ${item.id}`}
+                        onClick={() => openEditItem(item)}
+                        aria-label={`Edit learning item ${item.id}`}
                         disabled={isManagingQuestions || isDeletingQuestions}
                       >
                         <Ellipsis className="size-4" aria-hidden="true" />
@@ -455,7 +509,7 @@ export function QuestionsPage() {
           )}
 
           {isManagingQuestions && questions.length > 0 && (
-            <section className="questions-manage-actions" aria-label="Question management actions">
+            <section className="questions-manage-actions" aria-label="Learning item management actions">
               <button
                 type="button"
                 className="btn-primary btn-delete-questions"
@@ -463,8 +517,8 @@ export function QuestionsPage() {
                 disabled={selectedQuestionIds.length === 0 || isDeletingQuestions}
               >
                 {selectedQuestionIds.length <= 1
-                  ? 'Delete selected question'
-                  : `Delete ${selectedQuestionIds.length} selected questions`}
+                  ? 'Delete selected learning item'
+                  : `Delete ${selectedQuestionIds.length} selected learning items`}
               </button>
             </section>
           )}
@@ -479,17 +533,17 @@ export function QuestionsPage() {
                 className="delete-space-modal"
                 role="alertdialog"
                 aria-modal="true"
-                aria-label="Delete selected questions"
+                aria-label="Delete selected learning items"
                 onClick={(event) => {
                   event.stopPropagation()
                 }}
               >
-                <h2>Delete questions?</h2>
+                <h2>Delete learning items?</h2>
                 <p>
                   <strong>
                     {selectedQuestionIds.length === 1
-                      ? '1 question'
-                      : `${selectedQuestionIds.length} questions`}
+                      ? '1 learning item'
+                      : `${selectedQuestionIds.length} learning items`}
                   </strong>{' '}
                   will be permanently deleted.
                 </p>
@@ -517,114 +571,111 @@ export function QuestionsPage() {
             </section>
           )}
 
-          {editingQuestion && (
+          {editingItem && editValue && (
             <section
               className="delete-space-modal-overlay"
               role="presentation"
-              onClick={cancelEditQuestion}
+              onClick={cancelEditItem}
             >
               <div
-                className="delete-space-modal edit-space-modal edit-question-modal"
+                className="delete-space-modal edit-space-modal edit-learning-item-modal"
                 role="dialog"
                 aria-modal="true"
-                aria-label={`Edit question ${editingQuestion.id}`}
+                aria-label={`Edit learning item ${editingItem.id}`}
                 onClick={(event) => {
                   event.stopPropagation()
                 }}
               >
-                <h2>Edit question</h2>
-                <div className="edit-space-form">
-                  <label className="edit-space-label">
-                    Question
-                    <textarea
-                      className="edit-space-input edit-space-textarea"
-                      value={editQuestionText}
-                      onChange={(e) => setEditQuestionText(e.target.value)}
-                      disabled={isSavingQuestion}
-                      rows={2}
-                      autoFocus
-                    />
-                  </label>
-                  <div className="edit-question-options-grid">
-                    <label className="edit-space-label">
-                      Option A
-                      <textarea
-                        className="edit-space-input edit-question-option-textarea"
-                        value={editOptionA}
-                        onChange={(e) => setEditOptionA(e.target.value)}
-                        disabled={isSavingQuestion}
-                        rows={2}
-                      />
-                    </label>
-                    <label className="edit-space-label">
-                      Option B
-                      <textarea
-                        className="edit-space-input edit-question-option-textarea"
-                        value={editOptionB}
-                        onChange={(e) => setEditOptionB(e.target.value)}
-                        disabled={isSavingQuestion}
-                        rows={2}
-                      />
-                    </label>
-                    <label className="edit-space-label">
-                      Option C
-                      <textarea
-                        className="edit-space-input edit-question-option-textarea"
-                        value={editOptionC}
-                        onChange={(e) => setEditOptionC(e.target.value)}
-                        disabled={isSavingQuestion}
-                        rows={2}
-                      />
-                    </label>
-                    <label className="edit-space-label">
-                      Option D
-                      <textarea
-                        className="edit-space-input edit-question-option-textarea"
-                        value={editOptionD}
-                        onChange={(e) => setEditOptionD(e.target.value)}
-                        disabled={isSavingQuestion}
-                        rows={2}
-                      />
-                    </label>
+                <header className="library-learning-item-header">
+                  <div>
+                    <h2>Edit learning item</h2>
+                    <p>Update the shared knowledge and its saved practice variants.</p>
                   </div>
-                  <label className="edit-space-label">
-                    Correct Answer
-                    <div className="recall-space-select-wrap edit-select-wrap">
-                      <select
-                        className="recall-space-select edit-space-select"
-                        value={editCorrectAnswer}
-                        onChange={(event) =>
-                          setEditCorrectAnswer(event.target.value as 'A' | 'B' | 'C' | 'D')
-                        }
-                        disabled={isSavingQuestion}
+                  <span className={`library-learning-item-status is-${editingItem.status}`}>
+                    {editingItem.status === 'needs_repair' ? 'Needs repair' : 'Ready'}
+                  </span>
+                </header>
+
+                {(editingItem.generation.model ||
+                  editingItem.generation.provider ||
+                  editingItem.source) && (
+                  <div className="library-learning-item-provenance" aria-label="Learning item provenance">
+                    {editingItem.generation.model && (
+                      <span title={`Model: ${editingItem.generation.model}`}>
+                        Model <strong>{editingItem.generation.model}</strong>
+                      </span>
+                    )}
+                    {editingItem.generation.provider && (
+                      <span title={`Provider: ${editingItem.generation.provider}`}>
+                        Provider <strong>{editingItem.generation.provider}</strong>
+                      </span>
+                    )}
+                    {editingItem.source && (
+                      <span
+                        title={`${editingItem.source.note_path}:${editingItem.source.start_line}-${editingItem.source.end_line}`}
                       >
-                        <option value="A">A</option>
-                        <option value="B">B</option>
-                        <option value="C">C</option>
-                        <option value="D">D</option>
-                      </select>
-                      <ChevronDown className="recall-space-chevron" aria-hidden="true" />
-                    </div>
+                        Source <strong>{editingItem.source.note_path}</strong>
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div className="library-learning-item-destination">
+                  <label className="edit-space-label" htmlFor={`learning-item-space-${editingItem.id}`}>
+                    Recall Space
                   </label>
+                  <div className="recall-space-select-wrap edit-select-wrap">
+                    <select
+                      id={`learning-item-space-${editingItem.id}`}
+                      className="recall-space-select edit-space-select"
+                      value={editSpaceId}
+                      onChange={(event) => setEditSpaceId(Number(event.target.value))}
+                      disabled={isSavingItem}
+                    >
+                      {spaces.map((space) => (
+                        <option key={space.id} value={space.id}>
+                          {space.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="recall-space-chevron" aria-hidden="true" />
+                  </div>
                 </div>
+
+                <LearningItemEditor
+                  idPrefix={`library-${editingItem.id}`}
+                  value={editValue}
+                  onChange={(value) => {
+                    setEditValue(value)
+                    setEditItemError('')
+                  }}
+                  disabled={isSavingItem}
+                />
+
+                {editItemError && (
+                  <p className="question-review-validation library-learning-item-validation" role="alert">
+                    {editItemError}
+                  </p>
+                )}
+
                 <div className="delete-space-modal-actions">
                   <button
                     type="button"
                     className="btn-secondary delete-space-cancel-btn"
-                    onClick={cancelEditQuestion}
-                    disabled={isSavingQuestion}
+                    onClick={cancelEditItem}
+                    disabled={isSavingItem}
                   >
                     Cancel
                   </button>
                   <button
                     type="button"
-                    className="btn-primary delete-space-confirm-btn"
+                    className="btn-primary library-learning-item-save-btn"
                     onClick={() => {
-                      void saveEditQuestion()
+                      void saveEditItem()
                     }}
-                    disabled={isSavingQuestion}
+                    disabled={isSavingItem}
                   >
-                    {isSavingQuestion ? 'Saving...' : 'Save'}
+                    {isSavingItem ? 'Saving...' : 'Save changes'}
                   </button>
                 </div>
               </div>
@@ -675,15 +726,15 @@ export function QuestionsPage() {
                   >
                     <div className="recall-space-meta">
                       <h2>{space.name}</h2>
-                      <p>{isCaughtUp ? 'All caught up' : `${questionLabel(summary.due_count)} due`} · {questionLabel(summary.total_questions)}</p>
+                      <p>{isCaughtUp ? 'All caught up' : `${learningItemLabel(summary.due_count)} due`} · {learningItemLabel(summary.total_questions)}</p>
                     </div>
                   </button>
 
                   <div className="library-space-workload">
                     <span className={summary.overdue_count > 0 ? 'is-overdue' : undefined}>
                       {summary.overdue_count > 0
-                        ? `${questionLabel(summary.overdue_count)} overdue`
-                        : 'No overdue questions'}
+                        ? `${learningItemLabel(summary.overdue_count)} overdue`
+                        : 'No overdue learning items'}
                     </span>
                     <button
                       type="button"
@@ -747,7 +798,7 @@ export function QuestionsPage() {
               >
                 <h2>Delete recall space?</h2>
                 <p>
-                  <strong>{pendingDeleteSpace.name}</strong> and all questions inside this space will be
+                  <strong>{pendingDeleteSpace.name}</strong> and all learning items inside this space will be
                   permanently deleted.
                 </p>
                 <div className="delete-space-modal-actions">

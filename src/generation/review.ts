@@ -132,7 +132,7 @@ export function getReviewLearningItemError(item: ReviewLearningItemDraft) {
   }
 
   const normalizedOptions = [content.answer, ...content.mcq.distractors].map(
-    (option) => option.trim().toLocaleLowerCase(),
+    (option) => option.trim().toLowerCase(),
   )
 
   if (normalizedOptions.some((option) => !option)) {
