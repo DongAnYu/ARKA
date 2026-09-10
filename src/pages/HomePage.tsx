@@ -19,13 +19,19 @@ import {
 } from 'lucide-react'
 import arkaAppIcon from '../assets/arka-app-icon.png'
 import { BackToHome } from '../components/BackToHome'
+import { GeneratedLearningItemReview } from '../components/GeneratedLearningItemReview'
 import {
   GeneratedQuestionReview,
 } from '../components/GeneratedQuestionReview'
 import {
+  createReviewLearningItemDrafts,
+  createReviewLearningItemDraftsFromPreviews,
   createReviewQuestionDrafts,
   createReviewQuestionDraftsFromPreviews,
+  getReviewLearningItemError,
   getReviewQuestionError,
+  prepareLearningItemForSave,
+  type ReviewLearningItemDraft,
   type ReviewQuestionDraft,
 } from '../generation/review'
 import { useGeneration } from '../generation/context'
@@ -76,16 +82,6 @@ const getWelcomeMessage = (date = new Date()) => {
     </>
   )
 }
-type QuestionInput = {
-  question: string
-  option_a: string
-  option_b: string
-  option_c: string
-  option_d: string
-  correct_answer: string
-  explanation: string | null
-}
-
 type RecallSpace = {
   id: number
   name: string
@@ -114,6 +110,16 @@ function mergeReviewQuestionDrafts(
 ) {
   const existingIds = new Set(current.map((question) => question.reviewId))
   const additions = incoming.filter((question) => !existingIds.has(question.reviewId))
+
+  return additions.length > 0 ? [...current, ...additions] : current
+}
+
+function mergeReviewLearningItemDrafts(
+  current: ReviewLearningItemDraft[],
+  incoming: ReviewLearningItemDraft[],
+) {
+  const existingIds = new Set(current.map((item) => item.draft_id))
+  const additions = incoming.filter((item) => !existingIds.has(item.draft_id))
 
   return additions.length > 0 ? [...current, ...additions] : current
 }
@@ -151,6 +157,7 @@ export function HomePage() {
   const [saveStatusKind, setSaveStatusKind] = useState<'success' | 'error' | ''>('')
   const [hasSavedQuestions, setHasSavedQuestions] = useState(false)
   const [reviewQuestions, setReviewQuestions] = useState<ReviewQuestionDraft[]>([])
+  const [reviewLearningItems, setReviewLearningItems] = useState<ReviewLearningItemDraft[]>([])
   const [isReviewingQuestions, setIsReviewingQuestions] = useState(false)
   const [hasStartedQuestionReview, setHasStartedQuestionReview] = useState(false)
   const [reviewResumeIndex, setReviewResumeIndex] = useState(0)
@@ -159,25 +166,44 @@ export function HomePage() {
   const [isLoadingModelConfig, setIsLoadingModelConfig] = useState(true)
   const [modelConfigError, setModelConfigError] = useState('')
 
-  const generatedQuestionCount =
+  const generatedQuestionCount = generationMode === 'graph'
+    ? generationSummary?.chunk_previews.reduce(
+        (total, chunk) => total + chunk.llm_result.questions.length,
+        0,
+      ) ?? 0
+    : 0
+  const generatedLearningItemCount =
     generationSummary?.chunk_previews.reduce(
-      (total, chunk) => total + chunk.llm_result.questions.length,
+      (total, chunk) => total + chunk.llm_result.items.length,
       0,
     ) ?? 0
+  const generationReviewModel = (
+    generationSummary?.chunk_previews ?? generationProgress?.ready_previews ?? []
+  )
+    .flatMap((preview) => preview.llm_result.items)
+    .map((item) => item.generation.model)
+    .find((model) => Boolean(model?.trim()))
+    ?.trim() ?? 'Model unavailable'
+  const generatedDraftCount = generationMode === 'default'
+    ? generatedLearningItemCount
+    : generatedQuestionCount
+  const activeReviewDrafts = generationMode === 'default'
+    ? reviewLearningItems
+    : reviewQuestions
 
   const selectedSpace = recallSpaces.find((space) => space.id === selectedSpaceId)
   const destinationName =
     saveDestinationMode === 'new'
       ? newSpaceName.trim()
       : selectedSpace?.name ?? ''
-  const keptReviewCount = reviewQuestions.filter(
-    (question) => question.decision === 'kept',
+  const keptReviewCount = activeReviewDrafts.filter(
+    (draft) => draft.decision === 'kept',
   ).length
-  const discardedReviewCount = reviewQuestions.filter(
-    (question) => question.decision === 'discarded',
+  const discardedReviewCount = activeReviewDrafts.filter(
+    (draft) => draft.decision === 'discarded',
   ).length
   const remainingReviewCount =
-    reviewQuestions.length - keptReviewCount - discardedReviewCount
+    activeReviewDrafts.length - keptReviewCount - discardedReviewCount
   const visibleError = error || generationError
   const isLlmReady = Boolean(modelConfig?.selected_model.trim())
   const isEmbeddingReady = Boolean(modelConfig?.embedding_selected_model.trim())
@@ -200,10 +226,19 @@ export function HomePage() {
       return
     }
 
-    const incoming = createReviewQuestionDraftsFromPreviews(previews)
     let cancelled = false
     queueMicrotask(() => {
-      if (!cancelled) {
+      if (cancelled) {
+        return
+      }
+
+      if (generationMode === 'default') {
+        const incoming = createReviewLearningItemDraftsFromPreviews(previews)
+        setReviewLearningItems((current) =>
+          mergeReviewLearningItemDrafts(current, incoming),
+        )
+      } else {
+        const incoming = createReviewQuestionDraftsFromPreviews(previews)
         setReviewQuestions((current) => mergeReviewQuestionDrafts(current, incoming))
       }
     })
@@ -211,7 +246,7 @@ export function HomePage() {
     return () => {
       cancelled = true
     }
-  }, [generationProgress?.ready_previews, generationSummary, hasSavedQuestions])
+  }, [generationMode, generationProgress?.ready_previews, generationSummary, hasSavedQuestions])
 
   const noteBreadcrumbs = selectedNote
     ? selectedNote.path
@@ -345,6 +380,7 @@ export function HomePage() {
     setSaveStatusKind('')
     setHasSavedQuestions(false)
     setReviewQuestions([])
+    setReviewLearningItems([])
     setIsReviewingQuestions(false)
     setHasStartedQuestionReview(false)
     setReviewResumeIndex(0)
@@ -369,6 +405,7 @@ export function HomePage() {
     setSaveStatusKind('')
     setHasSavedQuestions(false)
     setReviewQuestions([])
+    setReviewLearningItems([])
     setIsReviewingQuestions(false)
     setHasStartedQuestionReview(false)
     setReviewResumeIndex(0)
@@ -379,6 +416,7 @@ export function HomePage() {
     setShowChunks(false)
     setSelectedChunk(null)
     setReviewQuestions([])
+    setReviewLearningItems([])
     setIsReviewingQuestions(false)
     setHasStartedQuestionReview(false)
     setReviewResumeIndex(0)
@@ -393,17 +431,24 @@ export function HomePage() {
       return
     }
 
-    if (reviewQuestions.length === 0) {
+    if (activeReviewDrafts.length === 0) {
       if (!generationSummary) {
         return
       }
 
-      const finalDrafts = createReviewQuestionDrafts(generationSummary)
-      if (finalDrafts.length === 0) {
-        return
+      if (generationMode === 'default') {
+        const finalDrafts = createReviewLearningItemDrafts(generationSummary)
+        if (finalDrafts.length === 0) {
+          return
+        }
+        setReviewLearningItems(finalDrafts)
+      } else {
+        const finalDrafts = createReviewQuestionDrafts(generationSummary)
+        if (finalDrafts.length === 0) {
+          return
+        }
+        setReviewQuestions(finalDrafts)
       }
-
-      setReviewQuestions(finalDrafts)
       setReviewResumeIndex(0)
     }
 
@@ -431,21 +476,49 @@ export function HomePage() {
     setSaveStatusKind('')
   }
 
-  const keepRemainingQuestions = () => {
-    setReviewQuestions((current) =>
-      current.map((question) =>
-        question.decision === 'pending'
-          ? { ...question, decision: 'kept' }
-          : question,
+  const updateReviewLearningItem = (
+    draftId: string,
+    updates: Partial<ReviewLearningItemDraft>,
+  ) => {
+    setReviewLearningItems((current) =>
+      current.map((item) =>
+        item.draft_id === draftId ? { ...item, ...updates } : item,
       ),
     )
+    setSaveStatus('')
+    setSaveStatusKind('')
+  }
+
+  const keepRemainingQuestions = () => {
+    if (generationMode === 'default') {
+      setReviewLearningItems((current) =>
+        current.map((item) =>
+          item.decision === 'pending'
+            ? { ...item, decision: 'kept' }
+            : item,
+        ),
+      )
+    } else {
+      setReviewQuestions((current) =>
+        current.map((question) =>
+          question.decision === 'pending'
+            ? { ...question, decision: 'kept' }
+            : question,
+        ),
+      )
+    }
   }
 
   const keepRemainingFromResults = () => {
-    const invalidIndex = reviewQuestions.findIndex(
-      (question) =>
-        question.decision === 'pending' && Boolean(getReviewQuestionError(question)),
-    )
+    const invalidIndex = generationMode === 'default'
+      ? reviewLearningItems.findIndex(
+          (item) =>
+            item.decision === 'pending' && Boolean(getReviewLearningItemError(item)),
+        )
+      : reviewQuestions.findIndex(
+          (question) =>
+            question.decision === 'pending' && Boolean(getReviewQuestionError(question)),
+        )
 
     if (invalidIndex !== -1) {
       setReviewResumeIndex(invalidIndex)
@@ -458,13 +531,23 @@ export function HomePage() {
     setIsReviewingQuestions(true)
   }
 
-  const saveGeneratedQuestions = async (questionsToSave: QuestionInput[]) => {
+  const saveGeneratedDrafts = async () => {
     if (saveInFlightRef.current || isSavingQuestions || hasSavedQuestions) {
       return
     }
 
-    if (questionsToSave.length === 0) {
-      setSaveStatus('No kept questions are ready to add.')
+    const keptLearningItems = reviewLearningItems.filter(
+      (item) => item.decision === 'kept',
+    )
+    const keptQuestions = reviewQuestions.filter(
+      (question) => question.decision === 'kept',
+    )
+    const keptCount = generationMode === 'default'
+      ? keptLearningItems.length
+      : keptQuestions.length
+
+    if (keptCount === 0) {
+      setSaveStatus('No kept drafts are ready to add.')
       setSaveStatusKind('error')
       return
     }
@@ -507,35 +590,48 @@ export function HomePage() {
         await loadRecallSpaces()
       }
 
-      const preparedQuestions = questionsToSave.map((question) => ({
-        question: question.question.trim(),
-        option_a: question.option_a.trim(),
-        option_b: question.option_b.trim(),
-        option_c: question.option_c.trim(),
-        option_d: question.option_d.trim(),
-        correct_answer: question.correct_answer.trim().toUpperCase(),
-        explanation: question.explanation?.trim() || null,
-        space_id: destinationSpaceId,
-      }))
+      const jobId = generationProgress?.job_id
+      if (!jobId) {
+        throw new Error('The generation job is no longer available. Generate the drafts again.')
+      }
 
-      // Load current model config to get model name
-      const latestModelConfig = await invoke<PersistedModelConfig>('load_model_config')
-      const modelName = latestModelConfig.selected_model || 'unknown'
+      if (generationMode === 'default') {
+        const preparedItems = keptLearningItems.map(prepareLearningItemForSave)
 
-      // Save to database
-      await invoke('save_generated_questions', {
-        questions: preparedQuestions,
-        model: modelName,
-      })
+        await invoke('save_generated_learning_items', {
+          jobId,
+          spaceId: destinationSpaceId,
+          items: preparedItems,
+        })
+      } else {
+        const preparedQuestions = keptQuestions.map((question) => ({
+          question: question.question.trim(),
+          option_a: question.option_a.trim(),
+          option_b: question.option_b.trim(),
+          option_c: question.option_c.trim(),
+          option_d: question.option_d.trim(),
+          correct_answer: question.correct_answer.trim().toUpperCase(),
+          explanation: question.explanation?.trim() || null,
+          space_id: destinationSpaceId,
+        }))
+
+        await invoke('save_generated_questions', {
+          questions: preparedQuestions,
+          jobId,
+        })
+      }
 
       setHasSavedQuestions(true)
       setIsReviewingQuestions(false)
+      const itemLabel = generationMode === 'default'
+        ? keptCount === 1 ? 'learning item' : 'learning items'
+        : keptCount === 1 ? 'question' : 'questions'
       setSaveStatus(
-        `Added ${preparedQuestions.length} ${preparedQuestions.length === 1 ? 'question' : 'questions'} to ${destinationSpaceName}.`,
+        `Added ${keptCount} ${itemLabel} to ${destinationSpaceName}.`,
       )
       setSaveStatusKind('success')
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to save questions'
+      const message = err instanceof Error ? err.message : 'Failed to save generated drafts'
       setSaveStatus(message)
       setSaveStatusKind('error')
       setHasSavedQuestions(false)
@@ -547,20 +643,30 @@ export function HomePage() {
 
   const keepAllQuestions = () => {
     if (!generationSummary) {
-      setSaveStatus('No questions are ready to add.')
+      setSaveStatus('No drafts are ready to add.')
       setSaveStatusKind('error')
       return
     }
 
     setSaveStatus('')
     setSaveStatusKind('')
-    const finalDrafts = createReviewQuestionDrafts(generationSummary)
-    setReviewQuestions((current) =>
-      mergeReviewQuestionDrafts(current, finalDrafts).map((question) => ({
-        ...question,
-        decision: 'kept',
-      })),
-    )
+    if (generationMode === 'default') {
+      const finalDrafts = createReviewLearningItemDrafts(generationSummary)
+      setReviewLearningItems((current) =>
+        mergeReviewLearningItemDrafts(current, finalDrafts).map((item) => ({
+          ...item,
+          decision: 'kept',
+        })),
+      )
+    } else {
+      const finalDrafts = createReviewQuestionDrafts(generationSummary)
+      setReviewQuestions((current) =>
+        mergeReviewQuestionDrafts(current, finalDrafts).map((question) => ({
+          ...question,
+          decision: 'kept',
+        })),
+      )
+    }
     setReviewResumeIndex(0)
     setHasStartedQuestionReview(true)
     setIsReviewingQuestions(true)
@@ -571,28 +677,31 @@ export function HomePage() {
       return
     }
 
-    const keptQuestions = reviewQuestions.filter(
-      (question) => question.decision === 'kept',
-    )
-    const invalidQuestionIndex = keptQuestions.findIndex((question) =>
-      Boolean(getReviewQuestionError(question)),
-    )
+    const invalidDraftIndex = generationMode === 'default'
+      ? reviewLearningItems
+          .filter((item) => item.decision === 'kept')
+          .findIndex((item) => Boolean(getReviewLearningItemError(item)))
+      : reviewQuestions
+          .filter((question) => question.decision === 'kept')
+          .findIndex((question) => Boolean(getReviewQuestionError(question)))
 
-    if (invalidQuestionIndex !== -1) {
+    if (invalidDraftIndex !== -1) {
       setSaveStatus(
-        `Kept question ${invalidQuestionIndex + 1} needs attention before it can be added.`,
+        `Kept ${generationMode === 'default' ? 'learning item' : 'question'} ${invalidDraftIndex + 1} needs attention before it can be added.`,
       )
       setSaveStatusKind('error')
       return
     }
 
-    void saveGeneratedQuestions(keptQuestions)
+    void saveGeneratedDrafts()
   }
 
   const finishReviewWithoutSaving = () => {
     setHasSavedQuestions(true)
     setIsReviewingQuestions(false)
-    setSaveStatus('Review complete. No questions were added to your library.')
+    setSaveStatus(
+      `Review complete. No ${generationMode === 'default' ? 'learning items' : 'questions'} were added to your library.`,
+    )
     setSaveStatusKind('success')
   }
 
@@ -602,7 +711,15 @@ export function HomePage() {
   const skippedWork = generationProgress?.failed_chunks ?? 0
   const successfulWork = Math.max(completedWork - skippedWork, 0)
   const questionsGenerated = generationProgress?.mcq_generated ?? 0
-  const readyQuestionCount = reviewQuestions.length
+  const learningItemsGenerated =
+    generationProgress?.ready_previews.reduce(
+      (total, chunk) => total + chunk.llm_result.items.length,
+      0,
+    ) ?? 0
+  const generatedOutputCount = generationMode === 'default'
+    ? learningItemsGenerated
+    : questionsGenerated
+  const readyQuestionCount = activeReviewDrafts.length
   const recallQuestions = generationProgress?.recall_mcq_generated ?? 0
   const relationalQuestions = generationProgress?.relational_mcq_generated ?? 0
   const workScale = Math.max(totalWork, 1)
@@ -1027,8 +1144,8 @@ export function HomePage() {
                   </div>
 
                   <div className="generation-question-total">
-                    <strong key={questionsGenerated}>{questionsGenerated}</strong>
-                    <span>questions built</span>
+                    <strong key={generatedOutputCount}>{generatedOutputCount}</strong>
+                    <span>{generationMode === 'default' ? 'learning items built' : 'questions built'}</span>
                   </div>
 
                   <div className="generation-chart-group">
@@ -1045,8 +1162,8 @@ export function HomePage() {
                       </>
                     ) : (
                       <div className="generation-chart-row">
-                        <div><span>Generated</span><strong>{questionsGenerated}</strong></div>
-                        <div className="generation-chart-track"><span className="is-relational" style={{ transform: `scaleX(${questionsGenerated / workScale})` }} /></div>
+                        <div><span>Generated</span><strong>{generatedOutputCount}</strong></div>
+                        <div className="generation-chart-track"><span className="is-relational" style={{ transform: `scaleX(${generatedOutputCount / workScale})` }} /></div>
                       </div>
                     )}
                   </div>
@@ -1056,7 +1173,11 @@ export function HomePage() {
                       <div>
                         <span>Ready now</span>
                         <strong>
-                          {readyQuestionCount} {readyQuestionCount === 1 ? 'question' : 'questions'} available
+                          {readyQuestionCount}{' '}
+                          {generationMode === 'default'
+                            ? readyQuestionCount === 1 ? 'learning item' : 'learning items'
+                            : readyQuestionCount === 1 ? 'question' : 'questions'}{' '}
+                          available
                         </strong>
                         <small>Review now while ARKA generates the rest.</small>
                       </div>
@@ -1150,11 +1271,16 @@ export function HomePage() {
               <h2>
                 {generationProgress?.error
                   ? 'Generation stopped early'
-                  : 'Your questions are ready'}
+                  : generationMode === 'default'
+                    ? 'Your learning items are ready'
+                    : 'Your questions are ready'}
               </h2>
               <p>
-                {generatedQuestionCount}{' '}
-                {generatedQuestionCount === 1 ? 'question is' : 'questions are'} ready to review and save.
+                {generatedDraftCount}{' '}
+                {generationMode === 'default'
+                  ? generatedDraftCount === 1 ? 'learning item is' : 'learning items are'
+                  : generatedDraftCount === 1 ? 'question is' : 'questions are'}{' '}
+                ready to review and save.
               </p>
             </div>
             <div className="generation-summary-head-actions">
@@ -1221,7 +1347,7 @@ export function HomePage() {
 
               <p className="generation-complete-message">
                 {generationProgress?.error
-                  ? 'Your completed questions are preserved and can still be saved.'
+                  ? `Your completed ${generationMode === 'default' ? 'learning items' : 'questions'} are preserved and can still be saved.`
                   : 'Generation finished. Choose a Recall Space to continue.'}
               </p>
             </div>
@@ -1229,13 +1355,13 @@ export function HomePage() {
             <div className="generation-complete-insights">
               <div className="generation-panel-heading">
                 <span>Generation insights</span>
-                <strong>{generationMode === 'graph' ? 'Graph pipeline' : 'Question pipeline'}</strong>
+                <strong>{generationMode === 'graph' ? 'Graph pipeline' : 'Learning item pipeline'}</strong>
               </div>
 
               <dl className="generation-insight-list">
                 <div>
-                  <dt>Questions created</dt>
-                  <dd>{generatedQuestionCount}</dd>
+                  <dt>{generationMode === 'default' ? 'Learning items created' : 'Questions created'}</dt>
+                  <dd>{generatedDraftCount}</dd>
                 </div>
                 <div>
                   <dt>Notes covered</dt>
@@ -1325,14 +1451,14 @@ export function HomePage() {
                 <p>
                   {hasSavedQuestions
                     ? 'This generated batch has been handled.'
-                    : `${generatedQuestionCount} ${generatedQuestionCount === 1 ? 'draft is' : 'drafts are'} ready for your library`}
+                    : `${generatedDraftCount} ${generatedDraftCount === 1 ? 'draft is' : 'drafts are'} ready for your library`}
                 </p>
               </div>
             </div>
 
             {!isReviewingQuestions && (
               <div className="generation-save-review-controls">
-                {reviewQuestions.length > 0 && !hasSavedQuestions && (
+                {activeReviewDrafts.length > 0 && !hasSavedQuestions && (
                   <div className="question-review-resume-status" aria-live="polite">
                     <span><strong>{keptReviewCount}</strong> kept</span>
                     <span><strong>{discardedReviewCount}</strong> discarded</span>
@@ -1361,32 +1487,34 @@ export function HomePage() {
                       type="button"
                       className="btn-primary question-review-start"
                       onClick={beginQuestionReview}
-                      disabled={isSavingQuestions || generatedQuestionCount === 0}
+                      disabled={isSavingQuestions || generatedDraftCount === 0}
                     >
                       {hasStartedQuestionReview ? (
                         <>Continue Review</>
                       ) : (
                         <>
-                          Review {generatedQuestionCount}{' '}
-                          {generatedQuestionCount === 1 ? 'Question' : 'Questions'}
+                          Review {generatedDraftCount}{' '}
+                          {generationMode === 'default'
+                            ? generatedDraftCount === 1 ? 'Learning Item' : 'Learning Items'
+                            : generatedDraftCount === 1 ? 'Question' : 'Questions'}
                         </>
                       )}
                       <ArrowRight className="btn-icon" aria-hidden="true" />
                     </button>
-                    {(reviewQuestions.length === 0 || remainingReviewCount > 0) && (
+                    {(activeReviewDrafts.length === 0 || remainingReviewCount > 0) && (
                       <button
                         type="button"
                         className="btn-secondary question-keep-all"
                         onClick={
-                          reviewQuestions.length > 0
+                          activeReviewDrafts.length > 0
                             ? keepRemainingFromResults
                             : keepAllQuestions
                         }
-                        disabled={isSavingQuestions || generatedQuestionCount === 0}
+                        disabled={isSavingQuestions || generatedDraftCount === 0}
                       >
                         {isSavingQuestions
-                          ? 'Adding questions…'
-                          : reviewQuestions.length > 0
+                          ? `Adding ${generationMode === 'default' ? 'learning items' : 'questions'}…`
+                          : activeReviewDrafts.length > 0
                             ? 'Keep remaining'
                             : 'Keep All'}
                       </button>
@@ -1443,31 +1571,54 @@ export function HomePage() {
                             <p className="chunk-result-error">{chunk.llm_result.error}</p>
                           ) : (
                             <div className="chunk-result-block">
-                              <h4>MCQs</h4>
-                              <ul>
-                                {chunk.llm_result.questions.map((mcq) => (
-                                  <li key={`${mcq.question}-${mcq.correct_answer}`} className="chunk-mcq-item">
-                                    <p className="chunk-result-question">{mcq.question}</p>
-                                    <ul className="chunk-mcq-options">
-                                      <li className={mcq.correct_answer === 'A' ? 'is-correct' : ''}>
-                                        <span>A.</span> {mcq.option_a}
+                              {generationMode === 'default' ? (
+                                <>
+                                  <h4>Learning items</h4>
+                                  <ul>
+                                    {chunk.llm_result.items.map((item) => (
+                                      <li key={item.draft_id} className="chunk-mcq-item">
+                                        <p className="chunk-result-question">{item.content.target}</p>
+                                        <p className="chunk-result-answer">
+                                          Flashcard: {item.content.flashcard.prompt}
+                                        </p>
+                                        <p className="chunk-result-answer">
+                                          {item.content.mcq
+                                            ? `Multiple choice: ${item.content.mcq.prompt ?? item.content.flashcard.prompt}`
+                                            : `Multiple choice omitted: ${item.content.mcq_omission_reason}`}
+                                        </p>
                                       </li>
-                                      <li className={mcq.correct_answer === 'B' ? 'is-correct' : ''}>
-                                        <span>B.</span> {mcq.option_b}
+                                    ))}
+                                  </ul>
+                                </>
+                              ) : (
+                                <>
+                                  <h4>MCQs</h4>
+                                  <ul>
+                                    {chunk.llm_result.questions.map((mcq) => (
+                                      <li key={`${mcq.question}-${mcq.correct_answer}`} className="chunk-mcq-item">
+                                        <p className="chunk-result-question">{mcq.question}</p>
+                                        <ul className="chunk-mcq-options">
+                                          <li className={mcq.correct_answer === 'A' ? 'is-correct' : ''}>
+                                            <span>A.</span> {mcq.option_a}
+                                          </li>
+                                          <li className={mcq.correct_answer === 'B' ? 'is-correct' : ''}>
+                                            <span>B.</span> {mcq.option_b}
+                                          </li>
+                                          <li className={mcq.correct_answer === 'C' ? 'is-correct' : ''}>
+                                            <span>C.</span> {mcq.option_c}
+                                          </li>
+                                          <li className={mcq.correct_answer === 'D' ? 'is-correct' : ''}>
+                                            <span>D.</span> {mcq.option_d}
+                                          </li>
+                                        </ul>
+                                        <p className="chunk-result-answer">
+                                          Correct Answer: {mcq.correct_answer}
+                                        </p>
                                       </li>
-                                      <li className={mcq.correct_answer === 'C' ? 'is-correct' : ''}>
-                                        <span>C.</span> {mcq.option_c}
-                                      </li>
-                                      <li className={mcq.correct_answer === 'D' ? 'is-correct' : ''}>
-                                        <span>D.</span> {mcq.option_d}
-                                      </li>
-                                    </ul>
-                                    <p className="chunk-result-answer">
-                                      Correct Answer: {mcq.correct_answer}
-                                    </p>
-                                  </li>
-                                ))}
-                              </ul>
+                                    ))}
+                                  </ul>
+                                </>
+                              )}
                             </div>
                           )}
                         </article>
@@ -1481,7 +1632,33 @@ export function HomePage() {
         </section>
       )}
 
-      {isReviewingQuestions && reviewQuestions.length > 0 && (
+      {isReviewingQuestions && generationMode === 'default' && reviewLearningItems.length > 0 && (
+        <GeneratedLearningItemReview
+          items={reviewLearningItems}
+          modelName={generationReviewModel}
+          destinationName={destinationName}
+          saveDestinationMode={saveDestinationMode}
+          onSaveDestinationModeChange={setSaveDestinationMode}
+          recallSpaces={recallSpaces}
+          isLoadingRecallSpaces={isLoadingRecallSpaces}
+          selectedSpaceId={selectedSpaceId}
+          onSelectedSpaceChange={setSelectedSpaceId}
+          newSpaceName={newSpaceName}
+          onNewSpaceNameChange={setNewSpaceName}
+          newSpaceDescription={newSpaceDescription}
+          onNewSpaceDescriptionChange={setNewSpaceDescription}
+          isSaving={isSavingQuestions}
+          isGenerationActive={isGenerating}
+          initialActiveIndex={reviewResumeIndex}
+          onUpdateItem={updateReviewLearningItem}
+          onKeepRemaining={keepRemainingQuestions}
+          onSaveKept={saveReviewedQuestions}
+          onFinishWithoutSaving={finishReviewWithoutSaving}
+          onClose={closeQuestionReview}
+        />
+      )}
+
+      {isReviewingQuestions && generationMode === 'graph' && reviewQuestions.length > 0 && (
         <GeneratedQuestionReview
           questions={reviewQuestions}
           destinationName={destinationName}

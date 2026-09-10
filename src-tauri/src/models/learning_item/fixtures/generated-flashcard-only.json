@@ -1,0 +1,15 @@
+{
+  "items": [
+    {
+      "knowledge_point_id": "kp_2",
+      "target": "Binary search has O(log n) worst-case search time on a sorted array.",
+      "answer": "O(log n)",
+      "explanation": "Each comparison eliminates approximately half of the remaining search interval.",
+      "flashcard": {
+        "prompt": "What is the worst-case time complexity of binary search on a sorted array?"
+      },
+      "mcq": null,
+      "mcq_omission_reason": "Could not create three plausible distractors without making the answer obvious."
+    }
+  ]
+}

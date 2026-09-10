@@ -22,6 +22,10 @@ npm run eval:entity-resolution:hard
 
 ## Required environment for evaluation providers
 
+The default chunk evaluator reads its LLM configuration directly from
+`src-tauri/.env`, using the same `LlmConfig` parsing as the application. Values
+in that file are authoritative for the evaluation run.
+
 - `LLM_MODEL`
 - `OPENAI_API_KEY` or `OPENROUTER_API_KEY` for remote LLM providers
 - `EMBEDDING_MODEL` for entity-resolution and graph E2E evaluation
@@ -42,10 +46,16 @@ service. Optional settings include `LLM_BASE_URL`, `EMBEDDING_BASE_URL`,
 
 ## Evaluators
 
-`eval:default` runs the legacy AQG pipeline and writes:
+`eval:default` runs the chunk-based generation pipeline and writes:
 
 - `photosynthesis-*.json`
 - `photosynthesis-*.xlsx`
+
+The evaluator records one row per generated learning item, including the
+knowledge-point reference, target, answer, flashcard prompt, optional MCQ
+prompt and distractors, MCQ omission reason, and generation model/provider.
+This keeps the original evaluation workflow useful for manually comparing the
+quality of the new flashcard + optional-MCQ output.
 
 `eval:graph-stage-a` runs graph Stage A only: chunking, entity/knowledge-point extraction, graph consolidation, and graph validation. It writes:
 

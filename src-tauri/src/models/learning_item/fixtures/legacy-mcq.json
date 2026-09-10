@@ -1,0 +1,48 @@
+{
+  "id": 42,
+  "target": null,
+  "answer": "O(log n)",
+  "explanation": "Each step halves the interval.",
+  "space_id": 3,
+  "generation": {
+    "model": "legacy-model",
+    "provider": null,
+    "pipeline": null,
+    "generated_at": null
+  },
+  "source": null,
+  "status": "ready",
+  "schedule": {
+    "repetitions": 4,
+    "interval_days": 38,
+    "ease_factor": 2.5,
+    "next_review_at": "2026-09-12 10:00:00",
+    "last_reviewed_at": "2026-08-05 10:00:00"
+  },
+  "variants": [
+    {
+      "format": "mcq",
+      "id": 84,
+      "prompt": "Which of these is binary search's worst-case time complexity?",
+      "options": [
+        {
+          "id": "A",
+          "text": "O(1)"
+        },
+        {
+          "id": "B",
+          "text": "O(log n)"
+        },
+        {
+          "id": "C",
+          "text": "O(n)"
+        },
+        {
+          "id": "D",
+          "text": "O(n²)"
+        }
+      ],
+      "correct_option_id": "B"
+    }
+  ]
+}

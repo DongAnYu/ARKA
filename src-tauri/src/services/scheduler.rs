@@ -1,3 +1,4 @@
+use crate::models::learning_item::ReviewState;
 use crate::models::question::Question;
 use chrono::{Duration, Utc};
 use std::str::FromStr;
@@ -35,24 +36,32 @@ impl Rating {
 #[allow(dead_code)]
 pub struct SM2Scheduler;
 
-/// Implements the SuperMemo-2 spaced repetition algorithm.
-/// NOTE:
-/// This function currently mutates the `Question` model directly for simplicity.
-///
-/// Future refactor:
-/// - Decouple the scheduler from the database model.
-/// - Accept a lightweight `ReviewState` instead of `Question`.
-/// - Return a `ReviewResult` containing only scheduling fields.
-/// - Let a higher-level `ReviewService` apply the result and persist changes.
-///
-/// This separation will:
-/// - Keep the SM-2 scheduler independent of SQLx/Tauri.
-/// - Make unit testing easier.
-/// - Allow the scheduler to be reused for other review item types
-///   (e.g. concepts, flashcards, cloze cards).
+/// SM-2 operates only on parent scheduling state.
 impl SM2Scheduler {
     #[allow(dead_code)]
     pub fn review_question(question: &mut Question, rating: Rating) {
+        let mut state = ReviewState {
+            repetitions: question.repetitions,
+            interval_days: question.interval_days,
+            ease_factor: question.ease_factor,
+            next_review_at: None,
+            last_reviewed_at: None,
+        };
+        Self::review_state(&mut state, rating);
+        question.repetitions = state.repetitions;
+        question.interval_days = state.interval_days;
+        question.ease_factor = state.ease_factor;
+        question.next_review_at = state.next_review_at.map(|v| {
+            chrono::NaiveDateTime::parse_from_str(&v, "%Y-%m-%d %H:%M:%S%.f")
+                .expect("scheduler timestamp")
+        });
+        question.last_reviewed_at = state.last_reviewed_at.map(|v| {
+            chrono::NaiveDateTime::parse_from_str(&v, "%Y-%m-%d %H:%M:%S%.f")
+                .expect("scheduler timestamp")
+        });
+    }
+
+    pub fn review_state(question: &mut ReviewState, rating: Rating) {
         let now = Utc::now().naive_utc();
         let quality = rating.quality();
         let mut repetitions = question.repetitions;
@@ -84,8 +93,8 @@ impl SM2Scheduler {
         question.repetitions = repetitions;
         question.interval_days = interval_days;
         question.ease_factor = ease_factor;
-        question.last_reviewed_at = Some(now);
-        question.next_review_at = Some(now + Duration::days(interval_days as i64));
+        question.last_reviewed_at = Some(now.to_string());
+        question.next_review_at = Some((now + Duration::days(interval_days as i64)).to_string());
     }
 }
 

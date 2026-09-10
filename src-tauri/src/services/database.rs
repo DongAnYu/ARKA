@@ -1,11 +1,104 @@
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::SqliteConnection;
+use std::path::PathBuf;
 use std::str::FromStr;
 
+use crate::models::learning_item::{
+    GenerationMetadata, GenerationPipeline, LearningItem, LearningItemEditInput, LearningItemInput,
+    QuestionVariant, ReviewResponse, ReviewSubmission,
+};
 use crate::models::model_settings::ModelConfig;
 use crate::models::question::{Question, QuestionInput};
 use crate::models::recall_dashboard::{RecallDashboard, RecallSpaceSummary};
 use crate::models::recall_space::RecallSpace;
-use crate::services::scheduler::{Rating, SM2Scheduler};
+use crate::services::database_backup;
+use crate::services::learning_items;
+
+#[cfg(not(feature = "eval-package"))]
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+#[cfg(feature = "eval-package")]
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../src-tauri/migrations");
+
+#[derive(Debug)]
+pub(super) struct MigrationError {
+    message: String,
+    backup_path: Option<PathBuf>,
+}
+
+impl std::fmt::Display for MigrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Database migration stopped: {}", self.message)?;
+        if let Some(path) = &self.backup_path {
+            write!(
+                f,
+                "\nPre-migration backup: {}. Close ARKA before recovery. Restore this backup with the compatible app version; later reviews are not included.",
+                path.display()
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for MigrationError {}
+
+pub(super) async fn run_migrations(
+    connection: &mut SqliteConnection,
+) -> Result<Option<PathBuf>, MigrationError> {
+    let mut backup_path = None;
+    let result: Result<(), String> = async {
+        sqlx::query("PRAGMA foreign_keys=ON")
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let has_ledger: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations'",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| error.to_string())?;
+        let applied: Vec<i64> = if has_ledger > 0 {
+            sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success=1")
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|error| error.to_string())?
+        } else {
+            Vec::new()
+        };
+
+        let pending = MIGRATOR
+            .iter()
+            .any(|migration| !applied.contains(&migration.version));
+        let existing_tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != '_sqlx_migrations'",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| error.to_string())?;
+
+        if pending && existing_tables > 0 {
+            backup_path = Some(
+                database_backup::create(connection)
+                    .await
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+
+        MIGRATOR
+            .run(&mut *connection)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+    .await;
+
+    result
+        .map(|_| backup_path.clone())
+        .map_err(|message| MigrationError {
+            message,
+            backup_path,
+        })
+}
 
 fn resolve_database_url() -> String {
     // Honor an explicit DATABASE_URL first (dev overrides).
@@ -88,7 +181,7 @@ fn normalize_sqlite_url(raw: &str) -> String {
     format!("sqlite://{}", normalized_path)
 }
 
-async fn open_pool() -> Result<sqlx::SqlitePool, sqlx::Error> {
+pub(crate) async fn open_pool() -> Result<sqlx::SqlitePool, sqlx::Error> {
     let database_url = resolve_database_url();
     let options = SqliteConnectOptions::from_str(&database_url)?
         .create_if_missing(true)
@@ -110,181 +203,126 @@ async fn ensure_default_space(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error
     Ok(())
 }
 
+pub async fn get_learning_items(
+    space_id: Option<i64>,
+    due_only: bool,
+) -> Result<Vec<LearningItem>, sqlx::Error> {
+    learning_items::list(&open_pool().await?, space_id, due_only).await
+}
+
+pub async fn save_learning_items(
+    items: Vec<LearningItemInput>,
+) -> Result<Vec<LearningItem>, sqlx::Error> {
+    learning_items::save(&open_pool().await?, items).await
+}
+
+pub async fn modify_learning_item(
+    id: i64,
+    item: LearningItemEditInput,
+) -> Result<LearningItem, sqlx::Error> {
+    learning_items::modify(&open_pool().await?, id, item).await
+}
+
+pub async fn review_learning_item(
+    submission: ReviewSubmission,
+) -> Result<LearningItem, sqlx::Error> {
+    learning_items::review(&open_pool().await?, submission).await
+}
+
+async fn mcq_list(space_id: Option<i64>, due_only: bool) -> Result<Vec<Question>, sqlx::Error> {
+    get_learning_items(space_id, due_only)
+        .await?
+        .into_iter()
+        .map(learning_items::to_mcq)
+        .filter_map(|result| result.transpose())
+        .collect()
+}
+
 pub async fn get_questions() -> Result<Vec<Question>, sqlx::Error> {
-    let pool = open_pool().await?;
-
-    let questions = sqlx::query_as::<_, Question>(
-        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at FROM questions ORDER BY id",
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    Ok(questions)
+    mcq_list(None, false).await
 }
-
 pub async fn get_questions_by_space(space_id: i64) -> Result<Vec<Question>, sqlx::Error> {
-    let pool = open_pool().await?;
-
-    let questions = sqlx::query_as::<_, Question>(
-        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at FROM questions WHERE space_id = ? ORDER BY id",
-    )
-    .bind(space_id)
-    .fetch_all(&pool)
-    .await?;
-
-    Ok(questions)
+    mcq_list(Some(space_id), false).await
 }
-
 pub async fn get_due_questions(space_id: Option<i64>) -> Result<Vec<Question>, sqlx::Error> {
-    let pool = open_pool().await?;
-
-    let questions = if let Some(space_id) = space_id.filter(|id| *id > 0) {
-        sqlx::query_as::<_, Question>(
-            "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at
-             FROM questions
-             WHERE space_id = ?
-               AND (next_review_at IS NULL OR next_review_at <= CURRENT_TIMESTAMP)
-             ORDER BY COALESCE(next_review_at, '1970-01-01 00:00:00') ASC, id ASC",
-        )
-        .bind(space_id)
-        .fetch_all(&pool)
-        .await?
-    } else {
-        sqlx::query_as::<_, Question>(
-            "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at
-             FROM questions
-             WHERE next_review_at IS NULL OR next_review_at <= CURRENT_TIMESTAMP
-             ORDER BY COALESCE(next_review_at, '1970-01-01 00:00:00') ASC, id ASC",
-        )
-        .fetch_all(&pool)
-        .await?
-    };
-
-    Ok(questions)
+    mcq_list(space_id.filter(|id| *id > 0), true).await
 }
 
 pub async fn get_recall_dashboard() -> Result<RecallDashboard, sqlx::Error> {
     let pool = open_pool().await?;
-    ensure_default_space(&pool).await?;
-
-    let totals = sqlx::query_as::<_, (i64, i64, i64, i64)>(
-        "SELECT
-            COALESCE(SUM(CASE
-                WHEN next_review_at IS NULL
-                    OR (next_review_at >= date('now')
-                        AND next_review_at <= CURRENT_TIMESTAMP)
-                THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE
-                WHEN next_review_at IS NOT NULL AND next_review_at < date('now')
-                THEN 1 ELSE 0 END), 0),
-            (SELECT COUNT(*) FROM review_history WHERE reviewed_at >= date('now')),
-            (SELECT COALESCE(SUM(is_correct), 0) FROM review_history WHERE reviewed_at >= date('now'))
-         FROM questions",
-    )
-    .fetch_one(&pool)
-    .await?;
-
-    let space_rows = sqlx::query_as::<_, (i64, String, i64, i64, i64, i64, i64)>(
-        "SELECT
-            recall_spaces.id,
-            recall_spaces.name,
-            COUNT(questions.id),
-            COALESCE(SUM(CASE
-                WHEN questions.id IS NOT NULL
-                    AND (questions.next_review_at IS NULL
-                        OR questions.next_review_at <= CURRENT_TIMESTAMP)
-                THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE
-                WHEN questions.next_review_at IS NOT NULL
-                    AND questions.next_review_at < date('now')
-                THEN 1 ELSE 0 END), 0),
-            (SELECT COUNT(*)
-               FROM review_history
-               INNER JOIN questions AS reviewed_questions ON reviewed_questions.id = review_history.question_id
-               WHERE reviewed_questions.space_id = recall_spaces.id
-                 AND review_history.reviewed_at >= date('now'))
-            , (SELECT COALESCE(SUM(review_history.is_correct), 0)
-               FROM review_history
-               INNER JOIN questions AS reviewed_questions ON reviewed_questions.id = review_history.question_id
-               WHERE reviewed_questions.space_id = recall_spaces.id
-                 AND review_history.reviewed_at >= date('now'))
-         FROM recall_spaces
-         LEFT JOIN questions ON questions.space_id = recall_spaces.id
-         GROUP BY recall_spaces.id, recall_spaces.name
-         ORDER BY recall_spaces.id",
-    )
-    .fetch_all(&pool)
-    .await?;
-
-    let spaces = space_rows
+    let rows = sqlx::query_as::<_, (i64, String, i64, i64, i64, i64)>(
+        "SELECT s.id,s.name,COUNT(i.id),
+        COALESCE(SUM(CASE WHEN i.id IS NOT NULL AND i.status='ready' AND (i.next_review_at IS NULL OR i.next_review_at<=CURRENT_TIMESTAMP) THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN i.status='ready' AND i.next_review_at<date('now') THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN i.last_reviewed_at>=date('now') AND i.last_reviewed_at<date('now','+1 day') THEN 1 ELSE 0 END),0)
+        FROM recall_spaces s LEFT JOIN learning_items i ON i.space_id=s.id GROUP BY s.id,s.name ORDER BY s.id")
+        .fetch_all(&pool).await?;
+    let spaces: Vec<_> = rows
         .into_iter()
         .map(
-            |(
-                id,
-                name,
-                total_questions,
-                due_count,
-                overdue_count,
-                reviewed_today_count,
-                correct_today_count,
-            )| RecallSpaceSummary {
-                id,
-                name,
-                total_questions,
-                due_count,
-                overdue_count,
-                reviewed_today_count,
-                correct_today_count,
+            |(id, name, total_questions, due_count, overdue_count, reviewed_today_count)| {
+                RecallSpaceSummary {
+                    id,
+                    name,
+                    total_questions,
+                    due_count,
+                    overdue_count,
+                    reviewed_today_count,
+                }
             },
         )
         .collect();
-
     Ok(RecallDashboard {
-        due_today_count: totals.0,
-        overdue_count: totals.1,
-        reviewed_today_count: totals.2,
-        correct_today_count: totals.3,
+        due_today_count: spaces.iter().map(|s| s.due_count - s.overdue_count).sum(),
+        overdue_count: spaces.iter().map(|s| s.overdue_count).sum(),
+        reviewed_today_count: spaces.iter().map(|s| s.reviewed_today_count).sum(),
         spaces,
     })
 }
 
-pub async fn review_question_with_outcome(
+// The existing frontend sends an A-D label; map it to the stored stable option ID.
+pub async fn review_question(
     question_id: i64,
-    rating: Rating,
-    is_correct: bool,
+    selected_option_id: String,
 ) -> Result<Question, sqlx::Error> {
     let pool = open_pool().await?;
-
-    let mut question = sqlx::query_as::<_, Question>(
-        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at FROM questions WHERE id = ?",
+    let item = learning_items::load(&mut *pool.acquire().await?, question_id).await?;
+    let variant = item
+        .variants
+        .iter()
+        .find_map(|v| {
+            if let QuestionVariant::Mcq { id, options, .. } = v {
+                Some((*id, options))
+            } else {
+                None
+            }
+        })
+        .ok_or(sqlx::Error::RowNotFound)?;
+    let index = match selected_option_id.as_str() {
+        "A" => 0,
+        "B" => 1,
+        "C" => 2,
+        "D" => 3,
+        _ => return Err(sqlx::Error::Protocol("Invalid answer label".into())),
+    };
+    let option_id = variant
+        .1
+        .get(index)
+        .ok_or(sqlx::Error::RowNotFound)?
+        .id
+        .clone();
+    let reviewed = learning_items::review(
+        &pool,
+        ReviewSubmission {
+            learning_item_id: question_id,
+            variant_id: variant.0,
+            response: ReviewResponse::Mcq {
+                selected_option_id: option_id,
+            },
+        },
     )
-    .bind(question_id)
-    .fetch_one(&pool)
     .await?;
-
-    SM2Scheduler::review_question(&mut question, rating);
-
-    sqlx::query(
-        "UPDATE questions
-         SET repetitions = ?, interval_days = ?, ease_factor = ?, next_review_at = ?, last_reviewed_at = ?
-         WHERE id = ?",
-    )
-    .bind(question.repetitions)
-    .bind(question.interval_days)
-    .bind(question.ease_factor)
-    .bind(question.next_review_at)
-    .bind(question.last_reviewed_at)
-    .bind(question.id)
-    .execute(&pool)
-    .await?;
-
-    sqlx::query("INSERT INTO review_history (question_id, is_correct) VALUES (?, ?)")
-        .bind(question.id)
-        .bind(is_correct)
-        .execute(&pool)
-        .await?;
-
-    Ok(question)
+    learning_items::to_mcq(reviewed)?.ok_or(sqlx::Error::RowNotFound)
 }
 
 pub async fn modify_question(
@@ -292,54 +330,39 @@ pub async fn modify_question(
     question_input: QuestionInput,
 ) -> Result<Question, sqlx::Error> {
     let pool = open_pool().await?;
-
-    sqlx::query(
-        "UPDATE questions SET question = ?, option_a = ?, option_b = ?, option_c = ?, option_d = ?, correct_answer = ?, explanation = ?, space_id = ? WHERE id = ?",
-    )
-    .bind(&question_input.question)
-    .bind(&question_input.option_a)
-    .bind(&question_input.option_b)
-    .bind(&question_input.option_c)
-    .bind(&question_input.option_d)
-    .bind(&question_input.correct_answer)
-    .bind(&question_input.explanation)
-    .bind(if question_input.space_id > 0 { question_input.space_id } else { 1_i64 })
-    .bind(id)
-    .execute(&pool)
-    .await?;
-
-    let updated_question = sqlx::query_as::<_, Question>(
-        "SELECT id, question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at FROM questions WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_one(&pool)
-    .await?;
-
-    Ok(updated_question)
+    let existing = learning_items::load(&mut *pool.acquire().await?, id).await?;
+    let input = learning_items::from_mcq(question_input, String::new())?;
+    let mut edit = LearningItemEditInput {
+        target: existing.target,
+        answer: input.answer,
+        explanation: input.explanation,
+        space_id: input.space_id,
+        variants: input.variants,
+    };
+    // Old MCQ editor must not delete a flashcard attached to the same parent.
+    for variant in existing.variants {
+        if let QuestionVariant::Flashcard { prompt, .. } = variant {
+            edit.variants
+                .push(crate::models::learning_item::VariantInput::Flashcard { prompt });
+        }
+    }
+    learning_items::to_mcq(learning_items::modify(&pool, id, edit).await?)?
+        .ok_or(sqlx::Error::RowNotFound)
 }
 
 pub async fn delete_question(id: i64) -> Result<(), sqlx::Error> {
-    let pool = open_pool().await?;
-
-    sqlx::query("DELETE FROM questions WHERE id = ?")
-        .bind(id)
-        .execute(&pool)
-        .await?;
-
-    Ok(())
+    delete_questions(vec![id]).await
 }
-
 pub async fn delete_questions(ids: Vec<i64>) -> Result<(), sqlx::Error> {
     let pool = open_pool().await?;
-
+    let mut transaction = pool.begin().await?;
     for id in ids {
-        sqlx::query("DELETE FROM questions WHERE id = ?")
+        sqlx::query("DELETE FROM learning_items WHERE id=?")
             .bind(id)
-            .execute(&pool)
+            .execute(&mut *transaction)
             .await?;
     }
-
-    Ok(())
+    transaction.commit().await
 }
 
 pub async fn get_spaces() -> Result<Vec<RecallSpace>, sqlx::Error> {
@@ -408,44 +431,59 @@ pub async fn delete_space(id: i64) -> Result<(), sqlx::Error> {
     }
 
     let pool = open_pool().await?;
+    let mut transaction = pool.begin().await?;
 
     // Delete all questions inside this space before deleting the space.
-    sqlx::query("DELETE FROM questions WHERE space_id = ?")
+    sqlx::query("DELETE FROM learning_items WHERE space_id = ?")
         .bind(id)
-        .execute(&pool)
+        .execute(&mut *transaction)
         .await?;
 
     sqlx::query("DELETE FROM recall_spaces WHERE id = ?")
         .bind(id)
-        .execute(&pool)
+        .execute(&mut *transaction)
         .await?;
 
-    Ok(())
+    transaction.commit().await
 }
 
+#[cfg(test)]
 pub async fn save_questions(
     questions: Vec<QuestionInput>,
     model: String,
 ) -> Result<(), sqlx::Error> {
-    let pool = open_pool().await?;
+    save_questions_with_generation(
+        questions,
+        GenerationMetadata {
+            model: Some(model),
+            provider: None,
+            pipeline: None,
+            generated_at: None,
+        },
+    )
+    .await
+}
 
-    for question in questions {
-        sqlx::query(
-            "INSERT INTO questions (question, option_a, option_b, option_c, option_d, correct_answer, explanation, model, space_id, repetitions, interval_days, ease_factor, next_review_at, last_reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 2.5, CURRENT_TIMESTAMP, NULL)",
-        )
-        .bind(&question.question)
-        .bind(&question.option_a)
-        .bind(&question.option_b)
-        .bind(&question.option_c)
-        .bind(&question.option_d)
-        .bind(&question.correct_answer)
-        .bind(&question.explanation)
-        .bind(&model)
-        .bind(if question.space_id > 0 { question.space_id } else { 1_i64 })
-        .execute(&pool)
-        .await?;
+pub async fn save_questions_with_generation(
+    questions: Vec<QuestionInput>,
+    generation: GenerationMetadata,
+) -> Result<(), sqlx::Error> {
+    if generation.pipeline == Some(GenerationPipeline::Chunk) {
+        return Err(sqlx::Error::Protocol(String::from(
+            "Chunk generation must be saved through the learning-item draft workflow",
+        )));
     }
 
+    let inputs = questions
+        .into_iter()
+        .map(|q| {
+            let mut input =
+                learning_items::from_mcq(q, generation.model.clone().unwrap_or_default())?;
+            input.generation = generation.clone();
+            Ok::<LearningItemInput, sqlx::Error>(input)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    save_learning_items(inputs).await?;
     Ok(())
 }
 
@@ -512,27 +550,15 @@ pub async fn run_smoke_test() -> Result<(), sqlx::Error> {
         err
     })?;
 
-    log::info!("Applying database migrations");
-
-    #[cfg(not(feature = "eval-package"))]
-    if let Err(err) = sqlx::migrate!("./migrations").run(&pool).await {
-        log::error!("Database migration failed: {err}");
-        return Err(err.into());
+    let mut connection = pool.acquire().await?;
+    let backup_path = run_migrations(&mut connection)
+        .await
+        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+    if let Some(path) = backup_path {
+        log::info!("Pre-migration backup: {}", path.display());
     }
-
-    #[cfg(feature = "eval-package")]
-    if let Err(err) = sqlx::migrate!("../src-tauri/migrations").run(&pool).await {
-        log::error!("Database migration failed: {err}");
-        return Err(err.into());
-    }
-
-    log::info!("Database migrations completed successfully");
-
-    ensure_default_space(&pool).await.map_err(|err| {
-        log::error!("Failed to ensure the default recall space exists: {err}");
-        err
-    })?;
-
+    drop(connection);
+    pool.close().await;
     Ok(())
 }
 
@@ -546,6 +572,32 @@ mod tests {
     fn database_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[tokio::test]
+    async fn chunk_generation_cannot_use_mcq_compatibility_saver() {
+        let error = save_questions_with_generation(
+            vec![QuestionInput {
+                question: String::from("Legacy-shaped chunk question"),
+                option_a: String::from("Correct"),
+                option_b: String::from("Distractor one"),
+                option_c: String::from("Distractor two"),
+                option_d: String::from("Distractor three"),
+                correct_answer: String::from("A"),
+                explanation: None,
+                space_id: 1,
+            }],
+            GenerationMetadata {
+                model: Some(String::from("test-model")),
+                provider: Some(String::from("test-provider")),
+                pipeline: Some(GenerationPipeline::Chunk),
+                generated_at: Some(String::from("2026-09-10T00:00:00Z")),
+            },
+        )
+        .await
+        .expect_err("chunk generation must not create an MCQ-only learning item");
+
+        assert!(error.to_string().contains("learning-item draft workflow"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -736,7 +788,7 @@ mod tests {
 
         let pool = open_pool().await.expect("pool should open");
         let future_review_at = Utc::now().naive_utc() + Duration::days(3);
-        sqlx::query("UPDATE questions SET next_review_at = ? WHERE question = ?")
+        sqlx::query("UPDATE learning_items SET next_review_at = ? WHERE id IN (SELECT learning_item_id FROM question_variants WHERE prompt = ?)")
             .bind(future_review_at)
             .bind("Due in biology")
             .execute(&pool)
@@ -805,7 +857,7 @@ mod tests {
             .next()
             .expect("expected one saved question");
 
-        let reviewed_question = review_question_with_outcome(saved_question.id, Rating::Easy, true)
+        let reviewed_question = review_question(saved_question.id, "A".into())
             .await
             .expect("review should persist");
 
@@ -829,4 +881,67 @@ mod tests {
         std::env::remove_var("DATABASE_URL");
         let _ = std::fs::remove_file(db_path);
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn upgraded_backend_supports_restart_edit_review_dashboard_and_delete() {
+        let _guard = database_test_lock().lock().unwrap();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("arka-workflow-{stamp}.sqlite"));
+        std::env::set_var("DATABASE_URL", format!("sqlite://{}", path.display()));
+        // Populate the actual old schema first, then use the real startup path.
+        let pool = open_pool().await.unwrap();
+        let baseline = super::migration_tests::v016_migrator();
+        baseline.run(&pool).await.unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../tests/fixtures/migrations/v016_populated.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        run_smoke_test().await.unwrap();
+        run_smoke_test().await.unwrap();
+        assert_eq!(get_questions().await.unwrap().len(), 4);
+        let reviewed = review_question(20, "B".into()).await.unwrap();
+        assert_eq!(reviewed.repetitions, 5);
+        let dashboard = get_recall_dashboard().await.unwrap();
+        assert_eq!(dashboard.reviewed_today_count, 1);
+        let changed = modify_question(
+            20,
+            QuestionInput {
+                question: "Edited prompt".into(),
+                option_a: "O(1)".into(),
+                option_b: "O(log n)".into(),
+                option_c: "O(n)".into(),
+                option_d: "O(n²)".into(),
+                correct_answer: "B".into(),
+                explanation: None,
+                space_id: 7,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(changed.repetitions, 5);
+        assert_eq!(changed.model.as_deref(), Some(""));
+        let pool = open_pool().await.unwrap();
+        let old_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_review_history")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(old_events, 3);
+        pool.close().await;
+        delete_space(7).await.unwrap();
+        assert_eq!(get_questions().await.unwrap().len(), 2);
+        assert!(delete_space(1).await.is_err());
+        delete_questions(vec![10, 40]).await.unwrap();
+        assert!(get_questions().await.unwrap().is_empty());
+        std::env::remove_var("DATABASE_URL");
+        let _ = std::fs::remove_file(path);
+    }
 }
+
+#[cfg(test)]
+#[path = "database_migration_tests.rs"]
+mod migration_tests;

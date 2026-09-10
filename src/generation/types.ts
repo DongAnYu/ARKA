@@ -24,9 +24,55 @@ export type ChunkLlmQuestionPreview = {
   explanation: string
 }
 
+export type GeneratedFlashcard = {
+  prompt: string
+}
+
+export type GeneratedMcq = {
+  prompt: string | null
+  distractors: string[]
+}
+
+export type GeneratedItem = {
+  knowledge_point_id: string
+  target: string
+  answer: string
+  explanation: string | null
+  flashcard: GeneratedFlashcard
+  mcq: GeneratedMcq | null
+  mcq_omission_reason: string | null
+}
+
+export type GenerationMetadata = {
+  model: string | null
+  provider: string | null
+  pipeline: 'chunk' | 'graph' | null
+  generated_at: string | null
+}
+
+export type SourceReference = {
+  note_path: string
+  start_line: number
+  end_line: number
+  knowledge_point: string
+}
+
+export type LearningItemDraft = {
+  draft_id: string
+  generation: GenerationMetadata
+  source: SourceReference
+  content: GeneratedItem
+}
+
+export type GeneratedLearningItemSaveInput = {
+  draft_id: string
+  content: GeneratedItem
+}
+
 export type ChunkLlmResult = {
   status: string
   key_points: string[]
+  items: LearningItemDraft[]
   questions: ChunkLlmQuestionPreview[]
   error: string | null
 }

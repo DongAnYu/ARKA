@@ -1,9 +1,10 @@
-use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+use crate::models::learning_item::{validate_generated_output, GeneratedItemsOutput};
 
 /// Wrapper for Stage A output so parsing is deterministic.
 ///
@@ -23,38 +24,6 @@ pub struct StageAKeyPoint {
     pub knowledge_point: String,
 }
 
-/// Wrapper for Stage B output so parsing is deterministic.
-///
-/// Expected JSON shape:
-/// {
-///   "questions": [
-///     {
-///       "question": "...",
-///       "option_a": "...",
-///       "option_b": "...",
-///       "option_c": "...",
-///       "option_d": "...",
-///       "correct_answer": "A",
-///       "explanation": "..."
-///     }
-///   ]
-/// }
-#[derive(Debug, Clone, Deserialize)]
-pub struct StageBMcqOutput {
-    pub questions: Vec<StageBMcq>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct StageBMcq {
-    pub question: String,
-    pub option_a: String,
-    pub option_b: String,
-    pub option_c: String,
-    pub option_d: String,
-    pub correct_answer: String,
-    pub explanation: String,
-}
-
 #[derive(Debug)]
 pub enum LlmSchemaError {
     Parse(serde_json::Error),
@@ -64,11 +33,7 @@ pub enum LlmSchemaError {
 #[derive(Debug)]
 pub enum LlmValidationError {
     EmptyKnowledgePoint { index: usize },
-    EmptyQuestions,
-    EmptyField { index: usize, field: &'static str },
-    DuplicateOptions { index: usize },
-    DuplicateQuestion { index: usize },
-    InvalidCorrectAnswer { index: usize, value: String },
+    InvalidGeneratedItems { reason: &'static str },
 }
 
 impl fmt::Display for LlmSchemaError {
@@ -88,26 +53,9 @@ impl fmt::Display for LlmValidationError {
             Self::EmptyKnowledgePoint { index } => {
                 write!(f, "knowledge_point at index {index} must be non-empty")
             }
-            Self::EmptyQuestions => write!(f, "questions must contain at least one item"),
-            Self::EmptyField { index, field } => {
-                write!(
-                    f,
-                    "field '{field}' at question index {index} must be non-empty"
-                )
+            Self::InvalidGeneratedItems { reason } => {
+                write!(f, "generated learning items failed validation: {reason}")
             }
-            Self::DuplicateOptions { index } => {
-                write!(f, "question at index {index} has duplicate options")
-            }
-            Self::DuplicateQuestion { index } => {
-                write!(
-                    f,
-                    "question at index {index} duplicates a previous question"
-                )
-            }
-            Self::InvalidCorrectAnswer { index, value } => write!(
-                f,
-                "question at index {index} has invalid correct_answer '{value}' (expected A/B/C/D)"
-            ),
         }
     }
 }
@@ -120,11 +68,16 @@ pub fn parse_stage_a_output(json_payload: &str) -> Result<StageAKeyPointsOutput,
     Ok(parsed)
 }
 
-/// Parses Stage B LLM output using a deterministic wrapper object.
-pub fn parse_stage_b_output(json_payload: &str) -> Result<StageBMcqOutput, LlmSchemaError> {
-    let parsed: StageBMcqOutput =
+/// Parses Stage B output into the same contract used by LearningItem generation.
+pub fn parse_stage_b_output(
+    json_payload: &str,
+    known_point_ids: &[&str],
+) -> Result<GeneratedItemsOutput, LlmSchemaError> {
+    let parsed: GeneratedItemsOutput =
         serde_json::from_str(json_payload).map_err(LlmSchemaError::Parse)?;
-    validate_stage_b_output(&parsed)?;
+    validate_generated_output(&parsed, known_point_ids).map_err(|reason| {
+        LlmSchemaError::Validation(LlmValidationError::InvalidGeneratedItems { reason })
+    })?;
     Ok(parsed)
 }
 
@@ -135,70 +88,6 @@ fn validate_stage_a_output(parsed: &StageAKeyPointsOutput) -> Result<(), LlmSche
                 LlmValidationError::EmptyKnowledgePoint { index },
             ));
         }
-    }
-
-    Ok(())
-}
-
-fn validate_stage_b_output(parsed: &StageBMcqOutput) -> Result<(), LlmSchemaError> {
-    if parsed.questions.is_empty() {
-        return Err(LlmSchemaError::Validation(
-            LlmValidationError::EmptyQuestions,
-        ));
-    }
-
-    let mut seen_questions = HashSet::new();
-
-    for (index, question) in parsed.questions.iter().enumerate() {
-        validate_non_empty(index, "question", &question.question)?;
-        validate_non_empty(index, "option_a", &question.option_a)?;
-        validate_non_empty(index, "option_b", &question.option_b)?;
-        validate_non_empty(index, "option_c", &question.option_c)?;
-        validate_non_empty(index, "option_d", &question.option_d)?;
-        validate_non_empty(index, "correct_answer", &question.correct_answer)?;
-        validate_non_empty(index, "explanation", &question.explanation)?;
-
-        let answer = question.correct_answer.trim();
-        if answer != "A" && answer != "B" && answer != "C" && answer != "D" {
-            return Err(LlmSchemaError::Validation(
-                LlmValidationError::InvalidCorrectAnswer {
-                    index,
-                    value: question.correct_answer.clone(),
-                },
-            ));
-        }
-
-        let a = question.option_a.trim();
-        let b = question.option_b.trim();
-        let c = question.option_c.trim();
-        let d = question.option_d.trim();
-        if a == b || a == c || a == d || b == c || b == d || c == d {
-            return Err(LlmSchemaError::Validation(
-                LlmValidationError::DuplicateOptions { index },
-            ));
-        }
-
-        let question_key = normalize_for_dedup(&question.question);
-        if !seen_questions.insert(question_key) {
-            return Err(LlmSchemaError::Validation(
-                LlmValidationError::DuplicateQuestion { index },
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_non_empty(
-    index: usize,
-    field: &'static str,
-    value: &str,
-) -> Result<(), LlmSchemaError> {
-    if value.trim().is_empty() {
-        return Err(LlmSchemaError::Validation(LlmValidationError::EmptyField {
-            index,
-            field,
-        }));
     }
 
     Ok(())
@@ -229,46 +118,61 @@ pub fn stage_b_format_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "questions": {
+            "items": {
                 "type": "array",
+                "maxItems": 4,
                 "items": {
                     "type": "object",
                     "properties": {
-                        "question": { "type": "string" },
-                        "option_a": { "type": "string" },
-                        "option_b": { "type": "string" },
-                        "option_c": { "type": "string" },
-                        "option_d": { "type": "string" },
-                        "correct_answer": { "type": "string", "enum": ["A", "B", "C", "D"] },
-                        "explanation": { "type": "string" }
+                        "knowledge_point_id": { "type": "string" },
+                        "target": { "type": "string" },
+                        "answer": { "type": "string" },
+                        "explanation": { "type": ["string", "null"] },
+                        "flashcard": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": { "type": "string" }
+                            },
+                            "required": ["prompt"],
+                            "additionalProperties": false
+                        },
+                        "mcq": {
+                            "anyOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "prompt": { "type": ["string", "null"] },
+                                        "distractors": {
+                                            "type": "array",
+                                            "minItems": 3,
+                                            "maxItems": 3,
+                                            "items": { "type": "string" }
+                                        }
+                                    },
+                                    "required": ["prompt", "distractors"],
+                                    "additionalProperties": false
+                                },
+                                { "type": "null" }
+                            ]
+                        },
+                        "mcq_omission_reason": { "type": ["string", "null"] }
                     },
                     "required": [
-                        "question",
-                        "option_a",
-                        "option_b",
-                        "option_c",
-                        "option_d",
-                        "correct_answer",
-                        "explanation"
+                        "knowledge_point_id",
+                        "target",
+                        "answer",
+                        "explanation",
+                        "flashcard",
+                        "mcq",
+                        "mcq_omission_reason"
                     ],
                     "additionalProperties": false
                 }
             }
         },
-        "required": ["questions"],
+        "required": ["items"],
         "additionalProperties": false
     })
-}
-
-fn normalize_for_dedup(input: &str) -> String {
-    input
-        .chars()
-        .flat_map(char::to_lowercase)
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]
@@ -304,23 +208,27 @@ mod tests {
     fn parses_stage_b_wrapper() {
         let payload = r#"
                 {
-                    "questions": [
+                    "items": [
                         {
-                            "question": "What does ownership control in Rust?",
-                            "option_a": "Memory and access",
-                            "option_b": "UI rendering",
-                            "option_c": "Network routing",
-                            "option_d": "Audio mixing",
-                            "correct_answer": "A",
-                            "explanation": "Ownership defines lifecycle and access rules for values."
+                            "knowledge_point_id": "kp_1",
+                            "target": "Rust ownership controls the lifecycle and access rules for values.",
+                            "answer": "The lifecycle and access rules for values",
+                            "explanation": "Ownership determines how values are managed and accessed.",
+                            "flashcard": { "prompt": "What does ownership control in Rust?" },
+                            "mcq": {
+                                "prompt": null,
+                                "distractors": ["UI rendering", "Network routing", "Audio mixing"]
+                            },
+                            "mcq_omission_reason": null
                         }
                     ]
                 }
                 "#;
 
-        let parsed = parse_stage_b_output(payload).expect("stage B JSON should parse");
-        assert_eq!(parsed.questions.len(), 1);
-        assert_eq!(parsed.questions[0].correct_answer, "A");
+        let parsed = parse_stage_b_output(payload, &["kp_1"]).expect("stage B JSON should parse");
+        assert_eq!(parsed.items.len(), 1);
+        assert_eq!(parsed.items[0].knowledge_point_id, "kp_1");
+        assert!(parsed.items[0].mcq.is_some());
     }
 
     #[test]
@@ -331,86 +239,52 @@ mod tests {
     }
 
     #[test]
-    fn fails_stage_b_when_correct_answer_invalid() {
+    fn parses_stage_b_flashcard_without_mcq() {
         let payload = r#"
-                    {
-                        "questions": [
+                {
+                    "items": [
                         {
-                            "question": "Q?",
-                            "option_a": "A1",
-                            "option_b": "B1",
-                            "option_c": "C1",
-                            "option_d": "D1",
-                            "correct_answer": "E",
-                            "explanation": "Because"
+                            "knowledge_point_id": "kp_1",
+                            "target": "A concept with no useful distractors.",
+                            "answer": "The exact answer",
+                            "explanation": null,
+                            "flashcard": { "prompt": "What is the exact answer?" },
+                            "mcq": null,
+                            "mcq_omission_reason": "Could not create three plausible distractors without making the answer obvious."
                         }
-                        ]
-                    }
-                    "#;
+                    ]
+                }
+                "#;
 
-        let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
-        assert!(matches!(
-            err,
-            LlmSchemaError::Validation(LlmValidationError::InvalidCorrectAnswer { .. })
-        ));
+        let parsed = parse_stage_b_output(payload, &["kp_1"]).expect("stage B JSON should parse");
+        assert!(parsed.items[0].mcq.is_none());
     }
 
     #[test]
-    fn fails_stage_b_when_options_duplicate() {
+    fn fails_stage_b_when_knowledge_point_id_is_invented() {
         let payload = r#"
-                    {
-                        "questions": [
+                {
+                    "items": [
                         {
-                            "question": "Q?",
-                            "option_a": "Same",
-                            "option_b": "Same",
-                            "option_c": "C1",
-                            "option_d": "D1",
-                            "correct_answer": "A",
-                            "explanation": "Because"
+                            "knowledge_point_id": "kp_99",
+                            "target": "Target",
+                            "answer": "Answer",
+                            "explanation": null,
+                            "flashcard": { "prompt": "Prompt?" },
+                            "mcq": null,
+                            "mcq_omission_reason": "The target does not translate cleanly into a single-answer multiple-choice question."
                         }
-                        ]
-                    }
-                    "#;
+                    ]
+                }
+                "#;
 
-        let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
+        let err =
+            parse_stage_b_output(payload, &["kp_1"]).expect_err("stage B should fail validation");
         assert!(matches!(
             err,
-            LlmSchemaError::Validation(LlmValidationError::DuplicateOptions { .. })
-        ));
-    }
-
-    #[test]
-    fn fails_stage_b_when_questions_duplicate() {
-        let payload = r#"
-                    {
-                        "questions": [
-                        {
-                            "question": "What is Kubernetes scheduler?",
-                            "option_a": "A1",
-                            "option_b": "B1",
-                            "option_c": "C1",
-                            "option_d": "D1",
-                            "correct_answer": "A",
-                            "explanation": "Because"
-                        },
-                        {
-                            "question": "What is kubernetes scheduler",
-                            "option_a": "A2",
-                            "option_b": "B2",
-                            "option_c": "C2",
-                            "option_d": "D2",
-                            "correct_answer": "B",
-                            "explanation": "Because 2"
-                        }
-                        ]
-                    }
-                    "#;
-
-        let err = parse_stage_b_output(payload).expect_err("stage B should fail validation");
-        assert!(matches!(
-            err,
-            LlmSchemaError::Validation(LlmValidationError::DuplicateQuestion { .. })
+            LlmSchemaError::Validation(LlmValidationError::InvalidGeneratedItems {
+                reason: "unknown_knowledge_point"
+            })
         ));
     }
 }

@@ -8,7 +8,6 @@ import { QuestionCard, type OptionId, type SessionQuestion } from '../components
 import { SessionComplete } from '../components/session/SessionComplete'
 import { SessionHeader } from '../components/session/SessionHeader'
 
-type SchedulerRating = 'again' | 'easy'
 type SessionReview = {
   questionId: number
   selectedOptionId: OptionId
@@ -19,7 +18,6 @@ type RecallDashboard = {
   due_today_count: number
   overdue_count: number
   reviewed_today_count: number
-  correct_today_count: number
   spaces: RecallSpaceSummary[]
 }
 
@@ -30,7 +28,6 @@ type RecallSpaceSummary = {
   due_count: number
   overdue_count: number
   reviewed_today_count: number
-  correct_today_count: number
 }
 
 type StoredQuestion = {
@@ -44,8 +41,6 @@ type StoredQuestion = {
   explanation: string | null
   space_id: number
 }
-
-const getSchedulerRating = (isCorrect: boolean): SchedulerRating => (isCorrect ? 'easy' : 'again')
 
 const questionLabel = (count: number) => `${count} ${count === 1 ? 'question' : 'questions'}`
 
@@ -96,8 +91,8 @@ function RecallDonutChart({ categories }: { categories: RecallChartCategory[] })
   )
 }
 
-async function reviewQuestion(questionId: number, rating: SchedulerRating): Promise<void> {
-  await invoke('review_question', { questionId, rating, isCorrect: rating === 'easy' })
+async function reviewQuestion(questionId: number, selectedOptionId: OptionId): Promise<void> {
+  await invoke('review_question', { questionId, selectedOptionId })
 }
 
 const toSessionQuestion = (question: StoredQuestion): SessionQuestion => ({
@@ -120,6 +115,7 @@ export function SessionPage() {
   const requestedSpaceName =
     typeof location.state?.recallSpaceName === 'string' ? location.state.recallSpaceName : null
   const didStartRequestedSpace = useRef(false)
+  const reviewInFlight = useRef(false)
   const [dashboard, setDashboard] = useState<RecallDashboard | null>(null)
   const [isDashboardLoading, setIsDashboardLoading] = useState(true)
   const [isSessionLoading, setIsSessionLoading] = useState(false)
@@ -162,13 +158,11 @@ export function SessionPage() {
       : dashboard?.due_today_count ?? 0
     const overdue = selectedSpace?.overdue_count ?? dashboard?.overdue_count ?? 0
     const reviewed = selectedSpace?.reviewed_today_count ?? dashboard?.reviewed_today_count ?? 0
-    const reviewedCorrect = selectedSpace?.correct_today_count ?? dashboard?.correct_today_count ?? 0
 
     return {
       dueToday,
       overdue,
-      reviewedCorrect,
-      reviewedIncorrect: Math.max(0, reviewed - reviewedCorrect),
+      reviewed,
       attention: dueToday + overdue,
       totalQuestions:
         selectedSpace?.total_questions ??
@@ -181,8 +175,7 @@ export function SessionPage() {
     () => [
       { label: 'Due Today', value: scopeMetrics.dueToday, className: 'is-due' },
       { label: 'Overdue', value: scopeMetrics.overdue, className: 'is-overdue' },
-      { label: 'Reviewed Correct', value: scopeMetrics.reviewedCorrect, className: 'is-correct' },
-      { label: 'Reviewed Incorrect', value: scopeMetrics.reviewedIncorrect, className: 'is-incorrect' },
+      { label: 'Reviewed today', value: scopeMetrics.reviewed, className: 'is-correct' },
     ],
     [scopeMetrics],
   )
@@ -277,16 +270,17 @@ export function SessionPage() {
   }, [requestedSpaceId, requestedSpaceName, startRecall])
 
   const handleSubmit = async () => {
-    if (!currentQuestion || !selectedOptionId || isSubmitted || isSubmitting) {
+    if (!currentQuestion || !selectedOptionId || isSubmitted || isSubmitting || reviewInFlight.current) {
       return
     }
 
+    reviewInFlight.current = true
     const isCorrect = selectedOptionId === currentQuestion.correctOptionId
     setIsSubmitting(true)
     setError('')
 
     try {
-      await reviewQuestion(currentQuestion.id, getSchedulerRating(isCorrect))
+      await reviewQuestion(currentQuestion.id, selectedOptionId)
 
       setReviews((current) => [
         ...current,
@@ -297,6 +291,7 @@ export function SessionPage() {
       const message = err instanceof Error ? err.message : 'Failed to review question'
       setError(message)
     } finally {
+      reviewInFlight.current = false
       setIsSubmitting(false)
     }
   }
