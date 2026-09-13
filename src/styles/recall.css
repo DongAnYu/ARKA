@@ -21,6 +21,82 @@
   gap: 16px;
 }
 
+.session-recall-card {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.session-page button:focus-visible,
+.session-flashcard-answer:focus-visible,
+.session-complete h1:focus-visible,
+.session-recall-card:focus-visible {
+  outline: 2px solid var(--color-lavender);
+  outline-offset: 4px;
+}
+
+.session-flashcard-answer {
+  overflow-wrap: anywhere;
+  color: var(--color-bright-gray);
+  line-height: 1.6;
+}
+
+.session-flashcard-answer h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.session-flashcard-answer p {
+  margin: 0 0 20px;
+  white-space: pre-wrap;
+}
+
+.session-rating-controls {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.session-rating-controls legend {
+  margin-bottom: 12px;
+  color: var(--color-medium-gray);
+}
+
+.session-rating-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.session-rating-grid button {
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.session-rating-interval {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.session-interval-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  color: var(--color-medium-gray);
+  font-size: 13px;
+}
+
+@media (max-width: 480px) {
+  .session-rating-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .session-header {
   padding: 20px 24px;
   display: grid;
@@ -81,9 +157,120 @@
 }
 
 .session-question-card {
+  position: relative;
   padding: 24px;
   display: grid;
   gap: 20px;
+}
+
+/* One short outcome accent per saved review; content and controls remain usable. */
+.session-question-card[data-outcome]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--session-outcome-color);
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  animation: session-outcome-ring 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.session-question-card[data-outcome='recalled'] {
+  --session-outcome-color: var(--color-success-green);
+  box-shadow: inset 0 0 0 1px rgba(74, 222, 128, 0.55);
+}
+
+.session-question-card[data-outcome='again'] {
+  --session-outcome-color: var(--color-error-red);
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.55);
+}
+
+.session-flashcard[data-outcome='recalled'] {
+  animation: session-recalled-impact 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.session-flashcard[data-outcome='again'] {
+  animation: session-again-impact 280ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.session-flashcard-answer {
+  transform-origin: center top;
+  animation: session-answer-reveal 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.session-rating-controls {
+  animation: session-controls-reveal 240ms cubic-bezier(0.22, 1, 0.36, 1) 40ms both;
+}
+
+.session-rating-grid button[data-rating='again'] {
+  color: var(--color-error-red);
+}
+
+.session-rating-grid button[aria-pressed='true'] {
+  opacity: 1;
+  color: var(--session-outcome-color);
+  box-shadow: inset 0 0 0 1px var(--session-outcome-color);
+}
+
+.session-rating-result {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--session-outcome-color);
+  animation: session-controls-reveal 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.session-rating-result-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background-color: color-mix(in srgb, var(--session-outcome-color) 12%, transparent);
+}
+
+.session-rating-result-icon svg {
+  width: 22px;
+  height: 22px;
+  animation: session-answer-icon-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.session-rating-result strong {
+  font-size: 18px;
+}
+
+.session-rating-result p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--color-medium-gray);
+}
+
+@keyframes session-answer-reveal {
+  from { opacity: 0; transform: perspective(650px) rotateX(-9deg) translateY(12px); }
+  to { opacity: 1; transform: perspective(650px) rotateX(0) translateY(0); }
+}
+
+@keyframes session-controls-reveal {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes session-recalled-impact {
+  from { transform: scale(0.985); }
+  to { transform: scale(1); }
+}
+
+@keyframes session-again-impact {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  45% { transform: translateX(3px); }
+  70% { transform: translateX(-2px); }
+}
+
+@keyframes session-outcome-ring {
+  from { opacity: 0.8; transform: scale(0.995); }
+  to { opacity: 0; transform: scale(1.012); }
 }
 
 .session-question-head {
@@ -146,13 +333,13 @@
 .session-answer-option.is-correct {
   background-color: rgba(74, 222, 128, 0.15);
   box-shadow: inset 0 0 0 1px rgba(74, 222, 128, 0.55), var(--shadow-subtle);
-  animation: session-answer-feedback-in 220ms var(--ease-standard) both;
+  animation: session-recalled-impact 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .session-answer-option.is-incorrect {
   background-color: rgba(248, 113, 113, 0.15);
   box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.52), var(--shadow-subtle);
-  animation: session-answer-feedback-in 220ms var(--ease-standard) both;
+  animation: session-again-impact 280ms cubic-bezier(0.25, 1, 0.5, 1) both;
 }
 
 .session-answer-option:disabled {
@@ -214,13 +401,6 @@
   color: #fca5a5;
 }
 
-@keyframes session-answer-feedback-in {
-  from {
-    opacity: 0.72;
-    transform: translateY(4px);
-  }
-}
-
 @keyframes session-answer-icon-in {
   from {
     opacity: 0;
@@ -236,6 +416,10 @@
 .session-submit-btn,
 .session-next-btn {
   min-width: 168px;
+}
+
+.session-next-btn {
+  scroll-margin-block: 64px 112px;
 }
 
 .session-explanation {
@@ -282,10 +466,11 @@
   width: 16px;
   height: 16px;
   stroke-width: 2.5;
+  animation: session-answer-icon-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .session-explanation.is-correct {
-  background-color: rgba(74, 222, 128, 0.06);
+  background-color: rgba(74, 222, 128, 0.12);
   box-shadow: inset 0 0 0 1px rgba(74, 222, 128, 0.28), var(--shadow-subtle);
 }
 
@@ -299,7 +484,7 @@
 }
 
 .session-explanation.is-incorrect {
-  background-color: rgba(248, 113, 113, 0.06);
+  background-color: rgba(248, 113, 113, 0.12);
   box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.28), var(--shadow-subtle);
 }
 
@@ -943,7 +1128,20 @@
   }
 }
 
+/* Keyboard actions are immediate, while keeping the same persistent outcome styling. */
+.session-recall-card[data-motion='instant'] *,
+.session-recall-card[data-motion='instant'] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .session-recall-card *,
+  .session-recall-card *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
   .recall-loading-icon {
     animation: none;
   }

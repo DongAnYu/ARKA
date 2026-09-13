@@ -178,6 +178,15 @@ pub enum ReviewRating {
     Easy,
 }
 
+/// Read-only interval previews, calculated from the stored parent schedule.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReviewIntervals {
+    pub again: i32,
+    pub hard: i32,
+    pub good: i32,
+    pub easy: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReviewResponse {

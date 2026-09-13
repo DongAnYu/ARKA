@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use crate::models::learning_item::{
     GenerationMetadata, GenerationPipeline, LearningItem, LearningItemEditInput, LearningItemInput,
-    QuestionVariant, ReviewResponse, ReviewSubmission,
+    QuestionVariant, ReviewIntervals, ReviewResponse, ReviewSubmission,
 };
 use crate::models::model_settings::ModelConfig;
 use crate::models::question::{Question, QuestionInput};
@@ -227,6 +227,10 @@ pub async fn review_learning_item(
     submission: ReviewSubmission,
 ) -> Result<LearningItem, sqlx::Error> {
     learning_items::review(&open_pool().await?, submission).await
+}
+
+pub async fn get_learning_item_review_intervals(id: i64) -> Result<ReviewIntervals, sqlx::Error> {
+    learning_items::review_intervals(&open_pool().await?, id).await
 }
 
 async fn mcq_list(space_id: Option<i64>, due_only: bool) -> Result<Vec<Question>, sqlx::Error> {

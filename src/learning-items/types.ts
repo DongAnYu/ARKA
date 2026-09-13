@@ -5,6 +5,17 @@ export type McqOption = {
   text: string
 }
 
+export type ReviewRating = 'again' | 'hard' | 'good' | 'easy'
+export type ReviewIntervals = Record<ReviewRating, number>
+export type ReviewResponse =
+  | { format: 'mcq'; selected_option_id: string }
+  | { format: 'flashcard'; rating: ReviewRating }
+export type ReviewSubmission = {
+  learning_item_id: number
+  variant_id: number
+  response: ReviewResponse
+}
+
 export type LearningItemVariant =
   | {
       format: 'mcq'

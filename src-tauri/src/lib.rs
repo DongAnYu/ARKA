@@ -6,7 +6,7 @@ mod services;
 use std::path::PathBuf;
 
 use models::learning_item::{
-    GeneratedLearningItemSaveInput, LearningItem, LearningItemEditInput, ReviewSubmission,
+    GeneratedLearningItemSaveInput, LearningItem, LearningItemEditInput, ReviewIntervals, ReviewSubmission,
 };
 use models::model_settings::{EmbeddingConnectionResult, EmbeddingModelConfig, ModelConfig};
 use models::note::Note;
@@ -85,6 +85,13 @@ async fn modify_learning_item(
 #[tauri::command]
 async fn review_learning_item(submission: ReviewSubmission) -> Result<LearningItem, String> {
     services::database::review_learning_item(submission)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_learning_item_review_intervals(learning_item_id: i64) -> Result<ReviewIntervals, String> {
+    services::database::get_learning_item_review_intervals(learning_item_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -381,7 +388,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_questions,
-            get_learning_items, get_due_learning_items, save_generated_learning_items, modify_learning_item, review_learning_item,
+            get_learning_items, get_due_learning_items, save_generated_learning_items, modify_learning_item, review_learning_item, get_learning_item_review_intervals,
             get_questions_by_space,
             get_due_questions,
             get_recall_dashboard,

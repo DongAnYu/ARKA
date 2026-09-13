@@ -301,6 +301,24 @@ pub fn from_generated(
     })
 }
 
+pub async fn review_intervals(pool: &SqlitePool, id: i64) -> Result<ReviewIntervals, sqlx::Error> {
+    let item = load(&mut *pool.acquire().await?, id).await?;
+    if item.status != ItemStatus::Ready {
+        return Err(invalid("Item needs repair"));
+    }
+    let interval = |rating| {
+        let mut schedule = item.schedule.clone();
+        SM2Scheduler::review_state(&mut schedule, rating);
+        schedule.interval_days
+    };
+    Ok(ReviewIntervals {
+        again: interval(Rating::Again),
+        hard: interval(Rating::Hard),
+        good: interval(Rating::Good),
+        easy: interval(Rating::Easy),
+    })
+}
+
 pub async fn review(
     pool: &SqlitePool,
     submission: ReviewSubmission,
@@ -593,6 +611,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn interval_previews_match_saved_reviews_without_mutating_the_parent() {
+        let (pool, path) = fixture().await;
+        for (repetitions, interval_days, ease_factor, expected) in
+            [(0, 0, 2.5, 1), (1, 1, 2.5, 6), (4, 7, 2.5, 18)]
+        {
+            for rating in [ReviewRating::Again, ReviewRating::Hard, ReviewRating::Good, ReviewRating::Easy] {
+                let item = save(&pool, vec![paired()]).await.unwrap().remove(0);
+                sqlx::query("UPDATE learning_items SET repetitions=?,interval_days=?,ease_factor=? WHERE id=?")
+                    .bind(repetitions).bind(interval_days).bind(ease_factor).bind(item.id)
+                    .execute(&pool).await.unwrap();
+                let before = load(&mut *pool.acquire().await.unwrap(), item.id).await.unwrap();
+                let preview = review_intervals(&pool, item.id).await.unwrap();
+                assert_eq!(preview.again, 1);
+                assert_eq!((preview.hard, preview.good, preview.easy), (expected, expected, expected));
+                assert_eq!(load(&mut *pool.acquire().await.unwrap(), item.id).await.unwrap(), before);
+                let expected_days = match rating {
+                    ReviewRating::Again => preview.again,
+                    ReviewRating::Hard => preview.hard,
+                    ReviewRating::Good => preview.good,
+                    ReviewRating::Easy => preview.easy,
+                };
+                let variant_id = match item.variants[1] {
+                    QuestionVariant::Flashcard { id, .. } => id,
+                    _ => panic!(),
+                };
+                let reviewed = review(&pool, ReviewSubmission {
+                    learning_item_id: item.id,
+                    variant_id,
+                    response: ReviewResponse::Flashcard { rating },
+                }).await.unwrap();
+                assert_eq!(reviewed.schedule.interval_days, expected_days);
+            }
+        }
+        let item = save(&pool, vec![paired()]).await.unwrap().remove(0);
+        sqlx::query("UPDATE learning_items SET status='needs_repair' WHERE id=?")
+            .bind(item.id).execute(&pool).await.unwrap();
+        assert!(review_intervals(&pool, item.id).await.is_err());
+        close(pool, path).await;
+    }
+
+    #[tokio::test]
     async fn variants_share_one_due_parent_and_reviews_write_no_history() {
         let (pool, path) = fixture().await;
         let item = save(&pool, vec![paired()]).await.unwrap().remove(0);
@@ -617,6 +676,12 @@ mod tests {
         assert_eq!(result.schedule.repetitions, 1);
         assert_eq!(result.schedule.interval_days, 1);
         assert!((result.schedule.ease_factor - 2.6).abs() < 1e-8);
+        let persisted = load(&mut *pool.acquire().await.unwrap(), item.id)
+            .await
+            .unwrap();
+        assert_eq!(persisted.schedule, result.schedule);
+        assert_eq!(persisted.variants, item.variants);
+        assert_eq!(persisted.answer, item.answer);
         assert!(list(&pool, None, true).await.unwrap().is_empty());
         let flash_id = match &item.variants[1] {
             QuestionVariant::Flashcard { id, .. } => *id,
@@ -760,7 +825,27 @@ mod tests {
             .variants
             .iter()
             .any(|variant| matches!(variant, QuestionVariant::Flashcard { .. })));
-        let question = to_mcq(item).unwrap().unwrap();
+        let variant_id = match item.variants[0] {
+            QuestionVariant::Mcq { id, .. } => id,
+            _ => panic!(),
+        };
+        let reviewed = review(
+            &pool,
+            ReviewSubmission {
+                learning_item_id: item.id,
+                variant_id,
+                response: ReviewResponse::Mcq {
+                    selected_option_id: "stable-correct-id".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(reviewed.schedule.repetitions, 1);
+        assert_eq!(reviewed.target, None);
+        assert_eq!(reviewed.variants, item.variants);
+        assert!(list(&pool, None, true).await.unwrap().is_empty());
+        let question = to_mcq(reviewed).unwrap().unwrap();
         assert_eq!(question.correct_answer, "B");
         assert_eq!(question.model.as_deref(), Some("original-model"));
         close(pool, path).await;
@@ -799,6 +884,7 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(result.schedule.repetitions, expected_repetitions);
+            assert!(list(&pool, Some(2), true).await.unwrap().is_empty());
         }
         assert!(list(&pool, Some(1), false).await.unwrap().is_empty());
         assert_eq!(list(&pool, Some(2), false).await.unwrap().len(), 4);

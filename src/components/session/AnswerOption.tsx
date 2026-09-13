@@ -1,12 +1,13 @@
 import { Check, X } from 'lucide-react'
 
-type OptionId = 'A' | 'B' | 'C' | 'D'
+type OptionId = string
 
 type AnswerOptionProps = {
   id: OptionId
   label: string
   text: string
   isSelected: boolean
+  disabled: boolean
   isSubmitted: boolean
   isCorrect: boolean
   isIncorrect: boolean
@@ -19,6 +20,7 @@ export function AnswerOption({
   text,
   isSelected,
   isSubmitted,
+  disabled,
   isCorrect,
   isIncorrect,
   onSelect,
@@ -50,7 +52,7 @@ export function AnswerOption({
       type="button"
       className={classNames.join(' ')}
       onClick={() => onSelect(id)}
-      disabled={isSubmitted}
+      disabled={disabled}
       aria-pressed={isSelected}
       aria-label={statusLabel ? `${label}. ${text}. ${statusLabel}.` : `${label}. ${text}.`}
     >

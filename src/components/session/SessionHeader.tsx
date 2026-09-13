@@ -2,16 +2,16 @@ import { SessionProgress } from './SessionProgress'
 
 type SessionHeaderProps = {
   recallSpaceName: string
-  currentQuestionNumber: number
-  totalQuestions: number
+  currentItemNumber: number
+  totalItems: number
 }
 
 export function SessionHeader({
   recallSpaceName,
-  currentQuestionNumber,
-  totalQuestions,
+  currentItemNumber,
+  totalItems,
 }: SessionHeaderProps) {
-  const progressPercent = totalQuestions === 0 ? 0 : (currentQuestionNumber / totalQuestions) * 100
+  const progressPercent = totalItems === 0 ? 0 : (currentItemNumber / totalItems) * 100
 
   return (
     <header className="session-header surface-panel" aria-label="Session header">
@@ -22,7 +22,7 @@ export function SessionHeader({
 
       <div className="session-progress-meta" aria-live="polite">
         <p>
-          Question {currentQuestionNumber} of {totalQuestions}
+          Item {currentItemNumber} of {totalItems}
         </p>
         <SessionProgress value={progressPercent} />
       </div>
