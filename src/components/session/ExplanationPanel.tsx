@@ -2,15 +2,15 @@ import { Check, X } from 'lucide-react'
 
 type ExplanationPanelProps = {
   isCorrect: boolean
-  selectedOptionId: string
-  correctOptionId: string
+  selectedAnswer: string
+  correctAnswer: string
   explanation: string | null
 }
 
 export function ExplanationPanel({
   isCorrect,
-  selectedOptionId,
-  correctOptionId,
+  selectedAnswer,
+  correctAnswer,
   explanation,
 }: ExplanationPanelProps) {
   return (
@@ -25,14 +25,14 @@ export function ExplanationPanel({
         <h3>{isCorrect ? 'Correct' : 'Incorrect'}</h3>
       </div>
       <p>
-        Correct answer: <strong>{correctOptionId}</strong>
+        Correct answer: <strong>{correctAnswer}</strong>
       </p>
       {!isCorrect ? (
         <p>
-          Your answer: <strong>{selectedOptionId}</strong>
+          Your answer: <strong>{selectedAnswer}</strong>
         </p>
       ) : null}
-      <p>{explanation ?? 'No explanation was provided for this question yet.'}</p>
+      {explanation ? <p>{explanation}</p> : null}
     </section>
   )
 }

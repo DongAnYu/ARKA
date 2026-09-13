@@ -26,6 +26,7 @@ dist-ssr
 # Artifacts
 eval/output
 eval/target
+src-tauri/review.db.pre-migration-*.sqlite
 
 # Environment files
 .env

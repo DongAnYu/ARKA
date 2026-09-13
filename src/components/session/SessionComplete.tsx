@@ -1,27 +1,28 @@
 import { Check } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 
 type SessionCompleteProps = {
   reviewedCount: number
-  correctCount: number
+  recalledCount: number
   onReturn: () => void
 }
 
 type ReviewPieChartProps = {
   reviewedCount: number
-  correctCount: number
-  incorrectCount: number
-  accuracy: number
+  recalledCount: number
+  againCount: number
+  recallPercent: number
 }
 
 function ReviewPieChart({
   reviewedCount,
-  correctCount,
-  incorrectCount,
-  accuracy,
+  recalledCount,
+  againCount,
+  recallPercent,
 }: ReviewPieChartProps) {
   const categories = [
-    { label: 'Correct', value: correctCount, className: 'is-correct' },
-    { label: 'Incorrect', value: incorrectCount, className: 'is-incorrect' },
+    { label: 'Recalled', value: recalledCount, className: 'is-correct' },
+    { label: 'Again', value: againCount, className: 'is-incorrect' },
   ]
   let offset = 0
 
@@ -53,8 +54,8 @@ function ReviewPieChart({
         })}
       </svg>
       <div className="session-results-pie-center" aria-hidden="true">
-        <strong>{accuracy}%</strong>
-        <span>Accuracy</span>
+        <strong>{recallPercent}%</strong>
+        <span>Recalled</span>
       </div>
     </div>
   )
@@ -62,53 +63,51 @@ function ReviewPieChart({
 
 export function SessionComplete({
   reviewedCount,
-  correctCount,
+  recalledCount,
   onReturn,
 }: SessionCompleteProps) {
+  const heading = useRef<HTMLHeadingElement>(null)
+  useEffect(() => { heading.current?.focus() }, [])
   const normalizedReviewedCount = Math.max(0, reviewedCount)
-  const normalizedCorrectCount = Math.min(Math.max(0, correctCount), normalizedReviewedCount)
-  const incorrectCount = normalizedReviewedCount - normalizedCorrectCount
-  const accuracy =
-    normalizedReviewedCount === 0 ? 0 : Math.round((normalizedCorrectCount / normalizedReviewedCount) * 100)
+  const normalizedRecalledCount = Math.min(Math.max(0, recalledCount), normalizedReviewedCount)
+  const againCount = normalizedReviewedCount - normalizedRecalledCount
+  const recallPercent =
+    normalizedReviewedCount === 0 ? 0 : Math.round((normalizedRecalledCount / normalizedReviewedCount) * 100)
 
   return (
     <section className="session-complete surface-panel" aria-label="Session complete">
       <span className="session-complete-mark" aria-hidden="true">
         <Check />
       </span>
-      <h1>Session Complete</h1>
+      <h1 ref={heading} tabIndex={-1}>Session Complete</h1>
       <p className="session-complete-summary">Here&apos;s how this recall session went.</p>
 
       <div className="session-complete-dashboard">
         <ReviewPieChart
           reviewedCount={normalizedReviewedCount}
-          correctCount={normalizedCorrectCount}
-          incorrectCount={incorrectCount}
-          accuracy={accuracy}
+          recalledCount={normalizedRecalledCount}
+          againCount={againCount}
+          recallPercent={recallPercent}
         />
 
         <dl className="session-complete-metrics">
           <div>
-            <dt>Accuracy</dt>
-            <dd>{accuracy}%</dd>
-          </div>
-          <div>
-            <dt>Questions reviewed</dt>
+            <dt>Reviewed</dt>
             <dd>{normalizedReviewedCount}</dd>
           </div>
           <div>
             <dt>
               <span className="session-complete-swatch is-correct" aria-hidden="true" />
-              Correct
+              Recalled
             </dt>
-            <dd>{normalizedCorrectCount}</dd>
+            <dd>{normalizedRecalledCount}</dd>
           </div>
           <div>
             <dt>
               <span className="session-complete-swatch is-incorrect" aria-hidden="true" />
-              Incorrect
+              Again
             </dt>
-            <dd>{incorrectCount}</dd>
+            <dd>{againCount}</dd>
           </div>
         </dl>
       </div>

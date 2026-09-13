@@ -5,7 +5,6 @@ pub struct RecallDashboard {
     pub due_today_count: i64,
     pub overdue_count: i64,
     pub reviewed_today_count: i64,
-    pub correct_today_count: i64,
     pub spaces: Vec<RecallSpaceSummary>,
 }
 
@@ -17,5 +16,4 @@ pub struct RecallSpaceSummary {
     pub due_count: i64,
     pub overdue_count: i64,
     pub reviewed_today_count: i64,
-    pub correct_today_count: i64,
 }

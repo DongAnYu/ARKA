@@ -17,3 +17,11 @@
 * Before committing frontend work, run `npm run lint` and `npm run build`.
 * Before committing Rust work, run `cargo test --manifest-path src-tauri/Cargo.toml`.
 * Use `npm run version:set -- X.Y.Z` for release version bumps.
+
+# Database migrations
+
+* Never modify a released migration; add a new timestamped migration.
+* Test fresh installation and upgrades from every supported schema anchor.
+* Add populated fixtures only for major schema eras or risky data transformations.
+* Preserve user content, schedules, provenance, and historical reviews.
+* Follow `src-tauri/migrations/README.md` when changing the database schema.

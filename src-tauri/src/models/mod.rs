@@ -1,3 +1,4 @@
+pub mod learning_item;
 pub mod model_settings;
 pub mod note;
 pub mod question;

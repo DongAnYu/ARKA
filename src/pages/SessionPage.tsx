@@ -3,23 +3,16 @@ import { ArrowLeft, ArrowRight, BookOpenCheck, ChevronDown, RotateCcw } from 'lu
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { BackToHome } from '../components/BackToHome'
-import { ExplanationPanel } from '../components/session/ExplanationPanel'
-import { QuestionCard, type OptionId, type SessionQuestion } from '../components/session/QuestionCard'
+import { RecallCard } from '../components/session/RecallCard'
 import { SessionComplete } from '../components/session/SessionComplete'
 import { SessionHeader } from '../components/session/SessionHeader'
-
-type SchedulerRating = 'again' | 'easy'
-type SessionReview = {
-  questionId: number
-  selectedOptionId: OptionId
-  isCorrect: boolean
-}
+import { selectRecallVariant, summarizeRecall, type RecallItem, type RecallResult } from '../learning-items/recall'
+import type { LearningItem } from '../learning-items/types'
 
 type RecallDashboard = {
   due_today_count: number
   overdue_count: number
   reviewed_today_count: number
-  correct_today_count: number
   spaces: RecallSpaceSummary[]
 }
 
@@ -30,24 +23,9 @@ type RecallSpaceSummary = {
   due_count: number
   overdue_count: number
   reviewed_today_count: number
-  correct_today_count: number
 }
 
-type StoredQuestion = {
-  id: number
-  question: string
-  option_a: string
-  option_b: string
-  option_c: string
-  option_d: string
-  correct_answer: OptionId
-  explanation: string | null
-  space_id: number
-}
-
-const getSchedulerRating = (isCorrect: boolean): SchedulerRating => (isCorrect ? 'easy' : 'again')
-
-const questionLabel = (count: number) => `${count} ${count === 1 ? 'question' : 'questions'}`
+const itemLabel = (count: number) => `${count} ${count === 1 ? 'learning item' : 'learning items'}`
 
 type RecallChartCategory = {
   label: string
@@ -60,7 +38,7 @@ function RecallDonutChart({ categories }: { categories: RecallChartCategory[] })
   let offset = 0
 
   return (
-    <div className="recall-donut" role="img" aria-label={`Today's recall state: ${total} questions`}>
+    <div className="recall-donut" role="img" aria-label={`Today's recall state: ${total} learning items`}>
       <svg viewBox="0 0 120 120" role="img" aria-hidden="true">
         <circle className="recall-donut-track" cx="60" cy="60" r="46" pathLength="100" />
         {total > 0
@@ -96,23 +74,6 @@ function RecallDonutChart({ categories }: { categories: RecallChartCategory[] })
   )
 }
 
-async function reviewQuestion(questionId: number, rating: SchedulerRating): Promise<void> {
-  await invoke('review_question', { questionId, rating, isCorrect: rating === 'easy' })
-}
-
-const toSessionQuestion = (question: StoredQuestion): SessionQuestion => ({
-  id: question.id,
-  prompt: question.question,
-  options: [
-    { id: 'A', text: question.option_a },
-    { id: 'B', text: question.option_b },
-    { id: 'C', text: question.option_c },
-    { id: 'D', text: question.option_d },
-  ],
-  correctOptionId: question.correct_answer,
-  explanation: question.explanation ?? undefined,
-})
-
 export function SessionPage() {
   const location = useLocation()
   const requestedSpaceId =
@@ -124,32 +85,19 @@ export function SessionPage() {
   const [isDashboardLoading, setIsDashboardLoading] = useState(true)
   const [isSessionLoading, setIsSessionLoading] = useState(false)
   const [isInSession, setIsInSession] = useState(false)
-  const [dueQuestions, setDueQuestions] = useState<SessionQuestion[]>([])
+  const [dueItems, setDueItems] = useState<RecallItem[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
-  const [selectedOptionId, setSelectedOptionId] = useState<OptionId | null>(null)
-  const [isSubmitted, setIsSubmitted] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
-  const [reviews, setReviews] = useState<SessionReview[]>([])
+  const [reviews, setReviews] = useState<RecallResult[]>([])
   const [sessionTitle, setSessionTitle] = useState("Today's Recall")
   const [selectedSpaceId, setSelectedSpaceId] = useState<number | null>(requestedSpaceId)
 
-  const totalQuestions = dueQuestions.length
-  const isComplete = currentIndex >= totalQuestions
-  const currentQuestion = isComplete ? null : dueQuestions[currentIndex]
+  const totalItems = dueItems.length
+  const isComplete = currentIndex >= totalItems
+  const currentItem = isComplete ? null : dueItems[currentIndex]
 
-  const currentReview = useMemo(() => {
-    if (!currentQuestion) {
-      return null
-    }
-
-    return reviews.find((review) => review.questionId === currentQuestion.id) ?? null
-  }, [currentQuestion, reviews])
-
-  const correctCount = useMemo(
-    () => reviews.reduce((count, review) => count + (review.isCorrect ? 1 : 0), 0),
-    [reviews],
-  )
+  const totals = summarizeRecall(reviews)
 
   const selectedSpace = useMemo(
     () => dashboard?.spaces.find((space) => space.id === selectedSpaceId) ?? null,
@@ -162,15 +110,13 @@ export function SessionPage() {
       : dashboard?.due_today_count ?? 0
     const overdue = selectedSpace?.overdue_count ?? dashboard?.overdue_count ?? 0
     const reviewed = selectedSpace?.reviewed_today_count ?? dashboard?.reviewed_today_count ?? 0
-    const reviewedCorrect = selectedSpace?.correct_today_count ?? dashboard?.correct_today_count ?? 0
 
     return {
       dueToday,
       overdue,
-      reviewedCorrect,
-      reviewedIncorrect: Math.max(0, reviewed - reviewedCorrect),
+      reviewed,
       attention: dueToday + overdue,
-      totalQuestions:
+      totalItems:
         selectedSpace?.total_questions ??
         dashboard?.spaces.reduce((sum, space) => sum + space.total_questions, 0) ??
         0,
@@ -181,17 +127,14 @@ export function SessionPage() {
     () => [
       { label: 'Due Today', value: scopeMetrics.dueToday, className: 'is-due' },
       { label: 'Overdue', value: scopeMetrics.overdue, className: 'is-overdue' },
-      { label: 'Reviewed Correct', value: scopeMetrics.reviewedCorrect, className: 'is-correct' },
-      { label: 'Reviewed Incorrect', value: scopeMetrics.reviewedIncorrect, className: 'is-incorrect' },
+      { label: 'Reviewed today', value: scopeMetrics.reviewed, className: 'is-correct' },
     ],
     [scopeMetrics],
   )
 
-  const applySessionQuestions = useCallback((questions: StoredQuestion[]) => {
-    setDueQuestions(questions.map(toSessionQuestion))
+  const applySessionItems = useCallback((items: RecallItem[]) => {
+    setDueItems(items)
     setCurrentIndex(0)
-    setSelectedOptionId(null)
-    setIsSubmitted(false)
     setIsSubmitting(false)
     setReviews([])
   }, [])
@@ -242,24 +185,25 @@ export function SessionPage() {
     setSelectedSpaceId(spaceId)
 
     try {
-      const questions = await invoke<StoredQuestion[]>('get_due_questions', {
+      const items = await invoke<LearningItem[]>('get_due_learning_items', {
         spaceId,
       })
 
-      if (questions.length === 0) {
+      const queue = items.map(selectRecallVariant).filter((item): item is RecallItem => item !== null)
+      if (queue.length === 0) {
         await loadDashboard()
         return
       }
 
-      applySessionQuestions(questions)
+      applySessionItems(queue)
       setIsInSession(true)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load questions for recall'
+      const message = err instanceof Error ? err.message : 'Failed to load learning items for recall'
       setError(message)
     } finally {
       setIsSessionLoading(false)
     }
-  }, [applySessionQuestions, loadDashboard])
+  }, [applySessionItems, loadDashboard])
 
   useEffect(() => {
     if (requestedSpaceId === null || didStartRequestedSpace.current) {
@@ -276,44 +220,10 @@ export function SessionPage() {
     }
   }, [requestedSpaceId, requestedSpaceName, startRecall])
 
-  const handleSubmit = async () => {
-    if (!currentQuestion || !selectedOptionId || isSubmitted || isSubmitting) {
-      return
-    }
-
-    const isCorrect = selectedOptionId === currentQuestion.correctOptionId
-    setIsSubmitting(true)
-    setError('')
-
-    try {
-      await reviewQuestion(currentQuestion.id, getSchedulerRating(isCorrect))
-
-      setReviews((current) => [
-        ...current,
-        { questionId: currentQuestion.id, selectedOptionId, isCorrect },
-      ])
-      setIsSubmitted(true)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to review question'
-      setError(message)
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  const handleNextQuestion = () => {
-    if (!isSubmitted) {
-      return
-    }
-
-    setCurrentIndex(currentIndex + 1)
-    setSelectedOptionId(null)
-    setIsSubmitted(false)
-  }
-
   const returnToDashboard = () => {
+    if (isSubmitting) return
     setIsInSession(false)
-    setDueQuestions([])
+    setDueItems([])
     setCurrentIndex(0)
     void loadDashboard()
   }
@@ -321,55 +231,35 @@ export function SessionPage() {
   if (isInSession) {
     return (
       <div className="app-container session-page" aria-label="Recall session">
-        {error ? <div className="error-banner">{error}</div> : null}
+        {error ? <div className="error-banner" role="alert">{error}</div> : null}
 
         {isComplete ? (
           <SessionComplete
             reviewedCount={reviews.length}
-            correctCount={correctCount}
+            recalledCount={totals.recalled}
             onReturn={returnToDashboard}
           />
-        ) : currentQuestion ? (
+        ) : currentItem ? (
           <div className="session-shell">
-            <button type="button" className="btn-back recall-back-btn" onClick={returnToDashboard}>
+            <button type="button" className="btn-back recall-back-btn" onClick={returnToDashboard} disabled={isSubmitting}>
               <ArrowLeft className="size-4" aria-hidden="true" />
               Back to Recall
             </button>
 
             <SessionHeader
               recallSpaceName={sessionTitle}
-              currentQuestionNumber={currentIndex + 1}
-              totalQuestions={totalQuestions}
+              currentItemNumber={currentIndex + 1}
+              totalItems={totalItems}
             />
 
-            <QuestionCard
-              question={currentQuestion}
-              selectedOptionId={selectedOptionId}
-              isSubmitted={isSubmitted}
-              isSubmitting={isSubmitting}
-              onSelectOption={setSelectedOptionId}
-              onSubmit={() => {
-                void handleSubmit()
-              }}
+            <RecallCard
+              key={currentItem.learningItemId}
+              item={currentItem}
+              isLast={currentIndex === totalItems - 1}
+              onReviewed={(result) => setReviews((current) => [...current, result])}
+              onBusy={setIsSubmitting}
+              onNext={() => setCurrentIndex((index) => index + 1)}
             />
-
-            {isSubmitted && currentReview ? (
-              <>
-                <ExplanationPanel
-                  isCorrect={currentReview.isCorrect}
-                  selectedOptionId={currentReview.selectedOptionId}
-                  correctOptionId={currentQuestion.correctOptionId}
-                  explanation={currentQuestion.explanation ?? null}
-                />
-
-                <div className="session-navigation">
-                  <button type="button" className="btn-primary session-next-btn" onClick={handleNextQuestion}>
-                    Next question
-                    <ArrowRight className="size-4" aria-hidden="true" />
-                  </button>
-                </div>
-              </>
-            ) : null}
           </div>
         ) : null}
       </div>
@@ -386,9 +276,11 @@ export function SessionPage() {
         </div>
       </header>
 
-      {error ? <div className="error-banner">{error}</div> : null}
+      {error ? <div className="error-banner" role="alert">{error}</div> : null}
 
-      {isDashboardLoading || !dashboard ? (
+      {!isDashboardLoading && !dashboard ? (
+        <button type="button" className="btn-secondary" onClick={() => { void loadDashboard() }}>Retry loading recall</button>
+      ) : isDashboardLoading || !dashboard ? (
         <section className="recall-loading surface-panel" aria-live="polite">
           <RotateCcw className="recall-loading-icon" aria-hidden="true" />
           <p>Loading your recall queue…</p>
@@ -408,8 +300,8 @@ export function SessionPage() {
                   </h2>
                   <p>
                     {selectedSpace
-                      ? `${selectedSpace.name} has ${questionLabel(scopeMetrics.attention)} ready for review.`
-                      : `${questionLabel(scopeMetrics.attention)} are waiting across all recall spaces.`}
+                      ? `${selectedSpace.name} has ${itemLabel(scopeMetrics.attention)} ready for review.`
+                      : `${itemLabel(scopeMetrics.attention)} are waiting across all recall spaces.`}
                   </p>
                 </div>
               </div>
@@ -452,9 +344,9 @@ export function SessionPage() {
             <div className="recall-queue-commit">
               <p>
                 <strong>
-                  {selectedSpace ? selectedSpace.name : 'All Recall Spaces'} · {questionLabel(scopeMetrics.totalQuestions)} total
+                  {selectedSpace ? selectedSpace.name : 'All Recall Spaces'} · {itemLabel(scopeMetrics.totalItems)} total
                 </strong>
-                <span>{questionLabel(scopeMetrics.attention)} currently due for recall.</span>
+                <span>{itemLabel(scopeMetrics.attention)} currently due for recall.</span>
               </p>
               <button
                 type="button"
@@ -486,7 +378,7 @@ export function SessionPage() {
                   <article className="recall-space-overview-row" key={space.id}>
                     <div>
                       <h3>{space.name}</h3>
-                      <p>{questionLabel(space.total_questions)} total</p>
+                      <p>{itemLabel(space.total_questions)} total</p>
                     </div>
                     <dl>
                       <div>

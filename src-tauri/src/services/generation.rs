@@ -8,6 +8,10 @@ use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
 
+use crate::models::learning_item::{
+    validate_generated_item, GeneratedLearningItemSaveInput, GenerationMetadata,
+    GenerationPipeline, LearningItem, LearningItemDraft, SourceReference,
+};
 use crate::models::model_settings::{EmbeddingModelConfig, DEFAULT_LLM_CONCURRENCY};
 use crate::models::note::Note;
 
@@ -31,7 +35,7 @@ use super::graph_generation::{
 };
 use super::llm::{
     LlmFailure, LlmFailureCode, LlmRetryEvent, LlmRetryState, LlmService, LlmServiceError,
-    StageBMcq, StructuredGenerationRequest,
+    StructuredGenerationRequest,
 };
 use super::{database, filesystem};
 
@@ -117,6 +121,7 @@ fn prepare_embedding_service_for_generation(
 
 static PREVIEW_JOBS: OnceLock<Mutex<HashMap<String, Arc<PreviewJob>>>> = OnceLock::new();
 static NEXT_PREVIEW_JOB_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_LEARNING_ITEM_DRAFT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Lightweight chunk metadata returned to callers for observability.
 ///
@@ -140,8 +145,16 @@ pub struct ChunkPreview {
 pub struct ChunkLlmResult {
     pub status: String,
     pub key_points: Vec<String>,
+    /// Canonical Stage B output for the chunk pipeline. Graph generation keeps
+    /// this empty until it is migrated onto the same learning-item contract.
+    pub items: Vec<LearningItemDraft>,
+    /// Graph-pipeline output. Chunk generation uses `items` exclusively.
     pub questions: Vec<ChunkLlmQuestionPreview>,
     pub error: Option<String>,
+}
+
+fn chunk_preview_is_ready(preview: &ChunkPreview) -> bool {
+    !preview.llm_result.items.is_empty()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,8 +211,8 @@ pub struct GenerationProgressSnapshot {
     pub error: Option<LlmFailure>,
     /// Non-terminal failures for chunks that were skipped while the job continued.
     pub warnings: Vec<LlmFailure>,
-    /// Completed previews that already contain validated questions and are safe
-    /// for the frontend to review before the full generation job finishes.
+    /// Completed previews that already contain validated generated content and
+    /// are safe for the frontend to review before the full job finishes.
     pub ready_previews: Vec<ChunkPreview>,
     pub summary: Option<GenerationSummary>,
     /// Human-readable phase description (e.g. "Extracting knowledge" / "Generating questions").
@@ -217,6 +230,8 @@ struct PreviewJob {
     cancelled: AtomicBool,
     control_changed: Notify,
     snapshot: Mutex<GenerationProgressSnapshot>,
+    saved_draft_ids: Mutex<std::collections::HashSet<String>>,
+    generation: GenerationMetadata,
 }
 
 fn preview_jobs() -> &'static Mutex<HashMap<String, Arc<PreviewJob>>> {
@@ -632,6 +647,7 @@ fn skipped_chunk_preview(chunk: &MarkdownChunk, error: &LlmServiceError) -> Chun
         llm_result: ChunkLlmResult {
             status: String::from("skipped"),
             key_points: Vec::new(),
+            items: Vec::new(),
             questions: Vec::new(),
             error: Some(error.to_failure().message),
         },
@@ -654,6 +670,7 @@ fn phase_percent(done: usize, total: usize, start_percent: u8, end_percent: u8) 
 
 pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, String> {
     let llm_service = configured_llm_service()?;
+    let generation = generation_metadata(&llm_service, GenerationPipeline::Chunk);
     let llm_concurrency = configured_llm_concurrency().await?;
     let notes = filesystem::load_vault_notes(vault_path)?;
     let mut note_reports = Vec::new();
@@ -704,6 +721,8 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
         cancelled: AtomicBool::new(false),
         control_changed: Notify::new(),
         snapshot: Mutex::new(initial_snapshot),
+        saved_draft_ids: Mutex::new(std::collections::HashSet::new()),
+        generation: generation.clone(),
     });
 
     preview_jobs()
@@ -713,7 +732,7 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
 
     tauri::async_runtime::spawn(async move {
         let llm_service = llm_with_job_retry_activity(&llm_service, &job);
-        let processor = Arc::new(ChunkProcessor::new(Some(llm_service)));
+        let processor = Arc::new(ChunkProcessor::new(Some(llm_service), generation));
         let total_chunks = all_chunks.len();
         let mut ordered_previews = vec![None; total_chunks];
         let mut jobs = JoinSet::new();
@@ -807,11 +826,16 @@ pub async fn start_preview_generation_job(vault_path: &str) -> Result<String, St
                     }
                 }
             };
-            let mcq_count = preview.llm_result.questions.len();
+            let mcq_count = preview
+                .llm_result
+                .items
+                .iter()
+                .filter(|item| item.content.mcq.is_some())
+                .count();
             ordered_previews[order] = Some(preview);
             let ready_preview = ordered_previews[order]
                 .as_ref()
-                .filter(|preview| !preview.llm_result.questions.is_empty())
+                .filter(|preview| chunk_preview_is_ready(preview))
                 .cloned();
 
             let mut snapshot = job
@@ -868,6 +892,7 @@ const GRAPH_STAGE_A_SYSTEM_PROMPT: &str =
 /// compatible with `get_preview_generation_progress` / pause / cancel.
 pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, String> {
     let llm_service = configured_llm_service()?;
+    let generation = generation_metadata(&llm_service, GenerationPipeline::Graph);
     let llm_concurrency = configured_llm_concurrency().await?;
     // Load and validate embedding settings before reading notes or creating a
     // background job. The prepared service is consumed by entity resolution in
@@ -924,6 +949,8 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
         cancelled: AtomicBool::new(false),
         control_changed: Notify::new(),
         snapshot: Mutex::new(initial_snapshot),
+        saved_draft_ids: Mutex::new(std::collections::HashSet::new()),
+        generation,
     });
 
     preview_jobs()
@@ -1312,6 +1339,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                     ChunkLlmResult {
                         status: String::from("ok"),
                         key_points: vec![bundle.root_point.point.clone()],
+                        items: Vec::new(),
                         questions: vec![ChunkLlmQuestionPreview {
                             question: mcq.question,
                             option_a: options.first().cloned().unwrap_or_default(),
@@ -1330,6 +1358,7 @@ pub async fn start_graph_generation_job(vault_path: &str) -> Result<String, Stri
                         ChunkLlmResult {
                             status: String::from("skipped"),
                             key_points: vec![bundle.root_point.point.clone()],
+                            items: Vec::new(),
                             questions: Vec::new(),
                             error: Some(err.to_failure().message),
                         }
@@ -1434,6 +1463,124 @@ pub fn get_preview_generation_progress(job_id: &str) -> Result<GenerationProgres
     Ok(snapshot)
 }
 
+fn preview_job(job_id: &str) -> Result<Arc<PreviewJob>, String> {
+    preview_jobs()
+        .lock()
+        .map_err(|_| String::from("Preview job state is unavailable."))?
+        .get(job_id)
+        .cloned()
+        .ok_or_else(|| format!("Preview job '{job_id}' was not found."))
+}
+
+pub fn generation_metadata_for_job(job_id: &str) -> Result<GenerationMetadata, String> {
+    Ok(preview_job(job_id)?.generation.clone())
+}
+
+pub async fn save_generated_learning_items(
+    job_id: &str,
+    space_id: i64,
+    reviewed_items: Vec<GeneratedLearningItemSaveInput>,
+) -> Result<Vec<LearningItem>, String> {
+    if reviewed_items.is_empty() {
+        return Err(String::from(
+            "Choose at least one generated learning item to save.",
+        ));
+    }
+
+    let job = preview_job(job_id)?;
+    if job.generation.pipeline != Some(GenerationPipeline::Chunk) {
+        return Err(String::from(
+            "Canonical learning-item saves are only available for chunk generation jobs.",
+        ));
+    }
+
+    let (requested_ids, persistence_inputs) = {
+        let snapshot = job
+            .snapshot
+            .lock()
+            .map_err(|_| String::from("Preview job snapshot is unavailable."))?;
+        let previews = snapshot
+            .summary
+            .as_ref()
+            .map(|summary| summary.chunk_previews.as_slice())
+            .unwrap_or(snapshot.ready_previews.as_slice());
+        let drafts = previews
+            .iter()
+            .flat_map(|preview| preview.llm_result.items.iter())
+            .map(|draft| (draft.draft_id.as_str(), draft))
+            .collect::<HashMap<_, _>>();
+
+        let mut requested_ids = std::collections::HashSet::new();
+        let mut persistence_inputs = Vec::with_capacity(reviewed_items.len());
+        for (index, reviewed) in reviewed_items.iter().enumerate() {
+            if !requested_ids.insert(reviewed.draft_id.clone()) {
+                return Err(format!(
+                    "Generated learning-item draft '{}' was submitted more than once.",
+                    reviewed.draft_id
+                ));
+            }
+            let draft = drafts.get(reviewed.draft_id.as_str()).ok_or_else(|| {
+                format!(
+                    "Generated learning-item draft '{}' does not belong to this job.",
+                    reviewed.draft_id
+                )
+            })?;
+            if reviewed.content.knowledge_point_id != draft.content.knowledge_point_id {
+                return Err(format!(
+                    "Generated learning-item draft '{}' changed its knowledge point ID.",
+                    reviewed.draft_id
+                ));
+            }
+            validate_generated_item(
+                &reviewed.content,
+                &[draft.content.knowledge_point_id.as_str()],
+            )
+            .map_err(|reason| {
+                format!(
+                    "Generated learning-item draft '{}' failed validation: {reason}",
+                    reviewed.draft_id
+                )
+            })?;
+            persistence_inputs.push(
+                super::learning_items::from_generated(
+                    reviewed.content.clone(),
+                    space_id,
+                    draft.generation.clone(),
+                    draft.source.clone(),
+                    index,
+                )
+                .map_err(|error| error.to_string())?,
+            );
+        }
+        (requested_ids, persistence_inputs)
+    };
+
+    {
+        let mut saved = job
+            .saved_draft_ids
+            .lock()
+            .map_err(|_| String::from("Generated draft save state is unavailable."))?;
+        if let Some(duplicate) = requested_ids.iter().find(|id| saved.contains(*id)) {
+            return Err(format!(
+                "Generated learning-item draft '{duplicate}' has already been saved."
+            ));
+        }
+        saved.extend(requested_ids.iter().cloned());
+    }
+
+    match database::save_learning_items(persistence_inputs).await {
+        Ok(items) => Ok(items),
+        Err(error) => {
+            if let Ok(mut saved) = job.saved_draft_ids.lock() {
+                for id in requested_ids {
+                    saved.remove(&id);
+                }
+            }
+            Err(format!("Failed to save generated learning items: {error}"))
+        }
+    }
+}
+
 pub fn set_preview_generation_paused(job_id: &str, paused: bool) -> Result<(), String> {
     let jobs = preview_jobs()
         .lock()
@@ -1483,11 +1630,15 @@ pub fn cancel_preview_generation(job_id: &str) -> Result<(), String> {
 #[derive(Debug, Clone)]
 struct ChunkProcessor {
     llm_service: Option<Arc<LlmService>>,
+    generation: GenerationMetadata,
 }
 
 impl ChunkProcessor {
-    fn new(llm_service: Option<Arc<LlmService>>) -> Self {
-        Self { llm_service }
+    fn new(llm_service: Option<Arc<LlmService>>, generation: GenerationMetadata) -> Self {
+        Self {
+            llm_service,
+            generation,
+        }
     }
 
     async fn process(&self, chunk: &MarkdownChunk) -> Result<ChunkPreview, LlmServiceError> {
@@ -1527,19 +1678,53 @@ impl ChunkProcessor {
             return Ok(ChunkLlmResult {
                 status: String::from("no_content"),
                 key_points,
+                items: Vec::new(),
                 questions: Vec::new(),
                 error: None,
             });
         }
 
         let stage_b = service
-            .generate_stage_b_mcqs(&chunk.content, &key_points)
+            .generate_stage_b_learning_items(&chunk.content, &key_points)
             .await?;
+        let items = stage_b
+            .items
+            .into_iter()
+            .map(|content| {
+                let point_index = content
+                    .knowledge_point_id
+                    .strip_prefix("kp_")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .and_then(|value| value.checked_sub(1))
+                    .ok_or_else(|| {
+                        LlmServiceError::InvalidOutput(String::from(
+                            "Stage B returned an invalid knowledge point ID",
+                        ))
+                    })?;
+                let knowledge_point = key_points.get(point_index).ok_or_else(|| {
+                    LlmServiceError::InvalidOutput(String::from(
+                        "Stage B returned an unknown knowledge point ID",
+                    ))
+                })?;
+                Ok(LearningItemDraft {
+                    draft_id: next_learning_item_draft_id(),
+                    generation: self.generation.clone(),
+                    source: SourceReference {
+                        note_path: chunk.note_path.clone(),
+                        start_line: chunk.start_line,
+                        end_line: chunk.end_line,
+                        knowledge_point: knowledge_point.clone(),
+                    },
+                    content,
+                })
+            })
+            .collect::<Result<Vec<_>, LlmServiceError>>()?;
 
         Ok(ChunkLlmResult {
             status: String::from("ok"),
             key_points,
-            questions: stage_b.questions.into_iter().map(mcq_to_preview).collect(),
+            items,
+            questions: Vec::new(),
             error: None,
         })
     }
@@ -1552,20 +1737,35 @@ impl ChunkProcessor {
 /// 2. Chunk each note with the markdown chunker.
 /// 3. Collect note-level and chunk-level metrics.
 pub async fn orchestrate_notes(notes: &[Note]) -> GenerationSummary {
-    orchestrate_notes_with_concurrency(notes, DEFAULT_LLM_CONCURRENCY).await
+    orchestrate_notes_with_concurrency(notes, DEFAULT_LLM_CONCURRENCY, false).await
+}
+
+/// Runs the in-memory chunk pipeline while retaining failed chunks for
+/// evaluation/debugging output instead of dropping them from the summary.
+pub async fn orchestrate_notes_for_evaluation(notes: &[Note]) -> GenerationSummary {
+    orchestrate_notes_with_concurrency(notes, DEFAULT_LLM_CONCURRENCY, true).await
 }
 
 async fn orchestrate_notes_with_concurrency(
     notes: &[Note],
     llm_concurrency: usize,
+    preserve_failed_chunks: bool,
 ) -> GenerationSummary {
     debug_assert!(llm_concurrency > 0);
     let mut note_reports = Vec::new();
     let mut all_chunks = Vec::new();
     let mut notes_with_chunks = 0;
-    let processor = Arc::new(ChunkProcessor::new(
-        LlmService::from_runtime_or_env().ok().map(Arc::new),
-    ));
+    let llm_service = LlmService::from_runtime_or_env().ok().map(Arc::new);
+    let generation = llm_service
+        .as_deref()
+        .map(|service| generation_metadata(service, GenerationPipeline::Chunk))
+        .unwrap_or(GenerationMetadata {
+            model: None,
+            provider: None,
+            pipeline: Some(GenerationPipeline::Chunk),
+            generated_at: None,
+        });
+    let processor = Arc::new(ChunkProcessor::new(llm_service, generation));
 
     for note in notes {
         let chunks = chunker::chunk_note(note);
@@ -1597,15 +1797,35 @@ async fn orchestrate_notes_with_concurrency(
                     .await
                     .expect("semaphore should remain open");
                 let preview = processor.process(&chunk).await;
-                (order, preview)
+                (order, chunk, preview)
             });
         }
 
         while let Some(job_result) = jobs.join_next().await {
             match job_result {
-                Ok((order, Ok(preview))) => ordered_previews[order] = Some(preview),
-                Ok((_, Err(err))) => {
+                Ok((order, _, Ok(preview))) => ordered_previews[order] = Some(preview),
+                Ok((order, chunk, Err(err))) => {
                     log::error!("Chunk generation failed: {err}");
+                    if preserve_failed_chunks {
+                        ordered_previews[order] = Some(ChunkPreview {
+                            note_path: chunk.note_path,
+                            note_title: chunk.note_title,
+                            heading: chunk.heading,
+                            section_index: chunk.section_index,
+                            chunk_index: chunk.chunk_index,
+                            start_line: chunk.start_line,
+                            end_line: chunk.end_line,
+                            char_count: chunk.content.chars().count(),
+                            preview_text: build_preview_text(&chunk.content, 220),
+                            llm_result: ChunkLlmResult {
+                                status: String::from("error"),
+                                key_points: Vec::new(),
+                                items: Vec::new(),
+                                questions: Vec::new(),
+                                error: Some(err.to_string()),
+                            },
+                        });
+                    }
                 }
                 Err(err) => {
                     log::error!("Chunk generation task failed: {err}");
@@ -1630,18 +1850,25 @@ async fn orchestrate_notes_with_concurrency(
 pub async fn orchestrate_vault(vault_path: &str) -> Result<GenerationSummary, String> {
     let notes = filesystem::load_vault_notes(vault_path)?;
     let llm_concurrency = configured_llm_concurrency().await?;
-    Ok(orchestrate_notes_with_concurrency(&notes, llm_concurrency).await)
+    Ok(orchestrate_notes_with_concurrency(&notes, llm_concurrency, false).await)
 }
 
-fn mcq_to_preview(item: StageBMcq) -> ChunkLlmQuestionPreview {
-    ChunkLlmQuestionPreview {
-        question: item.question,
-        option_a: item.option_a,
-        option_b: item.option_b,
-        option_c: item.option_c,
-        option_d: item.option_d,
-        correct_answer: item.correct_answer,
-        explanation: item.explanation,
+fn next_learning_item_draft_id() -> String {
+    format!(
+        "draft-{}",
+        NEXT_LEARNING_ITEM_DRAFT_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn generation_metadata(
+    llm_service: &LlmService,
+    pipeline: GenerationPipeline,
+) -> GenerationMetadata {
+    GenerationMetadata {
+        model: Some(llm_service.model().to_string()),
+        provider: Some(llm_service.provider_name().to_string()),
+        pipeline: Some(pipeline),
+        generated_at: Some(chrono::Utc::now().to_rfc3339()),
     }
 }
 
@@ -1673,7 +1900,67 @@ fn build_preview_text(content: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::learning_item::{GeneratedFlashcard, GeneratedItem};
     use crate::services::llm::LlmFailureCode;
+
+    fn test_generation() -> GenerationMetadata {
+        GenerationMetadata {
+            model: Some(String::from("test-model")),
+            provider: Some(String::from("ollama")),
+            pipeline: Some(GenerationPipeline::Chunk),
+            generated_at: Some(String::from("2026-09-09T12:00:00Z")),
+        }
+    }
+
+    #[test]
+    fn flashcard_only_chunk_preview_is_ready() {
+        let preview = ChunkPreview {
+            note_path: String::from("notes/search.md"),
+            note_title: String::from("Search"),
+            heading: String::from("Binary search"),
+            section_index: 0,
+            chunk_index: 0,
+            start_line: 1,
+            end_line: 5,
+            char_count: 120,
+            preview_text: String::from("Binary search halves the search interval each step."),
+            llm_result: ChunkLlmResult {
+                status: String::from("ok"),
+                key_points: vec![String::from("Binary search time complexity")],
+                items: vec![LearningItemDraft {
+                    draft_id: String::from("draft_test_1"),
+                    generation: test_generation(),
+                    source: SourceReference {
+                        note_path: String::from("notes/search.md"),
+                        start_line: 1,
+                        end_line: 5,
+                        knowledge_point: String::from("Binary search time complexity"),
+                    },
+                    content: GeneratedItem {
+                        knowledge_point_id: String::from("kp_1"),
+                        target: String::from("Binary search time complexity"),
+                        answer: String::from("O(log n)"),
+                        explanation: Some(String::from(
+                            "Each step halves the remaining search interval.",
+                        )),
+                        flashcard: GeneratedFlashcard {
+                            prompt: String::from(
+                                "What is the time complexity of binary search on a sorted array?",
+                            ),
+                        },
+                        mcq: None,
+                        mcq_omission_reason: Some(String::from(
+                            "A direct recall flashcard is sufficient for this target.",
+                        )),
+                    },
+                }],
+                questions: Vec::new(),
+                error: None,
+            },
+        };
+
+        assert!(chunk_preview_is_ready(&preview));
+    }
 
     fn controllable_test_job() -> Arc<PreviewJob> {
         Arc::new(PreviewJob {
@@ -1702,6 +1989,8 @@ mod tests {
                 current_chunk: None,
                 activity: None,
             }),
+            saved_draft_ids: Mutex::new(std::collections::HashSet::new()),
+            generation: test_generation(),
         })
     }
 
@@ -1832,6 +2121,8 @@ mod tests {
                 current_chunk: None,
                 activity: None,
             }),
+            saved_draft_ids: Mutex::new(std::collections::HashSet::new()),
+            generation: test_generation(),
         };
 
         record_entity_resolution_progress(
@@ -2028,6 +2319,8 @@ mod tests {
                 current_chunk: Some(2),
                 activity: Some(String::from("Generating question 2 of 2")),
             }),
+            saved_draft_ids: Mutex::new(std::collections::HashSet::new()),
+            generation: test_generation(),
         };
 
         finish_job_with_llm_error(
@@ -2091,6 +2384,8 @@ mod tests {
                 current_chunk: Some(1),
                 activity: Some(String::from("Generating questions for chunk 1 of 2")),
             }),
+            saved_draft_ids: Mutex::new(std::collections::HashSet::new()),
+            generation: test_generation(),
         };
 
         record_skipped_chunk(

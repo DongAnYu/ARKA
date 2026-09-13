@@ -5,13 +5,15 @@ mod services;
 #[cfg(debug_assertions)]
 use std::path::PathBuf;
 
+use models::learning_item::{
+    GeneratedLearningItemSaveInput, LearningItem, LearningItemEditInput, ReviewIntervals, ReviewSubmission,
+};
 use models::model_settings::{EmbeddingConnectionResult, EmbeddingModelConfig, ModelConfig};
 use models::note::Note;
 use models::question::{Question, QuestionInput};
 use models::recall_dashboard::RecallDashboard;
 use models::recall_space::RecallSpace;
 use services::generation::{GenerationProgressSnapshot, GenerationSummary};
-use services::scheduler::Rating;
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
@@ -45,18 +47,53 @@ async fn get_recall_dashboard() -> Result<RecallDashboard, String> {
 }
 
 #[tauri::command]
-async fn review_question(
-    question_id: i64,
-    rating: String,
-    is_correct: bool,
-) -> Result<Question, String> {
-    let parsed_rating = rating
-        .parse::<Rating>()
-        .map_err(|err| format!("Failed to parse review rating: {err}"))?;
-
-    services::database::review_question_with_outcome(question_id, parsed_rating, is_correct)
+async fn review_question(question_id: i64, selected_option_id: String) -> Result<Question, String> {
+    services::database::review_question(question_id, selected_option_id)
         .await
-        .map_err(|err| format!("Failed to review question {question_id}: {err}"))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_learning_items(space_id: Option<i64>) -> Result<Vec<LearningItem>, String> {
+    services::database::get_learning_items(space_id, false)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn get_due_learning_items(space_id: Option<i64>) -> Result<Vec<LearningItem>, String> {
+    services::database::get_learning_items(space_id, true)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn save_generated_learning_items(
+    job_id: String,
+    space_id: i64,
+    items: Vec<GeneratedLearningItemSaveInput>,
+) -> Result<Vec<LearningItem>, String> {
+    services::generation::save_generated_learning_items(&job_id, space_id, items).await
+}
+#[tauri::command]
+async fn modify_learning_item(
+    id: i64,
+    item: LearningItemEditInput,
+) -> Result<LearningItem, String> {
+    services::database::modify_learning_item(id, item)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn review_learning_item(submission: ReviewSubmission) -> Result<LearningItem, String> {
+    services::database::review_learning_item(submission)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_learning_item_review_intervals(learning_item_id: i64) -> Result<ReviewIntervals, String> {
+    services::database::get_learning_item_review_intervals(learning_item_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -199,9 +236,10 @@ fn set_runtime_llm_settings(
 #[tauri::command]
 async fn save_generated_questions(
     questions: Vec<QuestionInput>,
-    model: String,
+    job_id: String,
 ) -> Result<(), String> {
-    services::database::save_questions(questions, model)
+    let generation = services::generation::generation_metadata_for_job(&job_id)?;
+    services::database::save_questions_with_generation(questions, generation)
         .await
         .map_err(|err| format!("Failed to save questions: {err}"))
 }
@@ -350,6 +388,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_questions,
+            get_learning_items, get_due_learning_items, save_generated_learning_items, modify_learning_item, review_learning_item, get_learning_item_review_intervals,
             get_questions_by_space,
             get_due_questions,
             get_recall_dashboard,

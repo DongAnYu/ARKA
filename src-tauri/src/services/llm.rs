@@ -12,7 +12,7 @@ use tokio::time::sleep;
 pub mod default_generation;
 pub mod default_generation_schema;
 mod error;
-pub use default_generation_schema::{LlmSchemaError, StageBMcq};
+pub use default_generation_schema::LlmSchemaError;
 pub use error::{LlmConfigError, LlmFailure, LlmFailureCode, LlmServiceError};
 
 use error::{classify_provider_error, is_retryable_error};
@@ -510,6 +510,10 @@ impl LlmService {
 
     pub fn model(&self) -> &str {
         &self.config.model
+    }
+
+    pub(crate) fn provider_name(&self) -> &'static str {
+        self.config.provider.as_str()
     }
 
     pub fn chat_endpoint(&self) -> String {
