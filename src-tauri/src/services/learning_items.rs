@@ -61,10 +61,10 @@ pub async fn load(connection: &mut SqliteConnection, id: i64) -> Result<Learning
             generated_at: row.try_get("generated_at")?,
         },
         source: source.as_deref().map(json).transpose()?,
-        status: match row.try_get::<String, _>("status")?.as_str() {
-            "ready" => ItemStatus::Ready,
-            "needs_repair" => ItemStatus::NeedsRepair,
-            _ => return Err(invalid("Invalid status")),
+        recall_state: match row.try_get::<String, _>("recall_state")?.as_str() {
+            "new" => RecallState::New,
+            "scheduled" => RecallState::Scheduled,
+            _ => return Err(invalid("Invalid recall state")),
         },
         schedule: ReviewState {
             repetitions: row.try_get("repetitions")?,
@@ -83,8 +83,33 @@ pub async fn list(
     due_only: bool,
 ) -> Result<Vec<LearningItem>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM learning_items WHERE (? IS NULL OR space_id=?) AND (?=0 OR (status='ready' AND (next_review_at IS NULL OR next_review_at <= CURRENT_TIMESTAMP))) ORDER BY COALESCE(next_review_at,'1970-01-01'),id")
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM learning_items WHERE (? IS NULL OR space_id=?) AND (?=0 OR (recall_state='scheduled' AND (next_review_at IS NULL OR next_review_at <= CURRENT_TIMESTAMP))) ORDER BY COALESCE(next_review_at,'1970-01-01'),id")
         .bind(space_id).bind(space_id).bind(due_only).fetch_all(&mut *transaction).await?;
+    let mut items = Vec::with_capacity(ids.len());
+    for id in ids {
+        items.push(load(&mut transaction, id).await?);
+    }
+    transaction.commit().await?;
+    Ok(items)
+}
+
+pub async fn list_new(
+    pool: &SqlitePool,
+    space_id: Option<i64>,
+    limit: u32,
+) -> Result<Vec<LearningItem>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM learning_items
+         WHERE recall_state='new' AND (? IS NULL OR space_id=?)
+         ORDER BY id
+         LIMIT ?",
+    )
+    .bind(space_id)
+    .bind(space_id)
+    .bind(i64::from(limit))
+    .fetch_all(&mut *transaction)
+    .await?;
     let mut items = Vec::with_capacity(ids.len());
     for id in ids {
         items.push(load(&mut transaction, id).await?);
@@ -152,7 +177,7 @@ async fn write(
         .map_err(|_| invalid("Invalid source"))?;
     let id = if let Some(id) = id {
         // Editing content preserves original generation provenance and scheduling.
-        let updated = sqlx::query("UPDATE learning_items SET target=?,answer=?,explanation=?,space_id=?,source_json=?,status='ready' WHERE id=?")
+        let updated = sqlx::query("UPDATE learning_items SET target=?,answer=?,explanation=?,space_id=?,source_json=? WHERE id=?")
             .bind(&input.target).bind(&input.answer).bind(&input.explanation).bind(input.space_id).bind(source).bind(id).execute(&mut *connection).await?;
         if updated.rows_affected() != 1 {
             return Err(sqlx::Error::RowNotFound);
@@ -164,7 +189,7 @@ async fn write(
             Some(GenerationPipeline::Graph) => Some("graph"),
             None => None,
         };
-        sqlx::query("INSERT INTO learning_items(target,answer,explanation,space_id,model,provider,pipeline,generated_at,source_json,next_review_at) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)")
+        sqlx::query("INSERT INTO learning_items(target,answer,explanation,space_id,model,provider,pipeline,generated_at,source_json,recall_state,next_review_at) VALUES(?,?,?,?,?,?,?,?,?,'new',NULL)")
             .bind(&input.target).bind(&input.answer).bind(&input.explanation).bind(input.space_id).bind(&input.generation.model).bind(&input.generation.provider).bind(pipeline).bind(&input.generation.generated_at).bind(source)
             .execute(&mut *connection).await?.last_insert_rowid()
     };
@@ -303,9 +328,6 @@ pub fn from_generated(
 
 pub async fn review_intervals(pool: &SqlitePool, id: i64) -> Result<ReviewIntervals, sqlx::Error> {
     let item = load(&mut *pool.acquire().await?, id).await?;
-    if item.status != ItemStatus::Ready {
-        return Err(invalid("Item needs repair"));
-    }
     let interval = |rating| {
         let mut schedule = item.schedule.clone();
         SM2Scheduler::review_state(&mut schedule, rating);
@@ -323,11 +345,33 @@ pub async fn review(
     pool: &SqlitePool,
     submission: ReviewSubmission,
 ) -> Result<LearningItem, sqlx::Error> {
+    let day = super::study_plan::local_day();
     let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let mut item = load(&mut transaction, submission.learning_item_id).await?;
-    if item.status != ItemStatus::Ready {
-        return Err(invalid("Item needs repair"));
+    let already_reviewed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM review_events WHERE local_date=? AND learning_item_id=?",
+    )
+    .bind(&day)
+    .bind(submission.learning_item_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if already_reviewed > 0 {
+        return load(&mut transaction, submission.learning_item_id).await;
     }
+    let was_new = load(&mut transaction, submission.learning_item_id)
+        .await?
+        .recall_state
+        == RecallState::New;
+    let item = review_in_transaction(&mut transaction, submission).await?;
+    super::study_plan::record_event(&mut transaction, item.id, was_new, false, &day).await?;
+    transaction.commit().await?;
+    Ok(item)
+}
+
+pub(super) async fn review_in_transaction(
+    transaction: &mut SqliteConnection,
+    submission: ReviewSubmission,
+) -> Result<LearningItem, sqlx::Error> {
+    let mut item = load(transaction, submission.learning_item_id).await?;
     let variant = item
         .variants
         .iter()
@@ -364,10 +408,10 @@ pub async fn review(
         _ => return Err(invalid("Response does not match variant format")),
     };
     SM2Scheduler::review_state(&mut item.schedule, rating);
+    item.recall_state = RecallState::Scheduled;
     let state = &item.schedule;
-    sqlx::query("UPDATE learning_items SET repetitions=?,interval_days=?,ease_factor=?,next_review_at=?,last_reviewed_at=? WHERE id=?")
+    sqlx::query("UPDATE learning_items SET recall_state='scheduled',repetitions=?,interval_days=?,ease_factor=?,next_review_at=?,last_reviewed_at=? WHERE id=?")
         .bind(state.repetitions).bind(state.interval_days).bind(state.ease_factor).bind(&state.next_review_at).bind(&state.last_reviewed_at).bind(item.id).execute(&mut *transaction).await?;
-    transaction.commit().await?;
     Ok(item)
 }
 
@@ -475,12 +519,16 @@ pub fn to_mcq(item: LearningItem) -> Result<Option<Question>, sqlx::Error> {
 mod tests {
     use super::*;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
     async fn fixture() -> (SqlitePool, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(
-            "arka-parent-{}-{}.db",
+            "arka-parent-{}-{}-{}.db",
             std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+            chrono::Utc::now().timestamp_nanos_opt().unwrap(),
+            NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
         ));
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -616,16 +664,31 @@ mod tests {
         for (repetitions, interval_days, ease_factor, expected) in
             [(0, 0, 2.5, 1), (1, 1, 2.5, 6), (4, 7, 2.5, 18)]
         {
-            for rating in [ReviewRating::Again, ReviewRating::Hard, ReviewRating::Good, ReviewRating::Easy] {
+            for rating in [
+                ReviewRating::Again,
+                ReviewRating::Hard,
+                ReviewRating::Good,
+                ReviewRating::Easy,
+            ] {
                 let item = save(&pool, vec![paired()]).await.unwrap().remove(0);
                 sqlx::query("UPDATE learning_items SET repetitions=?,interval_days=?,ease_factor=? WHERE id=?")
                     .bind(repetitions).bind(interval_days).bind(ease_factor).bind(item.id)
                     .execute(&pool).await.unwrap();
-                let before = load(&mut *pool.acquire().await.unwrap(), item.id).await.unwrap();
+                let before = load(&mut *pool.acquire().await.unwrap(), item.id)
+                    .await
+                    .unwrap();
                 let preview = review_intervals(&pool, item.id).await.unwrap();
                 assert_eq!(preview.again, 1);
-                assert_eq!((preview.hard, preview.good, preview.easy), (expected, expected, expected));
-                assert_eq!(load(&mut *pool.acquire().await.unwrap(), item.id).await.unwrap(), before);
+                assert_eq!(
+                    (preview.hard, preview.good, preview.easy),
+                    (expected, expected, expected)
+                );
+                assert_eq!(
+                    load(&mut *pool.acquire().await.unwrap(), item.id)
+                        .await
+                        .unwrap(),
+                    before
+                );
                 let expected_days = match rating {
                     ReviewRating::Again => preview.again,
                     ReviewRating::Hard => preview.hard,
@@ -636,26 +699,28 @@ mod tests {
                     QuestionVariant::Flashcard { id, .. } => id,
                     _ => panic!(),
                 };
-                let reviewed = review(&pool, ReviewSubmission {
-                    learning_item_id: item.id,
-                    variant_id,
-                    response: ReviewResponse::Flashcard { rating },
-                }).await.unwrap();
+                let reviewed = review(
+                    &pool,
+                    ReviewSubmission {
+                        learning_item_id: item.id,
+                        variant_id,
+                        response: ReviewResponse::Flashcard { rating },
+                    },
+                )
+                .await
+                .unwrap();
                 assert_eq!(reviewed.schedule.interval_days, expected_days);
             }
         }
-        let item = save(&pool, vec![paired()]).await.unwrap().remove(0);
-        sqlx::query("UPDATE learning_items SET status='needs_repair' WHERE id=?")
-            .bind(item.id).execute(&pool).await.unwrap();
-        assert!(review_intervals(&pool, item.id).await.is_err());
         close(pool, path).await;
     }
 
     #[tokio::test]
-    async fn variants_share_one_due_parent_and_reviews_write_no_history() {
+    async fn new_parent_is_not_due_and_first_review_schedules_it() {
         let (pool, path) = fixture().await;
         let item = save(&pool, vec![paired()]).await.unwrap().remove(0);
-        assert_eq!(list(&pool, None, true).await.unwrap().len(), 1);
+        assert_eq!(item.recall_state, RecallState::New);
+        assert!(list(&pool, None, true).await.unwrap().is_empty());
         assert_eq!(item.variants.len(), 2);
         let mcq_id = match &item.variants[0] {
             QuestionVariant::Mcq { id, .. } => *id,
@@ -675,11 +740,13 @@ mod tests {
         .unwrap();
         assert_eq!(result.schedule.repetitions, 1);
         assert_eq!(result.schedule.interval_days, 1);
+        assert_eq!(result.recall_state, RecallState::Scheduled);
         assert!((result.schedule.ease_factor - 2.6).abs() < 1e-8);
         let persisted = load(&mut *pool.acquire().await.unwrap(), item.id)
             .await
             .unwrap();
         assert_eq!(persisted.schedule, result.schedule);
+        assert_eq!(persisted.recall_state, RecallState::Scheduled);
         assert_eq!(persisted.variants, item.variants);
         assert_eq!(persisted.answer, item.answer);
         assert!(list(&pool, None, true).await.unwrap().is_empty());
@@ -699,13 +766,37 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result.schedule.repetitions, 0);
+        assert_eq!(result.schedule.repetitions, 1);
         assert_eq!(result.schedule.interval_days, 1);
-        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_review_history")
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM review_events")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(events, 0);
+        assert_eq!(events, 1);
+        close(pool, path).await;
+    }
+
+    #[tokio::test]
+    async fn new_items_are_limited_and_filtered_by_space() {
+        let (pool, path) = fixture().await;
+        sqlx::query("INSERT INTO recall_spaces(id,name) VALUES(2,'Other')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let first = paired();
+        let mut second = paired();
+        second.space_id = 2;
+        let saved = save(&pool, vec![first, second]).await.unwrap();
+
+        let limited = list_new(&pool, None, 1).await.unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].id, saved[0].id);
+
+        let other_space = list_new(&pool, Some(2), 10).await.unwrap();
+        assert_eq!(other_space.len(), 1);
+        assert_eq!(other_space[0].id, saved[1].id);
+        assert!(list_new(&pool, Some(999), 10).await.unwrap().is_empty());
+        assert!(list_new(&pool, None, 0).await.unwrap().is_empty());
         close(pool, path).await;
     }
 
@@ -726,6 +817,7 @@ mod tests {
         let changed = modify(&pool, item.id, editable(input)).await.unwrap();
         assert_eq!(changed.generation, item.generation);
         assert_eq!(changed.source, item.source);
+        assert_eq!(changed.recall_state, item.recall_state);
         assert_eq!(changed.schedule, item.schedule);
         match (&item.variants[0], &changed.variants[0]) {
             (

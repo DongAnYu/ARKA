@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { ArrowLeft, ArrowRight, ChevronDown, Ellipsis, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BackToHome } from '../components/BackToHome'
+import { RecallDonutChart } from '../components/RecallDonutChart'
 import { LearningItemEditor } from '../components/LearningItemEditor'
 import {
   getLearningItemEditorError,
@@ -25,9 +26,11 @@ type RecallSpaceSummary = {
   total_questions: number
   due_count: number
   overdue_count: number
+  new_count: number
 }
 
 type RecallDashboard = {
+  new_count: number
   spaces: RecallSpaceSummary[]
 }
 
@@ -335,6 +338,7 @@ export function QuestionsPage() {
       total_questions: getSpaceQuestionCount(spaceId),
       due_count: 0,
       overdue_count: 0,
+      new_count: 0,
     }
 
   const openEditSpace = (space: RecallSpace) => {
@@ -432,6 +436,14 @@ export function QuestionsPage() {
     }
   }
 
+  const workload = spaceSummaries
+    .filter((space) => !selectedSpace || space.id === selectedSpace.id)
+    .reduce((total, space) => ({
+      dueToday: total.dueToday + Math.max(0, space.due_count - space.overdue_count),
+      overdue: total.overdue + space.overdue_count,
+      newItems: total.newItems + space.new_count,
+    }), { dueToday: 0, overdue: 0, newItems: 0 })
+
   return (
     <div className="app-container questions-page">
       <BackToHome />
@@ -445,6 +457,22 @@ export function QuestionsPage() {
       </header>
 
       {error && <div className="error-banner">{error}</div>}
+
+      {!isLoadingSpaces ? (
+        <section className="library-workload-overview settings-panel" aria-labelledby="library-workload-heading">
+          <div className="settings-section-head">
+            <h2 id="library-workload-heading">Full workload</h2>
+            <p>{selectedSpace ? 'All items in this Space.' : 'All items across your Spaces.'} Your daily plan selects a manageable amount from this workload.</p>
+          </div>
+          <RecallDonutChart label="Full workload breakdown"
+            centerValue={workload.dueToday + workload.overdue + workload.newItems} centerLabel="Due + new items"
+            categories={[
+              { label: 'Due today', value: workload.dueToday, tone: 'due' },
+              { label: 'Overdue', value: workload.overdue, tone: 'overdue' },
+              { label: 'New', value: workload.newItems, tone: 'new' },
+            ]} />
+        </section>
+      ) : null}
 
       {selectedSpace ? (
         <>
@@ -591,8 +619,8 @@ export function QuestionsPage() {
                     <h2>Edit learning item</h2>
                     <p>Update the shared knowledge and its saved practice variants.</p>
                   </div>
-                  <span className={`library-learning-item-status is-${editingItem.status}`}>
-                    {editingItem.status === 'needs_repair' ? 'Needs repair' : 'Ready'}
+                  <span className={`library-learning-item-status is-${editingItem.recall_state}`}>
+                    {editingItem.recall_state === 'new' ? 'New' : 'Scheduled'}
                   </span>
                 </header>
 
@@ -726,7 +754,10 @@ export function QuestionsPage() {
                   >
                     <div className="recall-space-meta">
                       <h2>{space.name}</h2>
-                      <p>{isCaughtUp ? 'All caught up' : `${learningItemLabel(summary.due_count)} due`} · {learningItemLabel(summary.total_questions)}</p>
+                      <p>
+                        {isCaughtUp ? 'No reviews due' : `${learningItemLabel(summary.due_count)} due`}
+                        {' · '}{summary.new_count} new · {learningItemLabel(summary.total_questions)}
+                      </p>
                     </div>
                   </button>
 
@@ -736,19 +767,21 @@ export function QuestionsPage() {
                         ? `${learningItemLabel(summary.overdue_count)} overdue`
                         : 'No overdue learning items'}
                     </span>
-                    <button
-                      type="button"
-                      className="btn-secondary library-space-recall-btn"
-                      onClick={() => {
-                        navigate('/session', {
-                          state: { recallSpaceId: space.id, recallSpaceName: space.name },
-                        })
-                      }}
-                      disabled={isCaughtUp || deletingSpaceId !== null}
-                    >
-                      Recall {summary.due_count}
-                      <ArrowRight className="size-4" aria-hidden="true" />
-                    </button>
+                    <div className="library-space-actions">
+                      <button
+                        type="button"
+                        className="btn-secondary library-space-recall-btn"
+                        onClick={() => {
+                          navigate('/session', {
+                            state: { recallSpaceId: space.id, recallSpaceName: space.name },
+                          })
+                        }}
+                        disabled={(isCaughtUp && summary.new_count === 0) || deletingSpaceId !== null}
+                      >
+                        Study this Space
+                        <ArrowRight className="size-4" aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
 
                   <button

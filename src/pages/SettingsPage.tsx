@@ -5,6 +5,8 @@ import { error as logError } from '@tauri-apps/plugin-log'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { Download, RefreshCw } from 'lucide-react'
 import { BackToHome } from '../components/BackToHome'
+import { ProfileSettings } from '../components/ProfileSettings'
+import { StudyPreferencesSettings } from '../components/StudyPreferencesSettings'
 
 type UpdateCheckStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'installing' | 'restart-needed' | 'error'
 
@@ -193,6 +195,10 @@ export function SettingsPage() {
         <h1>Settings</h1>
         <p className="settings-help-text">Manage how A.R.K.A runs on this device.</p>
       </header>
+
+      <ProfileSettings />
+
+      <StudyPreferencesSettings />
 
       <section className="settings-panel settings-application" aria-labelledby="application-settings-heading">
         <header className="settings-section-head">

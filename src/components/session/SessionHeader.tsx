@@ -1,12 +1,14 @@
 import { SessionProgress } from './SessionProgress'
 
 type SessionHeaderProps = {
+  sessionLabel: string
   recallSpaceName: string
   currentItemNumber: number
   totalItems: number
 }
 
 export function SessionHeader({
+  sessionLabel,
   recallSpaceName,
   currentItemNumber,
   totalItems,
@@ -16,7 +18,7 @@ export function SessionHeader({
   return (
     <header className="session-header surface-panel" aria-label="Session header">
       <div className="session-header-meta">
-        <p className="session-space-label">Recall Space</p>
+        <p className="session-space-label">{sessionLabel}</p>
         <h1>{recallSpaceName}</h1>
       </div>
 

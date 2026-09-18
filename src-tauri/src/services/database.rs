@@ -210,6 +210,13 @@ pub async fn get_learning_items(
     learning_items::list(&open_pool().await?, space_id, due_only).await
 }
 
+pub async fn get_new_learning_items(
+    space_id: Option<i64>,
+    limit: u32,
+) -> Result<Vec<LearningItem>, sqlx::Error> {
+    learning_items::list_new(&open_pool().await?, space_id, limit).await
+}
+
 pub async fn save_learning_items(
     items: Vec<LearningItemInput>,
 ) -> Result<Vec<LearningItem>, sqlx::Error> {
@@ -254,23 +261,33 @@ pub async fn get_due_questions(space_id: Option<i64>) -> Result<Vec<Question>, s
 
 pub async fn get_recall_dashboard() -> Result<RecallDashboard, sqlx::Error> {
     let pool = open_pool().await?;
-    let rows = sqlx::query_as::<_, (i64, String, i64, i64, i64, i64)>(
+    let rows = sqlx::query_as::<_, (i64, String, i64, i64, i64, i64, i64)>(
         "SELECT s.id,s.name,COUNT(i.id),
-        COALESCE(SUM(CASE WHEN i.id IS NOT NULL AND i.status='ready' AND (i.next_review_at IS NULL OR i.next_review_at<=CURRENT_TIMESTAMP) THEN 1 ELSE 0 END),0),
-        COALESCE(SUM(CASE WHEN i.status='ready' AND i.next_review_at<date('now') THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN i.id IS NOT NULL AND i.recall_state='scheduled' AND (i.next_review_at IS NULL OR i.next_review_at<=CURRENT_TIMESTAMP) THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN i.recall_state='scheduled' AND i.next_review_at<date('now') THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN i.recall_state='new' THEN 1 ELSE 0 END),0),
         COALESCE(SUM(CASE WHEN i.last_reviewed_at>=date('now') AND i.last_reviewed_at<date('now','+1 day') THEN 1 ELSE 0 END),0)
         FROM recall_spaces s LEFT JOIN learning_items i ON i.space_id=s.id GROUP BY s.id,s.name ORDER BY s.id")
         .fetch_all(&pool).await?;
     let spaces: Vec<_> = rows
         .into_iter()
         .map(
-            |(id, name, total_questions, due_count, overdue_count, reviewed_today_count)| {
+            |(
+                id,
+                name,
+                total_questions,
+                due_count,
+                overdue_count,
+                new_count,
+                reviewed_today_count,
+            )| {
                 RecallSpaceSummary {
                     id,
                     name,
                     total_questions,
                     due_count,
                     overdue_count,
+                    new_count,
                     reviewed_today_count,
                 }
             },
@@ -279,6 +296,7 @@ pub async fn get_recall_dashboard() -> Result<RecallDashboard, sqlx::Error> {
     Ok(RecallDashboard {
         due_today_count: spaces.iter().map(|s| s.due_count - s.overdue_count).sum(),
         overdue_count: spaces.iter().map(|s| s.overdue_count).sum(),
+        new_count: spaces.iter().map(|s| s.new_count).sum(),
         reviewed_today_count: spaces.iter().map(|s| s.reviewed_today_count).sum(),
         spaces,
     })
@@ -692,7 +710,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn get_questions_loads_saved_questions_with_scheduler_fields() {
+    async fn get_questions_loads_new_items_with_scheduler_defaults() {
         let _guard = database_test_lock()
             .lock()
             .expect("database test lock should not be poisoned");
@@ -733,8 +751,51 @@ mod tests {
         assert_eq!(questions[0].repetitions, 0);
         assert_eq!(questions[0].interval_days, 0);
         assert_eq!(questions[0].ease_factor, 2.5);
-        assert!(questions[0].next_review_at.is_some());
+        assert!(questions[0].next_review_at.is_none());
         assert!(questions[0].last_reviewed_at.is_none());
+        let items = get_learning_items(None, false).await.unwrap();
+        assert_eq!(
+            items[0].recall_state,
+            crate::models::learning_item::RecallState::New
+        );
+        let new_items = get_new_learning_items(None, 1).await.unwrap();
+        assert_eq!(new_items.len(), 1);
+        assert_eq!(new_items[0].id, items[0].id);
+        assert!(get_new_learning_items(None, 0).await.unwrap().is_empty());
+        let dashboard = get_recall_dashboard().await.unwrap();
+        assert_eq!(dashboard.new_count, 1);
+        assert_eq!(dashboard.due_today_count, 0);
+        assert_eq!(dashboard.spaces.len(), 1);
+        assert_eq!(dashboard.spaces[0].new_count, 1);
+        assert_eq!(dashboard.spaces[0].due_count, 0);
+
+        let variant_id = match &items[0].variants[0] {
+            QuestionVariant::Mcq { id, .. } => *id,
+            QuestionVariant::Flashcard { .. } => panic!("expected an MCQ variant"),
+        };
+        let reviewed = review_learning_item(ReviewSubmission {
+            learning_item_id: items[0].id,
+            variant_id,
+            response: ReviewResponse::Mcq {
+                selected_option_id: String::from("A"),
+            },
+        })
+        .await
+        .expect("first review should schedule the new item");
+        assert_eq!(
+            reviewed.recall_state,
+            crate::models::learning_item::RecallState::Scheduled
+        );
+        assert_eq!(reviewed.schedule.repetitions, 1);
+        assert_eq!(reviewed.schedule.interval_days, 1);
+        assert!(reviewed.schedule.next_review_at.is_some());
+
+        let dashboard = get_recall_dashboard().await.unwrap();
+        assert_eq!(dashboard.new_count, 0);
+        assert_eq!(dashboard.due_today_count, 0);
+        assert_eq!(dashboard.reviewed_today_count, 1);
+        assert_eq!(dashboard.spaces[0].new_count, 0);
+        assert_eq!(dashboard.spaces[0].reviewed_today_count, 1);
 
         std::env::remove_var("DATABASE_URL");
         let _ = std::fs::remove_file(db_path);
@@ -792,6 +853,10 @@ mod tests {
 
         let pool = open_pool().await.expect("pool should open");
         let future_review_at = Utc::now().naive_utc() + Duration::days(3);
+        sqlx::query("UPDATE learning_items SET recall_state = 'scheduled'")
+            .execute(&pool)
+            .await
+            .expect("test questions should enter scheduled recall");
         sqlx::query("UPDATE learning_items SET next_review_at = ? WHERE id IN (SELECT learning_item_id FROM question_variants WHERE prompt = ?)")
             .bind(future_review_at)
             .bind("Due in biology")

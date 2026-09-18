@@ -6,17 +6,98 @@ mod services;
 use std::path::PathBuf;
 
 use models::learning_item::{
-    GeneratedLearningItemSaveInput, LearningItem, LearningItemEditInput, ReviewIntervals, ReviewSubmission,
+    GeneratedLearningItemSaveInput, LearningItem, LearningItemEditInput, ReviewIntervals,
+    ReviewSubmission,
 };
 use models::model_settings::{EmbeddingConnectionResult, EmbeddingModelConfig, ModelConfig};
 use models::note::Note;
 use models::question::{Question, QuestionInput};
 use models::recall_dashboard::RecallDashboard;
 use models::recall_space::RecallSpace;
+use models::study_plan::{DailyStudyPlan, StudyPreferences};
+use models::user_profile::UserProfile;
 use services::generation::{GenerationProgressSnapshot, GenerationSummary};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
+
+#[tauri::command]
+async fn get_user_profile() -> Result<UserProfile, String> {
+    let pool = services::database::open_pool()
+        .await
+        .map_err(|e| e.to_string())?;
+    services::user_profile::get(&pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_user_profile(profile: UserProfile) -> Result<UserProfile, String> {
+    let pool = services::database::open_pool()
+        .await
+        .map_err(|e| e.to_string())?;
+    services::user_profile::save(&pool, profile)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_study_preferences() -> Result<StudyPreferences, String> {
+    let pool = services::database::open_pool()
+        .await
+        .map_err(|e| e.to_string())?;
+    services::study_plan::preferences(&pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_study_preferences(
+    preferences: StudyPreferences,
+    apply_today: bool,
+) -> Result<StudyPreferences, String> {
+    let pool = services::database::open_pool()
+        .await
+        .map_err(|e| e.to_string())?;
+    services::study_plan::save_preferences(&pool, preferences, apply_today)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_daily_study_plan(space_id: Option<i64>) -> Result<DailyStudyPlan, String> {
+    let pool = services::database::open_pool()
+        .await
+        .map_err(|e| e.to_string())?;
+    services::study_plan::get_plan(&pool, space_id, false)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn extend_daily_study_plan(space_id: Option<i64>) -> Result<DailyStudyPlan, String> {
+    let pool = services::database::open_pool()
+        .await
+        .map_err(|e| e.to_string())?;
+    services::study_plan::get_plan(&pool, space_id, true)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn review_study_item(
+    plan_date: String,
+    space_id: Option<i64>,
+    is_extra: bool,
+    submission: ReviewSubmission,
+) -> Result<LearningItem, String> {
+    let pool = services::database::open_pool()
+        .await
+        .map_err(|e| e.to_string())?;
+    services::study_plan::review(&pool, &plan_date, space_id, is_extra, submission)
+        .await
+        .map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 async fn get_questions() -> Result<Vec<Question>, String> {
@@ -66,6 +147,15 @@ async fn get_due_learning_items(space_id: Option<i64>) -> Result<Vec<LearningIte
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
+async fn get_new_learning_items(
+    space_id: Option<i64>,
+    limit: u32,
+) -> Result<Vec<LearningItem>, String> {
+    services::database::get_new_learning_items(space_id, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
 async fn save_generated_learning_items(
     job_id: String,
     space_id: i64,
@@ -90,7 +180,9 @@ async fn review_learning_item(submission: ReviewSubmission) -> Result<LearningIt
 }
 
 #[tauri::command]
-async fn get_learning_item_review_intervals(learning_item_id: i64) -> Result<ReviewIntervals, String> {
+async fn get_learning_item_review_intervals(
+    learning_item_id: i64,
+) -> Result<ReviewIntervals, String> {
     services::database::get_learning_item_review_intervals(learning_item_id)
         .await
         .map_err(|e| e.to_string())
@@ -388,7 +480,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_questions,
-            get_learning_items, get_due_learning_items, save_generated_learning_items, modify_learning_item, review_learning_item, get_learning_item_review_intervals,
+            get_learning_items, get_due_learning_items, get_new_learning_items, save_generated_learning_items, modify_learning_item, review_learning_item, get_learning_item_review_intervals,
+            get_user_profile, save_user_profile,
+            get_study_preferences, save_study_preferences, get_daily_study_plan, extend_daily_study_plan, review_study_item,
             get_questions_by_space,
             get_due_questions,
             get_recall_dashboard,

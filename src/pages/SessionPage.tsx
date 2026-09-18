@@ -1,410 +1,277 @@
 import { invoke } from '@tauri-apps/api/core'
-import { ArrowLeft, ArrowRight, BookOpenCheck, ChevronDown, RotateCcw } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { ArrowLeft, ArrowRight } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { BackToHome } from '../components/BackToHome'
+import { RecallDonutChart } from '../components/RecallDonutChart'
 import { RecallCard } from '../components/session/RecallCard'
-import { SessionComplete } from '../components/session/SessionComplete'
 import { SessionHeader } from '../components/session/SessionHeader'
-import { selectRecallVariant, summarizeRecall, type RecallItem, type RecallResult } from '../learning-items/recall'
-import type { LearningItem } from '../learning-items/types'
+import { selectRecallVariant, type RecallItem } from '../learning-items/recall'
+import type { DailyStudyPlan } from '../learning-items/study-plan'
 
-type RecallDashboard = {
-  due_today_count: number
-  overdue_count: number
-  reviewed_today_count: number
-  spaces: RecallSpaceSummary[]
-}
-
+type Space = { id: number; name: string }
+type SessionItem = { item: RecallItem; isExtra: boolean }
 type RecallSpaceSummary = {
   id: number
   name: string
   total_questions: number
   due_count: number
   overdue_count: number
+  new_count: number
   reviewed_today_count: number
 }
-
-const itemLabel = (count: number) => `${count} ${count === 1 ? 'learning item' : 'learning items'}`
-
-type RecallChartCategory = {
-  label: string
-  value: number
-  className: string
-}
-
-function RecallDonutChart({ categories }: { categories: RecallChartCategory[] }) {
-  const total = categories.reduce((sum, category) => sum + category.value, 0)
-  let offset = 0
-
-  return (
-    <div className="recall-donut" role="img" aria-label={`Today's recall state: ${total} learning items`}>
-      <svg viewBox="0 0 120 120" role="img" aria-hidden="true">
-        <circle className="recall-donut-track" cx="60" cy="60" r="46" pathLength="100" />
-        {total > 0
-          ? categories.map((category) => {
-              const percentage = (category.value / total) * 100
-              const segmentOffset = offset
-              offset += percentage
-
-              if (category.value === 0) {
-                return null
-              }
-
-              return (
-                <circle
-                  key={category.label}
-                  className={`recall-donut-segment ${category.className}`}
-                  cx="60"
-                  cy="60"
-                  r="46"
-                  pathLength="100"
-                  strokeDasharray={`${percentage} ${100 - percentage}`}
-                  strokeDashoffset={-segmentOffset}
-                />
-              )
-            })
-          : null}
-      </svg>
-      <div className="recall-donut-center" aria-hidden="true">
-        <strong>{total}</strong>
-        <span>Today</span>
-      </div>
-    </div>
-  )
+type RecallDashboard = {
+  due_today_count: number
+  overdue_count: number
+  new_count: number
+  reviewed_today_count: number
+  spaces: RecallSpaceSummary[]
 }
 
 export function SessionPage() {
   const location = useLocation()
-  const requestedSpaceId =
-    typeof location.state?.recallSpaceId === 'number' ? location.state.recallSpaceId : null
-  const requestedSpaceName =
-    typeof location.state?.recallSpaceName === 'string' ? location.state.recallSpaceName : null
-  const didStartRequestedSpace = useRef(false)
+  const requestedSpaceId = typeof location.state?.recallSpaceId === 'number' ? location.state.recallSpaceId as number : null
+  const [plan, setPlan] = useState<DailyStudyPlan | null>(null)
+  const [spaces, setSpaces] = useState<Space[]>([])
   const [dashboard, setDashboard] = useState<RecallDashboard | null>(null)
-  const [isDashboardLoading, setIsDashboardLoading] = useState(true)
-  const [isSessionLoading, setIsSessionLoading] = useState(false)
-  const [isInSession, setIsInSession] = useState(false)
-  const [dueItems, setDueItems] = useState<RecallItem[]>([])
-  const [currentIndex, setCurrentIndex] = useState(0)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState('')
-  const [reviews, setReviews] = useState<RecallResult[]>([])
-  const [sessionTitle, setSessionTitle] = useState("Today's Recall")
   const [selectedSpaceId, setSelectedSpaceId] = useState<number | null>(requestedSpaceId)
-
-  const totalItems = dueItems.length
-  const isComplete = currentIndex >= totalItems
-  const currentItem = isComplete ? null : dueItems[currentIndex]
-
-  const totals = summarizeRecall(reviews)
-
-  const selectedSpace = useMemo(
-    () => dashboard?.spaces.find((space) => space.id === selectedSpaceId) ?? null,
-    [dashboard, selectedSpaceId],
-  )
-
-  const scopeMetrics = useMemo(() => {
-    const dueToday = selectedSpace
-      ? Math.max(0, selectedSpace.due_count - selectedSpace.overdue_count)
-      : dashboard?.due_today_count ?? 0
-    const overdue = selectedSpace?.overdue_count ?? dashboard?.overdue_count ?? 0
-    const reviewed = selectedSpace?.reviewed_today_count ?? dashboard?.reviewed_today_count ?? 0
-
-    return {
-      dueToday,
-      overdue,
-      reviewed,
-      attention: dueToday + overdue,
-      totalItems:
-        selectedSpace?.total_questions ??
-        dashboard?.spaces.reduce((sum, space) => sum + space.total_questions, 0) ??
-        0,
-    }
-  }, [dashboard, selectedSpace])
-
-  const chartCategories = useMemo<RecallChartCategory[]>(
-    () => [
-      { label: 'Due Today', value: scopeMetrics.dueToday, className: 'is-due' },
-      { label: 'Overdue', value: scopeMetrics.overdue, className: 'is-overdue' },
-      { label: 'Reviewed today', value: scopeMetrics.reviewed, className: 'is-correct' },
-    ],
-    [scopeMetrics],
-  )
-
-  const applySessionItems = useCallback((items: RecallItem[]) => {
-    setDueItems(items)
-    setCurrentIndex(0)
-    setIsSubmitting(false)
-    setReviews([])
-  }, [])
+  const [sessionSpaceId, setSessionSpaceId] = useState<number | null>(null)
+  const [sessionDate, setSessionDate] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [queue, setQueue] = useState<SessionItem[]>([])
+  const [index, setIndex] = useState(0)
+  const planHeading = useRef<HTMLHeadingElement>(null)
+  const current = queue[index]
 
   const loadDashboard = useCallback(async () => {
-    setIsDashboardLoading(true)
-
-    try {
-      const summary = await invoke<RecallDashboard>('get_recall_dashboard')
-      setDashboard(summary)
-      setError('')
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load recall dashboard'
-      setError(message)
-    } finally {
-      setIsDashboardLoading(false)
-    }
+    const [next, availableSpaces, nextDashboard] = await Promise.all([
+      invoke<DailyStudyPlan>('get_daily_study_plan', { spaceId: null }),
+      invoke<Space[]>('get_spaces'),
+      invoke<RecallDashboard>('get_recall_dashboard'),
+    ])
+    setPlan(next)
+    setSpaces(availableSpaces)
+    setDashboard(nextDashboard)
+    return { plan: next, spaces: availableSpaces }
   }, [])
 
   useEffect(() => {
-    let isCancelled = false
-
-    void invoke<RecallDashboard>('get_recall_dashboard')
-      .then((summary) => {
-        if (isCancelled) return
-        setDashboard(summary)
-        setError('')
-      })
-      .catch((err: unknown) => {
-        if (isCancelled) return
-        setError(err instanceof Error ? err.message : 'Failed to load recall dashboard')
-      })
-      .finally(() => {
-        if (!isCancelled) {
-          setIsDashboardLoading(false)
+    let cancelled = false
+    const load = async () => {
+      setLoading(true)
+      setError('')
+      try {
+        const result = await loadDashboard()
+        if (!cancelled) {
+          const requestedExists = requestedSpaceId !== null && result.spaces.some((space) => space.id === requestedSpaceId)
+          setSelectedSpaceId(requestedExists ? requestedSpaceId : null)
+          setSessionSpaceId(null)
+          setSessionDate('')
+          setQueue([])
         }
-      })
-
-    return () => {
-      isCancelled = true
+      } catch (err) {
+        if (!cancelled) setError('Unable to load today’s plan: ' + String(err))
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     }
-  }, [])
+    void load()
+    return () => { cancelled = true }
+  }, [loadDashboard, requestedSpaceId, location.key])
 
-  const startRecall = useCallback(async (spaceId: number | null = null, title = "Today's Recall") => {
-    setIsSessionLoading(true)
+  useEffect(() => {
+    const onFocus = () => {
+      if (!current && !busy) void loadDashboard().catch((err: unknown) => setError(String(err)))
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [current, busy, loadDashboard])
+
+  const start = async (extra = false) => {
+    setBusy(true)
     setError('')
-    setSessionTitle(title)
-    setSelectedSpaceId(spaceId)
-
     try {
-      const items = await invoke<LearningItem[]>('get_due_learning_items', {
-        spaceId,
-      })
+      let next: DailyStudyPlan
+      if (extra) {
+        next = await invoke<DailyStudyPlan>('extend_daily_study_plan', { spaceId: selectedSpaceId })
+      } else {
+        next = await invoke<DailyStudyPlan>('get_daily_study_plan', { spaceId: selectedSpaceId })
+      }
 
-      const queue = items.map(selectRecallVariant).filter((item): item is RecallItem => item !== null)
-      if (queue.length === 0) {
+      const items: SessionItem[] = []
+      for (const assignment of next.items) {
+        const item = selectRecallVariant(assignment.item)
+        if (!item) throw new Error('An assigned item has no supported question. Open its Space to repair it.')
+        items.push({ item, isExtra: assignment.is_extra })
+      }
+
+      if (items.length === 0) {
         await loadDashboard()
+        const selectedName = spaces.find((space) => space.id === selectedSpaceId)?.name
+        setError(selectedName ? `No eligible items to study in ${selectedName} right now.` : 'No eligible items to study right now.')
         return
       }
 
-      applySessionItems(queue)
-      setIsInSession(true)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load learning items for recall'
-      setError(message)
-    } finally {
-      setIsSessionLoading(false)
-    }
-  }, [applySessionItems, loadDashboard])
-
-  useEffect(() => {
-    if (requestedSpaceId === null || didStartRequestedSpace.current) {
-      return
-    }
-
-    didStartRequestedSpace.current = true
-    const launchTimer = window.setTimeout(() => {
-      void startRecall(requestedSpaceId, requestedSpaceName ?? 'Recall Space')
-    }, 0)
-
-    return () => {
-      window.clearTimeout(launchTimer)
-    }
-  }, [requestedSpaceId, requestedSpaceName, startRecall])
-
-  const returnToDashboard = () => {
-    if (isSubmitting) return
-    setIsInSession(false)
-    setDueItems([])
-    setCurrentIndex(0)
-    void loadDashboard()
+      setSessionSpaceId(selectedSpaceId)
+      setSessionDate(next.local_date)
+      setQueue(items)
+      setIndex(0)
+    } catch (err) { setError(String(err)) }
+    finally { setBusy(false) }
   }
 
-  if (isInSession) {
+  const returnToPlan = async () => {
+    setQueue([])
+    setBusy(true)
+    try {
+      await loadDashboard()
+      setSessionSpaceId(null)
+      setSessionDate('')
+      setError('')
+      requestAnimationFrame(() => planHeading.current?.focus())
+    }
+    catch (err) { setError(String(err)) }
+    finally { setBusy(false) }
+  }
+
+  const scopeName = spaces.find((space) => space.id === sessionSpaceId)?.name ?? 'All Recall Spaces'
+  if (current) {
     return (
-      <div className="app-container session-page" aria-label="Recall session">
-        {error ? <div className="error-banner" role="alert">{error}</div> : null}
-
-        {isComplete ? (
-          <SessionComplete
-            reviewedCount={reviews.length}
-            recalledCount={totals.recalled}
-            onReturn={returnToDashboard}
-          />
-        ) : currentItem ? (
-          <div className="session-shell">
-            <button type="button" className="btn-back recall-back-btn" onClick={returnToDashboard} disabled={isSubmitting}>
-              <ArrowLeft className="size-4" aria-hidden="true" />
-              Back to Recall
-            </button>
-
-            <SessionHeader
-              recallSpaceName={sessionTitle}
-              currentItemNumber={currentIndex + 1}
-              totalItems={totalItems}
-            />
-
-            <RecallCard
-              key={currentItem.learningItemId}
-              item={currentItem}
-              isLast={currentIndex === totalItems - 1}
-              onReviewed={(result) => setReviews((current) => [...current, result])}
-              onBusy={setIsSubmitting}
-              onNext={() => setCurrentIndex((index) => index + 1)}
-            />
-          </div>
-        ) : null}
+      <div className="app-container session-page" aria-label="Study session">
+        <div className="session-shell">
+          <button className="btn-back recall-back-btn" type="button" disabled={submitting}
+            onClick={() => void returnToPlan()}><ArrowLeft className="size-4" aria-hidden="true" />Back to today’s plan</button>
+          <SessionHeader sessionLabel={current.isExtra ? 'Extra study' : 'Today’s plan'} recallSpaceName={scopeName}
+            currentItemNumber={index + 1} totalItems={queue.length} />
+          <RecallCard key={current.item.learningItemId} item={current.item} planDate={sessionDate}
+            spaceId={sessionSpaceId} isExtra={current.isExtra}
+            isLast={index === queue.length - 1} onBusy={setSubmitting} onReviewed={() => { /* Progress is persisted with the review. */ }}
+            onNext={() => {
+              if (index === queue.length - 1) void returnToPlan()
+              else setIndex((value) => value + 1)
+            }} />
+        </div>
       </div>
     )
   }
+
+  const remaining = plan?.items.filter((item) => !item.is_extra) ?? []
+  const reviews = remaining.filter((item) => !item.was_new).length
+  const newItems = remaining.filter((item) => item.was_new).length
+  const complete = Boolean(plan && plan.total_count > 0 && remaining.length === 0)
+  const unfilledTarget = plan
+    ? Math.max(0, plan.daily_target - plan.completed_count - remaining.length)
+    : 0
+  const extraPending = plan?.items.filter((item) => item.is_extra).length ?? 0
+  const selectedSummary = selectedSpaceId === null
+    ? null
+    : dashboard?.spaces.find((space) => space.id === selectedSpaceId) ?? null
+  const insightName = selectedSummary?.name ?? 'All Recall Spaces'
+  const insightDueToday = selectedSummary
+    ? Math.max(0, selectedSummary.due_count - selectedSummary.overdue_count)
+    : dashboard?.due_today_count ?? 0
+  const insightOverdue = selectedSummary?.overdue_count ?? dashboard?.overdue_count ?? 0
+  const insightNew = selectedSummary?.new_count ?? dashboard?.new_count ?? 0
+  const insightReviewed = selectedSummary?.reviewed_today_count ?? dashboard?.reviewed_today_count ?? 0
+  const insightTotal = selectedSummary?.total_questions
+    ?? dashboard?.spaces.reduce((sum, space) => sum + space.total_questions, 0)
+    ?? 0
 
   return (
     <div className="app-container recall-page" aria-label="Recall dashboard">
       <header className="recall-page-header">
         <BackToHome />
-        <div>
-          <h1>Recall</h1>
-          <p>Keep your knowledge fresh with today&apos;s scheduled reviews.</p>
-        </div>
+        <div><h1>Recall</h1><p>A manageable plan for today, at your pace.</p></div>
       </header>
-
       {error ? <div className="error-banner" role="alert">{error}</div> : null}
-
-      {!isDashboardLoading && !dashboard ? (
-        <button type="button" className="btn-secondary" onClick={() => { void loadDashboard() }}>Retry loading recall</button>
-      ) : isDashboardLoading || !dashboard ? (
-        <section className="recall-loading surface-panel" aria-live="polite">
-          <RotateCcw className="recall-loading-icon" aria-hidden="true" />
-          <p>Loading your recall queue…</p>
-        </section>
+      {loading ? <p role="status">Loading today’s plan…</p> : !plan ? (
+        <button className="btn-secondary" type="button" disabled={busy} onClick={() => void loadDashboard()}>Retry loading plan</button>
       ) : (
         <>
-          <section className="recall-queue-workspace surface-panel" aria-labelledby="todays-recall-heading">
-            <div className="recall-queue-head">
-              <div className="recall-queue-intro">
-                <span className="recall-queue-symbol" aria-hidden="true">
-                  <BookOpenCheck />
-                </span>
-                <div>
-                  <p className="recall-section-label">Today&apos;s recall</p>
-                  <h2 id="todays-recall-heading">
-                    {scopeMetrics.attention > 0 ? 'Your review queue is ready.' : 'You’re all caught up.'}
-                  </h2>
-                  <p>
-                    {selectedSpace
-                      ? `${selectedSpace.name} has ${itemLabel(scopeMetrics.attention)} ready for review.`
-                      : `${itemLabel(scopeMetrics.attention)} are waiting across all recall spaces.`}
-                  </p>
+          <section className="daily-plan surface-panel" aria-labelledby="daily-plan-heading" aria-busy={busy}>
+            <div className="daily-plan-heading">
+              <h2 id="daily-plan-heading" ref={planHeading} tabIndex={-1}>{complete ? 'Today’s plan complete' : 'Today’s plan'}</h2>
+              <Link to="/settings#study-preferences">Adjust daily target</Link>
+            </div>
+            <div className="daily-plan-content">
+              <div className="daily-plan-summary">
+                {complete ? (
+                  <p className="daily-plan-progress">You studied {plan.completed_count} {plan.completed_count === 1 ? 'item' : 'items'}.</p>
+                ) : plan.total_count > 0 ? (
+                  <>
+                    <p className="daily-plan-progress">{plan.completed_count} of {plan.daily_target} completed</p>
+                    <p className="daily-plan-detail">{remaining.length} remaining · {reviews} {reviews === 1 ? 'review' : 'reviews'} and {newItems} new</p>
+                  </>
+                ) : <p className="daily-plan-progress">No items to study in this plan.</p>}
+                <p className="daily-plan-detail">
+                  Daily target: {plan.daily_target} items, including up to {plan.max_new_items} new.
+                  {plan.total_count < plan.daily_target && !complete ? ' Today only includes currently eligible items.' : ''}
+                </p>
+                {plan.extra_completed_count > 0 ? <p className="daily-plan-detail">{plan.extra_completed_count} additional {plan.extra_completed_count === 1 ? 'item' : 'items'} studied today.</p> : null}
+                <div className="daily-plan-actions">
+                  {remaining.length > 0 ? (
+                    <button className="btn-primary" type="button" disabled={busy} onClick={() => void start()}>
+                      {busy ? 'Loading…' : plan.completed_count > 0 ? 'Continue studying' : 'Start studying'}<ArrowRight className="size-4" aria-hidden="true" />
+                    </button>
+                  ) : (
+                    <>
+                      <Link className="btn-primary" to="/">Done for today</Link>
+                      {extraPending > 0 || plan.can_study_more ? (
+                        <button className="btn-secondary" type="button" disabled={busy} onClick={() => void start(extraPending === 0)}>
+                          {busy ? 'Loading…' : extraPending > 0 ? 'Continue extra study (' + extraPending + ')' : 'Study more'}
+                        </button>
+                      ) : null}
+                    </>
+                  )}
                 </div>
               </div>
-
-              <label className="recall-scope-control recall-space-select-wrap">
-                <span>Session scope</span>
-                <select
-                  className="recall-space-select"
-                  value={selectedSpaceId === null ? 'all' : String(selectedSpaceId)}
-                  onChange={(event) => {
-                    setSelectedSpaceId(event.target.value === 'all' ? null : Number(event.target.value))
-                  }}
-                  disabled={isSessionLoading}
-                >
-                  <option value="all">All Recall Spaces</option>
-                  {dashboard.spaces.map((space) => (
-                    <option key={space.id} value={space.id}>
-                      {space.name}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="recall-space-chevron" aria-hidden="true" />
-              </label>
-            </div>
-
-            <div className="recall-state-layout">
-              <RecallDonutChart categories={chartCategories} />
-
-              <dl className="recall-chart-legend" aria-label="Today's recall state counts">
-                {chartCategories.map((category) => (
-                  <div key={category.label}>
-                    <span className={`recall-chart-swatch ${category.className}`} aria-hidden="true" />
-                    <dt>{category.label}</dt>
-                    <dd>{category.value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
-
-            <div className="recall-queue-commit">
-              <p>
-                <strong>
-                  {selectedSpace ? selectedSpace.name : 'All Recall Spaces'} · {itemLabel(scopeMetrics.totalItems)} total
-                </strong>
-                <span>{itemLabel(scopeMetrics.attention)} currently due for recall.</span>
-              </p>
-              <button
-                type="button"
-                className="btn-primary recall-start-btn"
-                onClick={() => {
-                  void startRecall(selectedSpaceId, selectedSpace?.name ?? "Today's Recall")
-                }}
-                disabled={scopeMetrics.attention === 0 || isSessionLoading}
-              >
-                {isSessionLoading ? 'Preparing recall…' : `Start Recall ${scopeMetrics.attention}`}
-                <ArrowRight className="size-4" aria-hidden="true" />
-              </button>
+              <RecallDonutChart label="Today's plan breakdown"
+                centerValue={`${plan.completed_count} / ${plan.daily_target}`}
+                centerLabel="Completed"
+                categories={[
+                  { label: 'Completed', value: plan.completed_count, tone: 'correct' },
+                  { label: 'Reviews remaining', value: reviews, tone: 'due' },
+                  { label: 'New remaining', value: newItems, tone: 'new' },
+                  ...(unfilledTarget > 0
+                    ? [{ label: 'No eligible items', value: unfilledTarget, tone: 'muted' as const }]
+                    : []),
+                ]} />
             </div>
           </section>
-
-          <section className="recall-space-overview" aria-labelledby="recall-space-overview-heading">
-            <div className="recall-space-overview-head">
+          <section className="daily-plan-scope surface-panel" aria-labelledby="study-scope-heading">
+            <div className="daily-plan-scope-head">
               <div>
-                <h2 id="recall-space-overview-heading">Recall by Space</h2>
-                <p>Start a focused session without changing the default global queue.</p>
+                <h2 id="study-scope-heading">Choose what to study</h2>
+                <p>Focus on one Space or study across all Spaces. Your daily target stays the same.</p>
               </div>
+              <label className="settings-field" htmlFor="study-space">
+                <span id="study-space-label">Recall Space</span>
+                <select id="study-space" className="settings-input" value={selectedSpaceId ?? ''} disabled={busy}
+                  aria-labelledby="study-space-label"
+                  onChange={(event) => setSelectedSpaceId(event.target.value ? Number(event.target.value) : null)}>
+                  <option value="">All Recall Spaces</option>
+                  {spaces.map((space) => <option key={space.id} value={space.id}>{space.name}</option>)}
+                </select>
+              </label>
             </div>
-
-            <div className="recall-space-overview-list">
-              {dashboard.spaces.map((space) => {
-                const dueToday = Math.max(0, space.due_count - space.overdue_count)
-
-                return (
-                  <article className="recall-space-overview-row" key={space.id}>
-                    <div>
-                      <h3>{space.name}</h3>
-                      <p>{itemLabel(space.total_questions)} total</p>
-                    </div>
-                    <dl>
-                      <div>
-                        <dt>Due</dt>
-                        <dd>{dueToday}</dd>
-                      </div>
-                      <div>
-                        <dt>Overdue</dt>
-                        <dd>{space.overdue_count}</dd>
-                      </div>
-                    </dl>
-                    <button
-                      type="button"
-                      className="btn-secondary recall-space-overview-action"
-                      onClick={() => {
-                        void startRecall(space.id, space.name)
-                      }}
-                      disabled={space.due_count === 0 || isSessionLoading}
-                    >
-                      Recall {space.due_count}
-                      <ArrowRight className="size-4" aria-hidden="true" />
-                    </button>
-                  </article>
-                )
-              })}
+            <div className="daily-plan-space-insight" aria-live="polite">
+              <div>
+                <h3>{insightName} insight</h3>
+                <p>{insightTotal} total · {insightReviewed} reviewed today</p>
+              </div>
+              <RecallDonutChart label={`${insightName} workload breakdown`}
+                centerValue={insightDueToday + insightOverdue + insightNew} centerLabel="Due + new items"
+                categories={[
+                  { label: 'Due today', value: insightDueToday, tone: 'due' },
+                  { label: 'Overdue', value: insightOverdue, tone: 'overdue' },
+                  { label: 'New', value: insightNew, tone: 'new' },
+                ]} />
             </div>
+            <p className="daily-plan-detail">The Space selection filters the session you start; it does not change today’s target.</p>
+            <Link to="/questions">View all Spaces and workload<ArrowRight className="size-4" aria-hidden="true" /></Link>
           </section>
         </>
       )}

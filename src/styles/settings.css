@@ -1,4 +1,31 @@
 /* Model and application settings */
+.study-preferences-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+.study-preferences-fields input { max-width: 160px; }
+.study-preferences-apply { display: flex; align-items: center; gap: 10px; }
+.study-preferences-apply input { accent-color: var(--color-amethyst); }
+#study-preferences { scroll-margin-top: 24px; }
+#study-preferences :focus-visible { outline: 2px solid var(--color-lavender); outline-offset: 4px; }
+
+.profile-settings-form {
+  max-width: 560px;
+}
+
+.profile-name-field {
+  max-width: 480px;
+}
+
+.profile-name-input {
+  width: 100%;
+}
+
+@media (max-width: 600px) {
+  .study-preferences-fields { grid-template-columns: 1fr; gap: 20px; }
+}
+
 .settings-page {
   gap: 16px;
   justify-content: flex-start;

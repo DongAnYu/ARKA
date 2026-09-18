@@ -40,43 +40,23 @@ import {
   MODEL_CONFIG_UPDATED_EVENT,
   type PersistedModelConfig,
 } from '../modelConfig'
+import type { UserProfile } from '../profile'
 
-const getWelcomeMessage = (date = new Date()) => {
+const getWelcomeMessage = (displayName: string, date = new Date()) => {
   const hour = date.getHours()
+  let greeting = 'Hello'
 
   if (hour >= 5 && hour < 12) {
-    return (
-      <>
-        Good morning!
-        <br />
-        Ready to test your recall?
-      </>
-    )
-  }
-
-  if (hour >= 12 && hour < 17) {
-    return (
-      <>
-        Good afternoon!
-        <br />
-        Ready to test your recall?
-      </>
-    )
-  }
-
-  if (hour >= 17 && hour < 22) {
-    return (
-      <>
-        Good evening!
-        <br />
-        Ready to test your recall?
-      </>
-    )
+    greeting = 'Good morning'
+  } else if (hour >= 12 && hour < 17) {
+    greeting = 'Good afternoon'
+  } else if (hour >= 17 && hour < 22) {
+    greeting = 'Good evening'
   }
 
   return (
     <>
-      Late night, 
+      {greeting}{displayName ? `, ${displayName}` : ''}!
       <br />
       Ready to test your recall?
     </>
@@ -125,7 +105,8 @@ function mergeReviewLearningItemDrafts(
 }
 
 export function HomePage() {
-  const welcomeMessage = getWelcomeMessage()
+  const [displayName, setDisplayName] = useState('')
+  const welcomeMessage = getWelcomeMessage(displayName)
   const saveInFlightRef = useRef(false)
   const {
     notes,
@@ -143,6 +124,22 @@ export function HomePage() {
     togglePauseGeneration,
     cancelGeneration,
   } = useGeneration()
+
+  useEffect(() => {
+    let cancelled = false
+
+    void invoke<UserProfile>('get_user_profile')
+      .then((profile) => {
+        if (!cancelled) setDisplayName(profile.display_name)
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to load user profile:', error)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
   const [isLoading, setIsLoading] = useState(false)
   const [isSavingQuestions, setIsSavingQuestions] = useState(false)
   const [showChunks, setShowChunks] = useState(false)

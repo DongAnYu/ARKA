@@ -110,9 +110,9 @@ pub enum QuestionVariant {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ItemStatus {
-    Ready,
-    NeedsRepair,
+pub enum RecallState {
+    New,
+    Scheduled,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,13 +120,13 @@ pub struct LearningItem {
     pub id: i64,
     /// Unknown for migrated MCQs; never invent a learning target.
     pub target: Option<String>,
-    /// Unknown for invalid legacy answer labels; status must be NeedsRepair.
+    /// Nullable for compatibility with the legacy learning-item schema.
     pub answer: Option<String>,
     pub explanation: Option<String>,
     pub space_id: i64,
     pub generation: GenerationMetadata,
     pub source: Option<SourceReference>,
-    pub status: ItemStatus,
+    pub recall_state: RecallState,
     pub schedule: ReviewState,
     /// Legacy items contain only their MCQ. Absence is not an empty flashcard.
     /// New generation and stored legacy data intentionally have different shapes.

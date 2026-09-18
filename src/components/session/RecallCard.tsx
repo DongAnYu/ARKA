@@ -6,15 +6,23 @@ import { ExplanationPanel } from './ExplanationPanel'
 import { FlashcardCard } from './FlashcardCard'
 import { QuestionCard } from './QuestionCard'
 
-export function RecallCard({ item, isLast, onReviewed, onNext, onBusy }: {
+export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewed, onNext, onBusy }: {
   item: RecallItem
+  planDate: string
+  spaceId: number | null
+  isExtra: boolean
   isLast: boolean
   onReviewed: (result: RecallResult) => void
   onNext: () => void
   onBusy: (busy: boolean) => void
 }) {
   const [controller] = useState(() => createReviewController(item,
-    (submission) => invoke<LearningItem>('review_learning_item', { submission })))
+    (submission) => invoke<LearningItem>('review_study_item', {
+      planDate,
+      spaceId,
+      isExtra,
+      submission,
+    })))
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
   const [motionEnabled, setMotionEnabled] = useState(true)
