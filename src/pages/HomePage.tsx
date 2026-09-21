@@ -761,9 +761,15 @@ export function HomePage() {
               what you actually remember.
             </p>
             <div className="header-actions">
+              <Link to="/session" className="btn-primary home-recall-action">
+                <span className="btn-content">
+                  <Play className="size-4" aria-hidden="true" />
+                  Start today’s recall
+                </span>
+              </Link>
               <button
                 type="button"
-                className="btn-primary"
+                className="btn-secondary home-import-action"
                 onClick={chooseVault}
                 disabled={isLoading}
               >
@@ -1055,7 +1061,11 @@ export function HomePage() {
           )}
 
           {isGenerating && (
-            <section className="generation-progress generation-progress-focused" aria-live="polite">
+            <section
+              id="generation-progress"
+              className="generation-progress generation-progress-focused"
+              aria-live="polite"
+            >
               <header className="generation-live-banner">
                 <span
                   className={`generation-live-pulse${generationProgress?.is_paused ? ' is-paused' : ''}`}

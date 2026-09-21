@@ -1,8 +1,10 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Copy, Minus, Square, X } from 'lucide-react'
+import { ChevronRight, Copy, Minus, Pause, Sparkles, Square, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import arkaAppIcon from '../assets/arka-app-icon.png'
+import { useGeneration } from '../generation/context'
 import {
   MODEL_CONFIG_UPDATED_EVENT,
   type PersistedModelConfig,
@@ -41,6 +43,7 @@ const summarizeConfig = (config: PersistedModelConfig): ConfigSummary => ({
 })
 
 export function AppTitleBar() {
+  const { generationProgress, isGenerating } = useGeneration()
   const [config, setConfig] = useState<ConfigSummary>(EMPTY_CONFIG)
   const [isLoading, setIsLoading] = useState(RUNNING_IN_TAURI)
   const [isMaximized, setIsMaximized] = useState(false)
@@ -113,6 +116,11 @@ export function AppTitleBar() {
   }
 
   const appWindow = RUNNING_IN_TAURI ? getCurrentWindow() : null
+  const generationPercent = Math.min(
+    100,
+    Math.max(0, Math.round(generationProgress?.progress_percent ?? 0)),
+  )
+  const isGenerationPaused = Boolean(generationProgress?.is_paused)
 
   return (
     <header className="app-titlebar" data-tauri-drag-region>
@@ -121,26 +129,72 @@ export function AppTitleBar() {
         <span data-tauri-drag-region>A.R.K.A.</span>
       </div>
 
-      <div
-        className="titlebar-config"
-        data-tauri-drag-region
-        aria-label="Current model configuration"
-        aria-busy={isLoading}
-      >
-        <div className="titlebar-config-item" data-tauri-drag-region title={`LLM: ${config.generation}`}>
-          <span className="titlebar-config-label" data-tauri-drag-region>LLM</span>
-          <span className="titlebar-config-value" data-tauri-drag-region>
-            {isLoading ? 'Loading…' : config.generation}
+      {isGenerating ? (
+        <Link
+          className={`titlebar-generation-status${isGenerationPaused ? ' is-paused' : ''}`}
+          to="/#generation-progress"
+          aria-label={`${isGenerationPaused ? 'Generation paused' : 'Generation in progress'}, ${generationPercent}% complete. Return to generation.`}
+        >
+          <span className="titlebar-generation-icon" aria-hidden="true">
+            {isGenerationPaused ? <Pause /> : <Sparkles />}
           </span>
-        </div>
-        <span className="titlebar-config-divider" aria-hidden="true" data-tauri-drag-region />
-        <div className="titlebar-config-item" data-tauri-drag-region title={`Embedding: ${config.embedding}`}>
-          <span className="titlebar-config-label" data-tauri-drag-region>Embedding</span>
-          <span className="titlebar-config-value" data-tauri-drag-region>
-            {isLoading ? 'Loading…' : config.embedding}
+          <span className="titlebar-generation-copy" aria-hidden="true">
+            <span>{isGenerationPaused ? 'Paused' : 'Generating'}</span>
+            <strong>{generationPercent}%</strong>
           </span>
-        </div>
-      </div>
+          <progress
+            className="titlebar-generation-progress"
+            max="100"
+            value={generationPercent}
+            aria-hidden="true"
+          />
+          <span className="titlebar-generation-return" aria-hidden="true">
+            View
+            <ChevronRight />
+          </span>
+        </Link>
+      ) : (
+        <nav
+          className="titlebar-config"
+          data-tauri-drag-region
+          aria-label="Current model configuration"
+          aria-busy={isLoading}
+        >
+          <Link
+            className={`titlebar-config-item${!isLoading && config.generation === 'Not configured' ? ' is-unconfigured' : ''}`}
+            to="/models#generation-model-settings"
+            aria-label={`Question generation model: ${isLoading ? 'Loading' : config.generation}. Open model settings.`}
+            aria-describedby="titlebar-generation-help"
+          >
+            <span className="titlebar-config-label">LLM</span>
+            <span className="titlebar-config-value">
+              {isLoading ? 'Loading…' : config.generation}
+            </span>
+            <ChevronRight className="titlebar-config-chevron" aria-hidden="true" />
+            <span id="titlebar-generation-help" className="titlebar-config-tooltip" role="tooltip">
+              <strong>Question generation</strong>
+              <span>Creates flashcards and multiple-choice questions from your notes.</span>
+            </span>
+          </Link>
+          <span className="titlebar-config-divider" aria-hidden="true" data-tauri-drag-region />
+          <Link
+            className={`titlebar-config-item${!isLoading && config.embedding === 'Not configured' ? ' is-unconfigured' : ''}`}
+            to="/models#embedding-model-settings"
+            aria-label={`Embedding model: ${isLoading ? 'Loading' : config.embedding}. Open model settings.`}
+            aria-describedby="titlebar-embedding-help"
+          >
+            <span className="titlebar-config-label">Embedding</span>
+            <span className="titlebar-config-value">
+              {isLoading ? 'Loading…' : config.embedding}
+            </span>
+            <ChevronRight className="titlebar-config-chevron" aria-hidden="true" />
+            <span id="titlebar-embedding-help" className="titlebar-config-tooltip" role="tooltip">
+              <strong>Entity embeddings</strong>
+              <span>Powers Deep thinking by finding related concepts across your note.</span>
+            </span>
+          </Link>
+        </nav>
+      )}
 
       <div className="titlebar-controls" aria-label="Window controls">
         <button
