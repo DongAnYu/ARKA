@@ -11,6 +11,8 @@ type AnswerOptionProps = {
   isSubmitted: boolean
   isCorrect: boolean
   isIncorrect: boolean
+  shortcutKey?: string
+  ariaKeyShortcut?: string
   onSelect: (id: OptionId) => void
 }
 
@@ -23,6 +25,8 @@ export function AnswerOption({
   disabled,
   isCorrect,
   isIncorrect,
+  shortcutKey,
+  ariaKeyShortcut,
   onSelect,
 }: AnswerOptionProps) {
   const classNames = ['session-answer-option']
@@ -54,7 +58,10 @@ export function AnswerOption({
       onClick={() => onSelect(id)}
       disabled={disabled}
       aria-pressed={isSelected}
-      aria-label={statusLabel ? `${label}. ${text}. ${statusLabel}.` : `${label}. ${text}.`}
+      aria-keyshortcuts={ariaKeyShortcut}
+      aria-label={statusLabel
+        ? `${label}. ${text}. ${statusLabel}.`
+        : `${label}. ${text}.${shortcutKey ? ` Keyboard shortcut ${shortcutKey}.` : ''}`}
     >
       <span className="session-answer-label" aria-hidden="true">
         {label}
@@ -65,6 +72,8 @@ export function AnswerOption({
           {isCorrect ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}
           {statusLabel}
         </span>
+      ) : shortcutKey ? (
+        <kbd className="session-keycap session-answer-key" aria-hidden="true">{shortcutKey}</kbd>
       ) : null}
     </button>
   )
