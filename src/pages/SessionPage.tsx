@@ -161,6 +161,7 @@ export function SessionPage() {
   const remaining = plan?.items.filter((item) => !item.is_extra) ?? []
   const reviews = remaining.filter((item) => !item.was_new).length
   const newItems = remaining.filter((item) => item.was_new).length
+  const hasNoStudyItems = Boolean(plan && plan.total_count === 0)
   const complete = Boolean(plan && plan.total_count > 0 && remaining.length === 0)
   const unfilledTarget = plan
     ? Math.max(0, plan.daily_target - plan.completed_count - remaining.length)
@@ -193,12 +194,19 @@ export function SessionPage() {
         <>
           <section className="daily-plan surface-panel" aria-labelledby="daily-plan-heading" aria-busy={busy}>
             <div className="daily-plan-heading">
-              <h2 id="daily-plan-heading" ref={planHeading} tabIndex={-1}>{complete ? 'Today’s plan complete' : 'Today’s plan'}</h2>
+              <h2 id="daily-plan-heading" ref={planHeading} tabIndex={-1}>
+                {hasNoStudyItems ? 'Nothing to study yet' : complete ? 'Today’s plan complete' : 'Today’s plan'}
+              </h2>
               <Link to="/settings#study-preferences">Adjust daily target</Link>
             </div>
             <div className="daily-plan-content">
               <div className="daily-plan-summary">
-                {complete ? (
+                {hasNoStudyItems ? (
+                  <>
+                    <p className="daily-plan-progress">No learning items are ready for recall.</p>
+                    <p className="daily-plan-detail">Generate learning items from your notes to build your first study plan.</p>
+                  </>
+                ) : complete ? (
                   <p className="daily-plan-progress">You studied {plan.completed_count} {plan.completed_count === 1 ? 'item' : 'items'}.</p>
                 ) : plan.total_count > 0 ? (
                   <>
@@ -206,16 +214,22 @@ export function SessionPage() {
                     <p className="daily-plan-detail">{remaining.length} remaining · {reviews} {reviews === 1 ? 'review' : 'reviews'} and {newItems} new</p>
                   </>
                 ) : <p className="daily-plan-progress">No items to study in this plan.</p>}
-                <p className="daily-plan-detail">
-                  Daily target: {plan.daily_target} items, including up to {plan.max_new_items} new.
-                  {plan.total_count < plan.daily_target && !complete ? ' Today only includes currently eligible items.' : ''}
-                </p>
+                {!hasNoStudyItems ? (
+                  <p className="daily-plan-detail">
+                    Daily target: {plan.daily_target} items, including up to {plan.max_new_items} new.
+                    {plan.total_count < plan.daily_target && !complete ? ' Today only includes currently eligible items.' : ''}
+                  </p>
+                ) : null}
                 {plan.extra_completed_count > 0 ? <p className="daily-plan-detail">{plan.extra_completed_count} additional {plan.extra_completed_count === 1 ? 'item' : 'items'} studied today.</p> : null}
                 <div className="daily-plan-actions">
                   {remaining.length > 0 ? (
                     <button className="btn-primary" type="button" disabled={busy} onClick={() => void start()}>
                       {busy ? 'Loading…' : plan.completed_count > 0 ? 'Continue studying' : 'Start studying'}<ArrowRight className="size-4" aria-hidden="true" />
                     </button>
+                  ) : hasNoStudyItems ? (
+                    <Link className="btn-primary" to="/">
+                      Add learning items<ArrowRight className="size-4" aria-hidden="true" />
+                    </Link>
                   ) : (
                     <>
                       <Link className="btn-primary" to="/">Done for today</Link>
