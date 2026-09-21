@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { useLocation } from 'react-router-dom'
 import { BackToHome } from '../components/BackToHome'
 import { announceModelConfigUpdate, type PersistedModelConfig } from '../modelConfig'
 
@@ -265,7 +266,12 @@ function ModelConfigPanel({
   }
 
   return (
-    <section className="settings-panel model-config-panel" aria-labelledby={`${prefix}-title`}>
+    <section
+      id={`${prefix}-model-settings`}
+      className="settings-panel model-config-panel"
+      aria-labelledby={`${prefix}-title`}
+      tabIndex={-1}
+    >
       <header className="model-config-head">
         <div>
           <h2 id={`${prefix}-title`}>{title}</h2>
@@ -461,6 +467,7 @@ function ModelConfigPanel({
 }
 
 export function ModelsPage() {
+  const location = useLocation()
   const [savedGenerationConfig, setSavedGenerationConfig] = useState<ProviderConfig | null>(null)
   const [savedEmbeddingConfig, setSavedEmbeddingConfig] = useState<ProviderConfig | null>(null)
   const [generationConfig, setGenerationConfig] = useState<ProviderConfig>(() => defaultConfig())
@@ -473,6 +480,24 @@ export function ModelsPage() {
   const [testStatus, setTestStatus] = useState<StatusMessage | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [isTestingEmbedding, setIsTestingEmbedding] = useState(false)
+
+  useEffect(() => {
+    if (!location.hash) {
+      return
+    }
+
+    const target = document.getElementById(location.hash.slice(1))
+    if (!target) {
+      return
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      target.scrollIntoView({ block: 'start' })
+      target.focus({ preventScroll: true })
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [location.hash])
 
   useEffect(() => {
     invoke<PersistedModelConfig>('load_model_config')
@@ -671,9 +696,9 @@ export function ModelsPage() {
       setLlmConcurrency(String(concurrency))
       setPageStatus(
         embedding.selected_model
-          ? { message: 'Model and LLM concurrency settings saved.', tone: 'success' }
+          ? { message: 'All changes saved.', tone: 'success' }
           : {
-              message: 'Generation and LLM concurrency settings saved. Entity embeddings remain unconfigured.',
+              message: 'All changes saved. Entity embeddings remain unconfigured.',
               tone: 'info',
             },
       )
@@ -688,70 +713,85 @@ export function ModelsPage() {
   }
 
   return (
-    <div className="app-container settings-page" aria-label="Models page">
-      <BackToHome />
-      <header className="settings-panel settings-page-intro">
-        <h1>Model settings</h1>
-        <p className="settings-help-text">
-          Configure language-model generation, parallel requests, and entity matching.
-        </p>
-      </header>
+    <div className="models-page-layout" aria-label="Models page">
+      <div className="models-page-scroll">
+        <div className="app-container settings-page models-page-content">
+          <BackToHome />
+          <header className="settings-panel settings-page-intro">
+            <h1>Model settings</h1>
+            <p className="settings-help-text">
+              Configure language-model generation, parallel requests, and entity matching.
+            </p>
+          </header>
 
-      <ModelConfigPanel
-        scope="generation"
-        title="Question generation"
-        description="The language model that extracts knowledge and writes recall questions."
-        config={generationConfig}
-        savedConfig={savedGenerationConfig}
-        modelHistory={modelHistory}
-        fetchStatus={fetchStatuses.generation ?? null}
-        isFetching={fetchingScope === 'generation'}
-        onChange={updateGenerationConfig}
-        onFetchModels={() => fetchModels('generation')}
-        onClearStatus={() => clearFetchStatus('generation')}
-        llmConcurrency={llmConcurrency}
-        onLlmConcurrencyChange={(value) => {
-          setLlmConcurrency(value)
-          setPageStatus(null)
-        }}
-      />
+          <ModelConfigPanel
+            scope="generation"
+            title="Question generation"
+            description="The language model that extracts knowledge and writes recall questions."
+            config={generationConfig}
+            savedConfig={savedGenerationConfig}
+            modelHistory={modelHistory}
+            fetchStatus={fetchStatuses.generation ?? null}
+            isFetching={fetchingScope === 'generation'}
+            onChange={updateGenerationConfig}
+            onFetchModels={() => fetchModels('generation')}
+            onClearStatus={() => clearFetchStatus('generation')}
+            llmConcurrency={llmConcurrency}
+            onLlmConcurrencyChange={(value) => {
+              setLlmConcurrency(value)
+              setPageStatus(null)
+            }}
+          />
 
-      <ModelConfigPanel
-        scope="embedding"
-        title="Entity embeddings"
-        description="The embedding model that finds possible duplicate entities before semantic verification."
-        config={embeddingConfig}
-        savedConfig={savedEmbeddingConfig}
-        modelHistory={modelHistory}
-        fetchStatus={fetchStatuses.embedding ?? null}
-        isFetching={fetchingScope === 'embedding'}
-        onChange={updateEmbeddingConfig}
-        onFetchModels={() => fetchModels('embedding')}
-        onClearStatus={() => clearFetchStatus('embedding')}
-      />
+          <ModelConfigPanel
+            scope="embedding"
+            title="Entity embeddings"
+            description="The embedding model that finds possible duplicate entities before semantic verification."
+            config={embeddingConfig}
+            savedConfig={savedEmbeddingConfig}
+            modelHistory={modelHistory}
+            fetchStatus={fetchStatuses.embedding ?? null}
+            isFetching={fetchingScope === 'embedding'}
+            onChange={updateEmbeddingConfig}
+            onFetchModels={() => fetchModels('embedding')}
+            onClearStatus={() => clearFetchStatus('embedding')}
+          />
 
-      <div className="embedding-test-row">
-        <div>
-          <h2>Verify entity embeddings</h2>
-          <p>Send one short test input and confirm the model returns a valid vector.</p>
+          <div className="embedding-test-row">
+            <div>
+              <h2>Verify entity embeddings</h2>
+              <p>Send one short test input and confirm the model returns a valid vector.</p>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={testEmbeddingConnection}
+              disabled={isTestingEmbedding || isSaving}
+            >
+              {isTestingEmbedding ? 'Testing...' : 'Test embedding'}
+            </button>
+          </div>
+
+          {testStatus && (
+            <p className={statusClassName(testStatus)} role={testStatus.tone === 'error' ? 'alert' : 'status'}>
+              {testStatus.message}
+            </p>
+          )}
         </div>
-        <button
-          type="button"
-          className="btn-secondary"
-          onClick={testEmbeddingConnection}
-          disabled={isTestingEmbedding || isSaving}
-        >
-          {isTestingEmbedding ? 'Testing...' : 'Test embedding'}
-        </button>
       </div>
 
-      {testStatus && (
-        <p className={statusClassName(testStatus)} role={testStatus.tone === 'error' ? 'alert' : 'status'}>
-          {testStatus.message}
-        </p>
-      )}
+      <footer className="models-save-footer" aria-label="Save model settings" aria-busy={isSaving}>
+        <div className="models-save-footer-inner">
+          <div className="models-save-feedback">
+            {pageStatus ? (
+              <p className={statusClassName(pageStatus)} role={pageStatus.tone === 'error' ? 'alert' : 'status'}>
+                {pageStatus.message}
+              </p>
+            ) : (
+              <p className="models-save-hint">Generation and embedding settings save together.</p>
+            )}
+          </div>
 
-      <div className="settings-actions settings-actions-right model-settings-save-row">
         <button
           type="button"
           className="btn-primary"
@@ -760,13 +800,8 @@ export function ModelsPage() {
         >
           {isSaving ? 'Saving...' : 'Save model settings'}
         </button>
-
-        {pageStatus && (
-          <p className={statusClassName(pageStatus)} role={pageStatus.tone === 'error' ? 'alert' : 'status'}>
-            {pageStatus.message}
-          </p>
-        )}
-      </div>
+        </div>
+      </footer>
     </div>
   )
 }
