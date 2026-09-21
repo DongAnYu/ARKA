@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ArrowLeft, ArrowRight, ChevronDown, Ellipsis, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChevronDown, Ellipsis, Search, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BackToHome } from '../components/BackToHome'
 import { RecallDonutChart } from '../components/RecallDonutChart'
@@ -34,6 +34,22 @@ type RecallDashboard = {
   spaces: RecallSpaceSummary[]
 }
 
+type LibraryStatusFilter = 'all' | 'new' | 'scheduled' | 'overdue'
+type LibraryFormatFilter = 'all' | 'mcq' | 'flashcard'
+
+const statusFilters: { value: LibraryStatusFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'new', label: 'New' },
+  { value: 'scheduled', label: 'Scheduled' },
+  { value: 'overdue', label: 'Overdue' },
+]
+
+const formatFilters: { value: LibraryFormatFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'mcq', label: 'MCQ' },
+  { value: 'flashcard', label: 'Flashcard' },
+]
+
 const learningItemLabel = (count: number) =>
   `${count} ${count === 1 ? 'learning item' : 'learning items'}`
 
@@ -50,6 +66,46 @@ const getLearningItemSummary = (item: LearningItem) => {
 
   return item.target?.trim() || `Learning item #${item.id}`
 }
+
+const isLearningItemOverdue = (item: LearningItem, todayUtc: string) =>
+  item.recall_state === 'scheduled' &&
+  Boolean(item.schedule.next_review_at) &&
+  item.schedule.next_review_at!.slice(0, 10) < todayUtc
+
+const getLearningItemSearchText = (item: LearningItem) => [
+  item.id,
+  item.target,
+  item.answer,
+  item.explanation,
+  item.generation.model,
+  item.generation.provider,
+  item.generation.pipeline,
+  item.source?.note_path,
+  ...item.variants.flatMap((variant) => [
+    variant.prompt,
+    ...(variant.format === 'mcq' ? variant.options.map((option) => option.text) : []),
+  ]),
+]
+  .filter((value): value is string | number => value !== null && value !== undefined)
+  .join(' ')
+  .normalize('NFKC')
+  .toLocaleLowerCase()
+
+const matchesStatusFilter = (
+  item: LearningItem,
+  filter: LibraryStatusFilter,
+  todayUtc: string,
+) => {
+  if (filter === 'all') return true
+  if (filter === 'overdue') return isLearningItemOverdue(item, todayUtc)
+  if (filter === 'scheduled') {
+    return item.recall_state === 'scheduled' && !isLearningItemOverdue(item, todayUtc)
+  }
+  return item.recall_state === filter
+}
+
+const matchesFormatFilter = (item: LearningItem, filter: LibraryFormatFilter) =>
+  filter === 'all' || item.variants.some((variant) => variant.format === filter)
 
 const toEditorValue = (item: LearningItem): LearningItemEditorValue => {
   const flashcard = item.variants.find((variant) => variant.format === 'flashcard')
@@ -119,6 +175,94 @@ const toEditInput = (
   }
 }
 
+const getModalFocusableElements = (dialog: HTMLElement) =>
+  Array.from(
+    dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hasAttribute('hidden'))
+
+const useModalFocus = (
+  isOpen: boolean,
+  isBusy: boolean,
+  onClose: () => void,
+  fallbackFocusSelector: string,
+) => {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
+  const isBusyRef = useRef(isBusy)
+  const onCloseRef = useRef(onClose)
+
+  useEffect(() => {
+    isBusyRef.current = isBusy
+    onCloseRef.current = onClose
+  }, [isBusy, onClose])
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const dialog = dialogRef.current
+    previousFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      const firstFocusable = dialog ? getModalFocusableElements(dialog)[0] : null
+      const focusTarget = firstFocusable ?? dialog
+      focusTarget?.focus()
+    })
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!dialog) return
+
+      if (event.key === 'Escape' && !isBusyRef.current) {
+        event.preventDefault()
+        onCloseRef.current()
+        return
+      }
+
+      if (event.key !== 'Tab') return
+
+      const focusableElements = getModalFocusableElements(dialog)
+      if (focusableElements.length === 0) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+
+      const firstFocusable = focusableElements[0]
+      const lastFocusable = focusableElements[focusableElements.length - 1]
+      const activeElement = document.activeElement
+
+      if (event.shiftKey && (activeElement === firstFocusable || !dialog.contains(activeElement))) {
+        event.preventDefault()
+        lastFocusable.focus()
+      } else if (!event.shiftKey && activeElement === lastFocusable) {
+        event.preventDefault()
+        firstFocusable.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      document.removeEventListener('keydown', handleKeyDown)
+      const previousFocus = previousFocusRef.current
+      const fallbackFocus = document.querySelector<HTMLElement>(fallbackFocusSelector)
+      window.requestAnimationFrame(() => {
+        if (previousFocus?.isConnected) {
+          previousFocus.focus()
+        } else {
+          fallbackFocus?.focus()
+        }
+      })
+    }
+  }, [fallbackFocusSelector, isOpen])
+
+  return dialogRef
+}
+
 export function QuestionsPage() {
   const navigate = useNavigate()
   const [spaces, setSpaces] = useState<RecallSpace[]>([])
@@ -143,13 +287,51 @@ export function QuestionsPage() {
   const [editItemError, setEditItemError] = useState('')
   const [isSavingItem, setIsSavingItem] = useState(false)
   const [isManagingSpaces, setIsManagingSpaces] = useState(false)
-  const [deletingSpaceId, setDeletingSpaceId] = useState<number | null>(null)
-  const [pendingDeleteSpaceId, setPendingDeleteSpaceId] = useState<number | null>(null)
+  const [selectedSpaceIds, setSelectedSpaceIds] = useState<number[]>([])
+  const [isDeletingSpaces, setIsDeletingSpaces] = useState(false)
+  const [pendingDeleteSpaces, setPendingDeleteSpaces] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<LibraryStatusFilter>('all')
+  const [formatFilter, setFormatFilter] = useState<LibraryFormatFilter>('all')
+  const selectAllSpacesRef = useRef<HTMLInputElement>(null)
+  const selectAllQuestionsRef = useRef<HTMLInputElement>(null)
 
-  const pendingDeleteSpace =
-    pendingDeleteSpaceId === null
-      ? null
-      : spaces.find((space) => space.id === pendingDeleteSpaceId) ?? null
+  const normalizedSearchQuery = searchQuery.trim().normalize('NFKC').toLocaleLowerCase()
+  const todayUtc = new Date().toISOString().slice(0, 10)
+  const filteredQuestions = useMemo(
+    () => questions.filter((item) =>
+      matchesStatusFilter(item, statusFilter, todayUtc) &&
+      matchesFormatFilter(item, formatFilter) &&
+      (!normalizedSearchQuery || getLearningItemSearchText(item).includes(normalizedSearchQuery)),
+    ),
+    [formatFilter, normalizedSearchQuery, questions, statusFilter, todayUtc],
+  )
+  const hasActiveLibraryFilters = Boolean(normalizedSearchQuery) || statusFilter !== 'all' || formatFilter !== 'all'
+
+  const deletableSpaces = spaces.filter((space) => space.id !== 1)
+  const areAllSpacesSelected =
+    deletableSpaces.length > 0 && selectedSpaceIds.length === deletableSpaces.length
+  const areSomeSpacesSelected = selectedSpaceIds.length > 0 && !areAllSpacesSelected
+  const areAllQuestionsSelected =
+    filteredQuestions.length > 0 && selectedQuestionIds.length === filteredQuestions.length
+  const areSomeQuestionsSelected =
+    selectedQuestionIds.length > 0 && !areAllQuestionsSelected
+  const selectedSpaceIdSet = new Set(selectedSpaceIds)
+  const selectedSpaceLearningItemCount = allQuestions.filter((item) =>
+    selectedSpaceIdSet.has(item.space_id),
+  ).length
+
+  useEffect(() => {
+    if (selectAllSpacesRef.current) {
+      selectAllSpacesRef.current.indeterminate = areSomeSpacesSelected
+    }
+  }, [areSomeSpacesSelected])
+
+  useEffect(() => {
+    if (selectAllQuestionsRef.current) {
+      selectAllQuestionsRef.current.indeterminate = areSomeQuestionsSelected
+    }
+  }, [areSomeQuestionsSelected])
 
   const refreshSpaceSummaries = async () => {
     try {
@@ -189,6 +371,9 @@ export function QuestionsPage() {
     setSelectedSpace(space)
     setIsManagingQuestions(false)
     setSelectedQuestionIds([])
+    setSearchQuery('')
+    setStatusFilter('all')
+    setFormatFilter('all')
     setError('')
     setIsLoadingQuestions(true)
 
@@ -211,6 +396,9 @@ export function QuestionsPage() {
     setQuestions([])
     setIsManagingQuestions(false)
     setSelectedQuestionIds([])
+    setSearchQuery('')
+    setStatusFilter('all')
+    setFormatFilter('all')
     setError('')
   }
 
@@ -218,54 +406,67 @@ export function QuestionsPage() {
     setIsManagingSpaces((current) => {
       const next = !current
       if (!next) {
-        setPendingDeleteSpaceId(null)
+        setSelectedSpaceIds([])
+        setPendingDeleteSpaces(false)
       }
       return next
     })
   }
 
-  const requestDeleteSpace = (space: RecallSpace) => {
-    if (deletingSpaceId !== null || space.id === 1) {
-      return
-    }
+  const toggleSelectedSpace = (id: number) => {
+    if (id === 1) return
+    setSelectedSpaceIds((current) =>
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+    )
+  }
 
-    setPendingDeleteSpaceId(space.id)
+  const toggleAllSpaces = () => {
+    setSelectedSpaceIds(
+      areAllSpacesSelected ? [] : deletableSpaces.map((space) => space.id),
+    )
+  }
+
+  const requestDeleteSpaces = () => {
+    if (selectedSpaceIds.length === 0 || isDeletingSpaces) return
+    setPendingDeleteSpaces(true)
     setError('')
   }
 
-  const cancelDeleteSpace = () => {
-    if (deletingSpaceId !== null) {
-      return
-    }
-
-    setPendingDeleteSpaceId(null)
+  const cancelDeleteSpaces = () => {
+    if (isDeletingSpaces) return
+    setPendingDeleteSpaces(false)
   }
 
-  const confirmDeleteSpace = async (space: RecallSpace) => {
-    if (deletingSpaceId !== null) {
-      return
-    }
-
-    if (space.id === 1) {
-      setError('General is the default space and cannot be deleted.')
-      return
-    }
-
+  const confirmDeleteSpaces = async () => {
+    if (selectedSpaceIds.length === 0 || isDeletingSpaces) return
     setError('')
-    setDeletingSpaceId(space.id)
+    setIsDeletingSpaces(true)
 
     try {
-      await invoke('delete_space', { id: space.id })
+      const idsToDelete = [...selectedSpaceIds]
+      const results = await Promise.allSettled(
+        idsToDelete.map((id) => invoke('delete_space', { id })),
+      )
+      const deletedIds = idsToDelete.filter((_, index) => results[index].status === 'fulfilled')
+      const failedIds = idsToDelete.filter((_, index) => results[index].status === 'rejected')
+      const deletedIdSet = new Set(deletedIds)
 
-      setSpaces((current) => current.filter((item) => item.id !== space.id))
-      setAllQuestions((current) => current.filter((item) => item.space_id !== space.id))
+      setSpaces((current) => current.filter((item) => !deletedIdSet.has(item.id)))
+      setAllQuestions((current) => current.filter((item) => !deletedIdSet.has(item.space_id)))
       void refreshSpaceSummaries()
-      setPendingDeleteSpaceId(null)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to delete recall space'
-      setError(message)
+      setPendingDeleteSpaces(false)
+
+      if (failedIds.length > 0) {
+        setSelectedSpaceIds(failedIds)
+        setError(
+          `${deletedIds.length} ${deletedIds.length === 1 ? 'Space was' : 'Spaces were'} deleted, but ${failedIds.length} could not be deleted. Try again.`,
+        )
+      } else {
+        setSelectedSpaceIds([])
+        setIsManagingSpaces(false)
+      }
     } finally {
-      setDeletingSpaceId(null)
+      setIsDeletingSpaces(false)
     }
   }
 
@@ -283,6 +484,34 @@ export function QuestionsPage() {
     setSelectedQuestionIds((current) =>
       current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
     )
+  }
+
+  const toggleAllQuestions = () => {
+    setSelectedQuestionIds(
+      areAllQuestionsSelected ? [] : filteredQuestions.map((question) => question.id),
+    )
+  }
+
+  const updateSearchQuery = (value: string) => {
+    setSearchQuery(value)
+    setSelectedQuestionIds([])
+  }
+
+  const updateStatusFilter = (value: LibraryStatusFilter) => {
+    setStatusFilter(value)
+    setSelectedQuestionIds([])
+  }
+
+  const updateFormatFilter = (value: LibraryFormatFilter) => {
+    setFormatFilter(value)
+    setSelectedQuestionIds([])
+  }
+
+  const clearLibraryFilters = () => {
+    setSearchQuery('')
+    setStatusFilter('all')
+    setFormatFilter('all')
+    setSelectedQuestionIds([])
   }
 
   const requestDeleteQuestions = () => {
@@ -327,6 +556,19 @@ export function QuestionsPage() {
       setIsDeletingQuestions(false)
     }
   }
+
+  const deleteQuestionsDialogRef = useModalFocus(
+    pendingDeleteQuestions,
+    isDeletingQuestions,
+    cancelDeleteQuestions,
+    '.btn-manage-questions',
+  )
+  const deleteSpacesDialogRef = useModalFocus(
+    pendingDeleteSpaces,
+    isDeletingSpaces,
+    cancelDeleteSpaces,
+    '.btn-manage-questions',
+  )
 
   const getSpaceQuestionCount = (spaceId: number) => {
     return allQuestions.filter((item) => item.space_id === spaceId).length
@@ -488,22 +730,174 @@ export function QuestionsPage() {
               onClick={toggleManageQuestions}
               aria-pressed={isManagingQuestions}
             >
-              {isManagingQuestions ? 'Cancel Selection' : 'Manage learning items'}
+              {isManagingQuestions ? 'Cancel selection' : 'Select items'}
             </button>
           </section>
+
+          {!isLoadingQuestions && questions.length > 0 && (
+            <section className="library-filter-panel" aria-label={`Search and filter ${selectedSpace.name}`}>
+              <div className="library-search-row">
+                <label className="library-search-field" htmlFor="library-space-search">
+                  <span className="library-filter-label">Search this Space</span>
+                  <span className="library-search-control">
+                    <Search aria-hidden="true" />
+                    <input
+                      id="library-space-search"
+                      type="search"
+                      value={searchQuery}
+                      onChange={(event) => updateSearchQuery(event.target.value)}
+                      placeholder="Search prompts, answers, or source notes"
+                      autoComplete="off"
+                    />
+                    {searchQuery ? (
+                      <button
+                        type="button"
+                        className="library-search-clear"
+                        onClick={() => updateSearchQuery('')}
+                        aria-label="Clear search"
+                      >
+                        <X aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </span>
+                </label>
+
+                <div className="library-result-summary" role="status" aria-live="polite">
+                  <strong>{filteredQuestions.length}</strong>
+                  <span>
+                    {hasActiveLibraryFilters
+                      ? `of ${learningItemLabel(questions.length)}`
+                      : filteredQuestions.length === 1 ? 'learning item' : 'learning items'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="library-filter-row">
+                <div className="library-filter-group" role="group" aria-label="Filter by review status">
+                  <span className="library-filter-label">Status</span>
+                  <div className="library-filter-options">
+                    {statusFilters.map((filter) => (
+                      <button
+                        key={filter.value}
+                        type="button"
+                        className={`library-filter-chip${statusFilter === filter.value ? ' is-active' : ''}`}
+                        aria-pressed={statusFilter === filter.value}
+                        onClick={() => updateStatusFilter(filter.value)}
+                      >
+                        {filter.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="library-filter-group" role="group" aria-label="Filter by practice format">
+                  <span className="library-filter-label">Format</span>
+                  <div className="library-filter-options">
+                    {formatFilters.map((filter) => (
+                      <button
+                        key={filter.value}
+                        type="button"
+                        className={`library-filter-chip${formatFilter === filter.value ? ' is-active' : ''}`}
+                        aria-pressed={formatFilter === filter.value}
+                        onClick={() => updateFormatFilter(filter.value)}
+                      >
+                        {filter.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {hasActiveLibraryFilters ? (
+                  <button type="button" className="library-clear-filters" onClick={clearLibraryFilters}>
+                    Clear filters
+                  </button>
+                ) : null}
+              </div>
+            </section>
+          )}
+
+          {isManagingQuestions && !isLoadingQuestions && filteredQuestions.length > 0 && (
+            <section className="bulk-selection-bar" aria-label="Bulk selection controls">
+              <div className="bulk-selection-summary">
+                <label className="bulk-select-all">
+                  <input
+                    ref={selectAllQuestionsRef}
+                    type="checkbox"
+                    checked={areAllQuestionsSelected}
+                    onChange={toggleAllQuestions}
+                  />
+                  <span>
+                    Select all {filteredQuestions.length}
+                    {hasActiveLibraryFilters ? ' results' : ''}
+                  </span>
+                </label>
+                <span className="bulk-selected-count" role="status" aria-live="polite">
+                  {selectedQuestionIds.length} selected
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn-primary btn-delete-selection"
+                onClick={requestDeleteQuestions}
+                disabled={selectedQuestionIds.length === 0 || isDeletingQuestions}
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+                {selectedQuestionIds.length === 0
+                  ? 'Delete selected'
+                  : selectedQuestionIds.length === 1
+                    ? 'Delete 1 item'
+                    : `Delete ${selectedQuestionIds.length} items`}
+              </button>
+            </section>
+          )}
 
           {isLoadingQuestions ? (
             <section className="settings-panel">
               <p className="settings-help-text">Loading learning items...</p>
             </section>
           ) : questions.length === 0 ? (
-            <section className="settings-panel">
-              <p className="settings-help-text">No learning items found for this space.</p>
+            <section className="library-empty-state" aria-labelledby="empty-space-heading">
+              <Sparkles aria-hidden="true" />
+              <div>
+                <h2 id="empty-space-heading">No learning items in this Space</h2>
+                <p>Generate learning items from your notes, then save them to {selectedSpace.name}.</p>
+              </div>
+              <div className="library-empty-actions">
+                <button type="button" className="btn-primary" onClick={() => navigate('/')}>
+                  Generate items<ArrowRight className="size-4" aria-hidden="true" />
+                </button>
+                <button type="button" className="btn-secondary" onClick={backToSpaces}>
+                  Back to Spaces
+                </button>
+              </div>
+            </section>
+          ) : filteredQuestions.length === 0 ? (
+            <section className="library-no-results" aria-live="polite">
+              <Search aria-hidden="true" />
+              <div>
+                <h2>No matching learning items</h2>
+                <p>Try a different search or clear the filters to see everything in this Space.</p>
+              </div>
+              <button type="button" className="btn-secondary" onClick={clearLibraryFilters}>
+                Clear filters
+              </button>
             </section>
           ) : (
             <section className="questions-list" aria-label="Learning items list">
-              {questions.map((item) => (
-                <article className="question-card" key={item.id}>
+              {filteredQuestions.map((item) => {
+                const isOverdue = isLearningItemOverdue(item, todayUtc)
+                const statusLabel = isOverdue
+                  ? 'Overdue'
+                  : item.recall_state === 'new'
+                    ? 'New'
+                    : 'Scheduled'
+
+                return (
+                <article
+                  className={`question-card${isManagingQuestions ? ' is-selectable' : ''}${selectedQuestionIds.includes(item.id) ? ' is-selected' : ''}`}
+                  key={item.id}
+                  onClick={isManagingQuestions ? () => toggleSelectedQuestion(item.id) : undefined}
+                >
                   <div className="question-card-head">
                     {isManagingQuestions && (
                       <label className="question-select" aria-label={`Select learning item ${item.id}`}>
@@ -511,13 +905,24 @@ export function QuestionsPage() {
                           type="checkbox"
                           checked={selectedQuestionIds.includes(item.id)}
                           onChange={() => toggleSelectedQuestion(item.id)}
+                          onClick={(event) => event.stopPropagation()}
                         />
                       </label>
                     )}
 
                     <div className="question-toggle">
                       <div className="question-summary">
-                        <span className="question-id">#{item.id}</span>
+                        <div className="question-summary-meta">
+                          <span className="question-id">#{item.id}</span>
+                          <span className={`question-state-badge is-${statusLabel.toLocaleLowerCase()}`}>
+                            {statusLabel}
+                          </span>
+                          {item.variants.map((variant) => (
+                            <span className="question-format-badge" key={variant.id}>
+                              {variant.format === 'mcq' ? 'MCQ' : 'Flashcard'}
+                            </span>
+                          ))}
+                        </div>
                         <h2>{getLearningItemSummary(item)}</h2>
                       </div>
                       <button
@@ -532,22 +937,8 @@ export function QuestionsPage() {
                     </div>
                   </div>
                 </article>
-              ))}
-            </section>
-          )}
-
-          {isManagingQuestions && questions.length > 0 && (
-            <section className="questions-manage-actions" aria-label="Learning item management actions">
-              <button
-                type="button"
-                className="btn-primary btn-delete-questions"
-                onClick={requestDeleteQuestions}
-                disabled={selectedQuestionIds.length === 0 || isDeletingQuestions}
-              >
-                {selectedQuestionIds.length <= 1
-                  ? 'Delete selected learning item'
-                  : `Delete ${selectedQuestionIds.length} selected learning items`}
-              </button>
+                )
+              })}
             </section>
           )}
 
@@ -558,16 +949,19 @@ export function QuestionsPage() {
               onClick={cancelDeleteQuestions}
             >
               <div
+                ref={deleteQuestionsDialogRef}
                 className="delete-space-modal"
                 role="alertdialog"
                 aria-modal="true"
-                aria-label="Delete selected learning items"
+                aria-labelledby="delete-learning-items-heading"
+                aria-describedby="delete-learning-items-description"
+                tabIndex={-1}
                 onClick={(event) => {
                   event.stopPropagation()
                 }}
               >
-                <h2>Delete learning items?</h2>
-                <p>
+                <h2 id="delete-learning-items-heading">Delete learning items?</h2>
+                <p id="delete-learning-items-description">
                   <strong>
                     {selectedQuestionIds.length === 1
                       ? '1 learning item'
@@ -715,8 +1109,17 @@ export function QuestionsPage() {
           <p className="settings-help-text">Loading recall spaces...</p>
         </section>
       ) : spaces.length === 0 ? (
-        <section className="settings-panel">
-          <p className="settings-help-text">No recall spaces found.</p>
+        <section className="library-empty-state" aria-labelledby="empty-library-heading">
+          <Sparkles aria-hidden="true" />
+          <div>
+            <h2 id="empty-library-heading">No Recall Spaces yet</h2>
+            <p>Generate learning items from a Markdown note to create your first Space.</p>
+          </div>
+          <div className="library-empty-actions">
+            <button type="button" className="btn-primary" onClick={() => navigate('/')}>
+              Generate from notes<ArrowRight className="size-4" aria-hidden="true" />
+            </button>
+          </div>
         </section>
       ) : (
         <>
@@ -727,30 +1130,68 @@ export function QuestionsPage() {
               className={`btn-secondary btn-manage-questions${isManagingSpaces ? ' is-active' : ''}`}
               onClick={toggleManageSpaces}
               aria-pressed={isManagingSpaces}
+              disabled={deletableSpaces.length === 0}
+              title={deletableSpaces.length === 0 ? 'General is the only Space and cannot be deleted.' : undefined}
             >
-              {isManagingSpaces ? 'Done' : 'Manage spaces'}
+              {isManagingSpaces ? 'Cancel selection' : 'Select Spaces'}
             </button>
           </section>
+
+          {isManagingSpaces && deletableSpaces.length > 0 && (
+            <section className="bulk-selection-bar" aria-label="Bulk Space selection controls">
+              <div className="bulk-selection-summary">
+                <label className="bulk-select-all">
+                  <input
+                    ref={selectAllSpacesRef}
+                    type="checkbox"
+                    checked={areAllSpacesSelected}
+                    onChange={toggleAllSpaces}
+                  />
+                  <span>Select all {deletableSpaces.length}</span>
+                </label>
+                <span className="bulk-selected-count" role="status" aria-live="polite">
+                  {selectedSpaceIds.length} selected
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn-primary btn-delete-selection"
+                onClick={requestDeleteSpaces}
+                disabled={selectedSpaceIds.length === 0 || isDeletingSpaces}
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+                {selectedSpaceIds.length === 0
+                  ? 'Delete selected'
+                  : selectedSpaceIds.length === 1
+                    ? 'Delete 1 Space'
+                    : `Delete ${selectedSpaceIds.length} Spaces`}
+              </button>
+            </section>
+          )}
 
           <section className="recall-spaces-grid" aria-label="Recall spaces list">
             {spaces.map((space) => {
               const summary = getSpaceSummary(space.id)
               const isDefaultSpace = space.id === 1
+              const isSelected = selectedSpaceIds.includes(space.id)
               const isCaughtUp = summary.due_count === 0
 
               return (
-                <article className={`recall-space-card${isManagingSpaces ? ' is-managing' : ''}`} key={space.id}>
+                <article
+                  className={`recall-space-card${isManagingSpaces ? ' is-managing' : ''}${isSelected ? ' is-selected' : ''}${isDefaultSpace ? ' is-default' : ''}`}
+                  key={space.id}
+                >
                   <button
                     type="button"
                     className="recall-space-button"
                     onClick={() => {
-                      if (deletingSpaceId !== null) {
+                      if (isManagingSpaces || isDeletingSpaces) {
                         return
                       }
 
                       void openSpace(space)
                     }}
-                    disabled={deletingSpaceId !== null}
+                    disabled={isManagingSpaces || isDeletingSpaces}
                   >
                     <div className="recall-space-meta">
                       <h2>{space.name}</h2>
@@ -776,7 +1217,7 @@ export function QuestionsPage() {
                             state: { recallSpaceId: space.id, recallSpaceName: space.name },
                           })
                         }}
-                        disabled={(isCaughtUp && summary.new_count === 0) || deletingSpaceId !== null}
+                        disabled={(isCaughtUp && summary.new_count === 0) || isManagingSpaces || isDeletingSpaces}
                       >
                         Study this Space
                         <ArrowRight className="size-4" aria-hidden="true" />
@@ -792,54 +1233,72 @@ export function QuestionsPage() {
                       openEditSpace(space)
                     }}
                     aria-label={`Edit ${space.name}`}
-                    disabled={deletingSpaceId !== null}
+                    disabled={isManagingSpaces || isDeletingSpaces}
                   >
                     <Ellipsis className="size-4" aria-hidden="true" />
                   </button>
 
-                  {isManagingSpaces && (
-                    <button
-                      type="button"
-                      className="recall-space-trash-btn"
-                      onClick={() => requestDeleteSpace(space)}
-                      aria-label={`Delete ${space.name}`}
-                      title={isDefaultSpace ? 'General is the default space and cannot be deleted.' : undefined}
-                      disabled={deletingSpaceId !== null || isDefaultSpace}
+                  {isManagingSpaces && (isDefaultSpace ? (
+                    <div
+                      className="recall-space-selection-protected"
+                      title="General is the default Space and cannot be deleted."
                     >
-                      <Trash2 className="size-4" aria-hidden="true" />
-                    </button>
-                  )}
+                      <span><ShieldCheck className="size-4" aria-hidden="true" /> Default</span>
+                    </div>
+                  ) : (
+                    <label className="recall-space-selection-target">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelectedSpace(space.id)}
+                        aria-label={`Select ${space.name}`}
+                      />
+                    </label>
+                  ))}
                 </article>
               )
             })}
           </section>
 
-          {isManagingSpaces && pendingDeleteSpace && (
+          {isManagingSpaces && pendingDeleteSpaces && (
             <section
               className="delete-space-modal-overlay"
               role="presentation"
-              onClick={cancelDeleteSpace}
+              onClick={cancelDeleteSpaces}
             >
               <div
+                ref={deleteSpacesDialogRef}
                 className="delete-space-modal"
                 role="alertdialog"
                 aria-modal="true"
-                aria-label={`Delete ${pendingDeleteSpace.name}`}
+                aria-labelledby="delete-spaces-heading"
+                aria-describedby="delete-spaces-description"
+                tabIndex={-1}
                 onClick={(event) => {
                   event.stopPropagation()
                 }}
               >
-                <h2>Delete recall space?</h2>
-                <p>
-                  <strong>{pendingDeleteSpace.name}</strong> and all learning items inside this space will be
-                  permanently deleted.
+                <h2 id="delete-spaces-heading">
+                  {selectedSpaceIds.length === 1 ? 'Delete selected Space?' : 'Delete selected Spaces?'}
+                </h2>
+                <p id="delete-spaces-description">
+                  <strong>
+                    {selectedSpaceIds.length === 1 ? '1 Space' : `${selectedSpaceIds.length} Spaces`}
+                  </strong>{' '}
+                  and{' '}
+                  <strong>
+                    {selectedSpaceLearningItemCount === 1
+                      ? '1 learning item'
+                      : `${selectedSpaceLearningItemCount} learning items`}
+                  </strong>{' '}
+                  {selectedSpaceIds.length === 1 ? 'inside it' : 'inside them'} will be permanently deleted. General will remain untouched.
                 </p>
                 <div className="delete-space-modal-actions">
                   <button
                     type="button"
                     className="btn-secondary delete-space-cancel-btn"
-                    onClick={cancelDeleteSpace}
-                    disabled={deletingSpaceId !== null}
+                    onClick={cancelDeleteSpaces}
+                    disabled={isDeletingSpaces}
                   >
                     Cancel
                   </button>
@@ -847,11 +1306,15 @@ export function QuestionsPage() {
                     type="button"
                     className="btn-primary delete-space-confirm-btn"
                     onClick={() => {
-                      void confirmDeleteSpace(pendingDeleteSpace)
+                      void confirmDeleteSpaces()
                     }}
-                    disabled={deletingSpaceId !== null}
+                    disabled={isDeletingSpaces}
                   >
-                    {deletingSpaceId !== null ? 'Deleting...' : 'Confirm delete'}
+                    {isDeletingSpaces
+                      ? 'Deleting...'
+                      : selectedSpaceIds.length === 1
+                        ? 'Delete 1 Space'
+                        : `Delete ${selectedSpaceIds.length} Spaces`}
                   </button>
                 </div>
               </div>
