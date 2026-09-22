@@ -1,16 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { Check, RotateCcw } from 'lucide-react'
+import { commands, recallChoiceCommands } from '../../commands/commands'
 import { reviewIntervalLabel, type RecallItem } from '../../learning-items/recall'
 import type { ReviewIntervals, ReviewRating } from '../../learning-items/types'
+import { getAriaKeyShortcut, getShortcut } from '../../shortcuts/defaultShortcuts'
 import { GenerationModel } from './GenerationModel'
-
-const ratings: { value: ReviewRating; label: string }[] = [
-  { value: 'again', label: 'Again' },
-  { value: 'hard', label: 'Hard' },
-  { value: 'good', label: 'Good' },
-  { value: 'easy', label: 'Easy' },
-]
+import { flashcardRatings } from './recallOptions'
 
 export function FlashcardCard({ item, revealed, disabled, rating, onReveal, onRate }: {
   item: Extract<RecallItem, { format: 'flashcard' }>
@@ -41,7 +37,13 @@ export function FlashcardCard({ item, revealed, disabled, rating, onReveal, onRa
       </div>
       {!revealed ? (
         <div className="session-question-actions">
-          <button type="button" className="btn-primary" onClick={onReveal}>Reveal answer</button>
+          <button type="button" className="btn-primary session-reveal-btn" onClick={onReveal}
+            aria-keyshortcuts={getAriaKeyShortcut(commands.recallPrimaryAction)}>
+            <span>Reveal answer</span>
+            <kbd className="session-keycap session-action-key" aria-hidden="true">
+              {getShortcut(commands.recallPrimaryAction)?.display}
+            </kbd>
+          </button>
         </div>
       ) : (
         <>
@@ -57,22 +59,30 @@ export function FlashcardCard({ item, revealed, disabled, rating, onReveal, onRa
               </span>
               <div>
                 <strong>{rating === 'again' ? 'Again' : 'Recalled'}</strong>
-                <p>{ratings.find((entry) => entry.value === rating)?.label} · Review saved</p>
+                <p>{flashcardRatings.find((entry) => entry.value === rating)?.label} · Review saved</p>
               </div>
             </div>
           ) : null}
           <fieldset className="session-rating-controls" disabled={disabled}>
             <legend>How well did you recall this?</legend>
             <div className="session-rating-grid">
-              {ratings.map(({ value, label }) => (
+              {flashcardRatings.map(({ value, label }, index) => {
+                const shortcutCommand = recallChoiceCommands[index]
+                const shortcut = getShortcut(shortcutCommand)
+                return (
                 <button key={value} type="button" className="btn-secondary" data-rating={value}
-                  aria-pressed={rating === value} onClick={() => onRate(value)}>
-                  <span>{label}</span>
+                  aria-pressed={rating === value} aria-keyshortcuts={getAriaKeyShortcut(shortcutCommand)}
+                  onClick={() => onRate(value)}>
+                  <span className="session-rating-main">
+                    <span>{label}</span>
+                    <kbd className="session-keycap session-rating-key" aria-hidden="true">{shortcut?.display}</kbd>
+                  </span>
                   <span className="session-rating-interval">
                     {intervals ? `+${reviewIntervalLabel(intervals[value])}` : intervalError ? 'Interval unavailable' : 'Calculating…'}
                   </span>
                 </button>
-              ))}
+                )
+              })}
             </div>
           </fieldset>
           {intervalError && !rating ? (

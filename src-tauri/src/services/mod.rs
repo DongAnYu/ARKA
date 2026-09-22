@@ -8,3 +8,5 @@ pub mod graph_generation;
 pub mod learning_items;
 pub mod llm;
 pub mod scheduler;
+pub mod study_plan;
+pub mod user_profile;

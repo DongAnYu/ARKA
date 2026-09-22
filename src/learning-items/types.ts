@@ -46,7 +46,7 @@ export type LearningItem = {
   space_id: number
   generation: GenerationMetadata
   source: SourceReference | null
-  status: 'ready' | 'needs_repair'
+  recall_state: 'new' | 'scheduled'
   schedule: ReviewState
   variants: LearningItemVariant[]
 }

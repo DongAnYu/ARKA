@@ -104,6 +104,14 @@
   flex-wrap: wrap;
 }
 
+.home-recall-action {
+  text-decoration: none;
+}
+
+.home-import-action {
+  padding: 16px 24px;
+}
+
 .btn-content {
   display: inline-flex;
   align-items: center;
@@ -814,7 +822,8 @@
 
   .titlebar-config-item {
     display: block;
-    overflow: hidden;
+    height: auto;
+    padding-block: 3px;
   }
 
   .titlebar-config-label {
@@ -824,7 +833,12 @@
 
   .titlebar-config-value {
     display: block;
+    max-width: min(180px, 20vw);
     line-height: 1.25;
+  }
+
+  .titlebar-config-chevron {
+    display: none;
   }
 
   .app-sidebar {

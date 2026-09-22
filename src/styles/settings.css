@@ -1,7 +1,52 @@
 /* Model and application settings */
+.study-preferences-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+.study-preferences-fields input { max-width: 160px; }
+.study-preferences-apply { display: flex; align-items: center; gap: 10px; }
+.study-preferences-apply input { accent-color: var(--color-amethyst); }
+#study-preferences { scroll-margin-top: 24px; }
+#study-preferences :focus-visible { outline: 2px solid var(--color-lavender); outline-offset: 4px; }
+
+.profile-settings-form {
+  max-width: 560px;
+}
+
+.profile-name-field {
+  max-width: 480px;
+}
+
+.profile-name-input {
+  width: 100%;
+}
+
+@media (max-width: 600px) {
+  .study-preferences-fields { grid-template-columns: 1fr; gap: 20px; }
+}
+
 .settings-page {
   gap: 16px;
   justify-content: flex-start;
+}
+
+.models-page-layout {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.models-page-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.models-page-content {
+  min-height: auto;
 }
 
 .settings-panel {
@@ -118,6 +163,12 @@
 
 .model-config-panel {
   gap: 22px;
+  scroll-margin-top: 24px;
+}
+
+.model-config-panel:focus-visible {
+  outline: 2px solid rgba(var(--rgb-lavender), 0.75);
+  outline-offset: 3px;
 }
 
 .model-config-head {
@@ -210,8 +261,67 @@
   flex: 0 0 auto;
 }
 
-.model-settings-save-row {
-  padding-top: 4px;
+.models-save-footer {
+  position: relative;
+  z-index: 10;
+  background-color: var(--color-surface);
+  box-shadow:
+    inset 0 1px rgba(var(--rgb-white), 0.09),
+    0 -12px 28px rgba(0, 0, 0, 0.24);
+}
+
+.models-save-footer-inner {
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+}
+
+.models-save-feedback {
+  min-width: 0;
+  flex: 1 1 280px;
+}
+
+.models-save-footer .settings-status,
+.models-save-hint {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.models-save-hint {
+  color: var(--color-medium-gray);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.models-save-footer .btn-primary {
+  min-width: 190px;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 768px) {
+  .models-page-layout {
+    height: calc(100dvh - 128px);
+  }
+
+  .models-page-content {
+    padding-bottom: 24px;
+  }
+}
+
+@media (max-width: 600px) {
+  .models-save-footer-inner {
+    padding: 12px 16px;
+  }
+
+  .models-save-footer .btn-primary {
+    width: 100%;
+  }
 }
 
 .settings-application {

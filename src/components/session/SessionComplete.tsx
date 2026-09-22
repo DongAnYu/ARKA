@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 type SessionCompleteProps = {
   reviewedCount: number
   recalledCount: number
+  mode: 'recall' | 'learn-new'
   onReturn: () => void
 }
 
@@ -64,6 +65,7 @@ function ReviewPieChart({
 export function SessionComplete({
   reviewedCount,
   recalledCount,
+  mode,
   onReturn,
 }: SessionCompleteProps) {
   const heading = useRef<HTMLHeadingElement>(null)
@@ -73,14 +75,19 @@ export function SessionComplete({
   const againCount = normalizedReviewedCount - normalizedRecalledCount
   const recallPercent =
     normalizedReviewedCount === 0 ? 0 : Math.round((normalizedRecalledCount / normalizedReviewedCount) * 100)
+  const isLearnNew = mode === 'learn-new'
 
   return (
     <section className="session-complete surface-panel" aria-label="Session complete">
       <span className="session-complete-mark" aria-hidden="true">
         <Check />
       </span>
-      <h1 ref={heading} tabIndex={-1}>Session Complete</h1>
-      <p className="session-complete-summary">Here&apos;s how this recall session went.</p>
+      <h1 ref={heading} tabIndex={-1}>{isLearnNew ? 'Learning Complete' : 'Session Complete'}</h1>
+      <p className="session-complete-summary">
+        {isLearnNew
+          ? `${normalizedReviewedCount} new ${normalizedReviewedCount === 1 ? 'item is' : 'items are'} now scheduled for future recall.`
+          : 'Here\'s how this recall session went.'}
+      </p>
 
       <div className="session-complete-dashboard">
         <ReviewPieChart

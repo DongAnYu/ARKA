@@ -11,7 +11,7 @@
     "generated_at": null
   },
   "source": null,
-  "status": "ready",
+  "recall_state": "scheduled",
   "schedule": {
     "repetitions": 4,
     "interval_days": 38,

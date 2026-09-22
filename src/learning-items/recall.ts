@@ -8,7 +8,6 @@ export type RecallItem = Omit<SessionParent, 'id'> & {
 } & LearningItemVariant
 
 export function selectRecallVariant(item: LearningItem): RecallItem | null {
-  if (item.status !== 'ready') return null
   const mcq = item.variants.find((variant) => variant.format === 'mcq')
   const flashcard = item.variants.find((variant) => variant.format === 'flashcard')
   const variant = mcq && flashcard

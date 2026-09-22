@@ -1,4 +1,6 @@
 import type { RecallItem } from '../../learning-items/recall'
+import { commands, recallChoiceCommands } from '../../commands/commands'
+import { getAriaKeyShortcut, getShortcut } from '../../shortcuts/defaultShortcuts'
 import { AnswerOption } from './AnswerOption'
 import { GenerationModel } from './GenerationModel'
 
@@ -34,6 +36,8 @@ export function QuestionCard({
 
       <div className="session-answer-grid" role="list" aria-label="Answer options">
         {question.options.map((option, index) => {
+          const shortcutCommand = recallChoiceCommands[index]
+          const shortcut = shortcutCommand ? getShortcut(shortcutCommand) : undefined
           const isSelected = selectedOptionId === option.id
           const isCorrect = isSubmitted && option.id === question.correct_option_id
           const isIncorrect =
@@ -50,6 +54,8 @@ export function QuestionCard({
                 disabled={isSubmitted || isSubmitting}
                 isCorrect={isCorrect}
                 isIncorrect={isIncorrect}
+                shortcutKey={shortcut?.display}
+                ariaKeyShortcut={shortcutCommand ? getAriaKeyShortcut(shortcutCommand) : undefined}
                 onSelect={onSelectOption}
               />
             </div>
@@ -63,8 +69,14 @@ export function QuestionCard({
           className="btn-primary session-submit-btn"
           onClick={onSubmit}
           disabled={!canSubmit}
+          aria-keyshortcuts={getAriaKeyShortcut(commands.recallPrimaryAction)}
         >
-          {isSubmitting ? 'Submitting...' : isSubmitted ? 'Answer submitted' : 'Submit answer'}
+          <span>{isSubmitting ? 'Submitting...' : isSubmitted ? 'Answer submitted' : 'Submit answer'}</span>
+          {!isSubmitted ? (
+            <kbd className="session-keycap session-action-key" aria-hidden="true">
+              {getShortcut(commands.recallPrimaryAction)?.display}
+            </kbd>
+          ) : null}
         </button>
       </div>
     </section>

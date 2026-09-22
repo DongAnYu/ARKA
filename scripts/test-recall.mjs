@@ -8,7 +8,7 @@ const mcq = { id: 101, format: 'mcq', prompt: 'Which complexity?', options: [
 ], correct_option_id: 'stable-correct' }
 const flashcard = { id: 102, format: 'flashcard', prompt: 'Recall the complexity.' }
 function parent(variants, overrides = {}) {
-  return { id: 2, target: null, answer: 'O(log n)', explanation: null, status: 'ready',
+  return { id: 2, target: null, answer: 'O(log n)', explanation: null, recall_state: 'scheduled',
     generation: { model: null }, schedule: { repetitions: 0 }, variants, ...overrides }
 }
 const mcqResponse = { format: 'mcq', selected_option_id: 'stable-correct' }
@@ -42,8 +42,7 @@ test('paired selection is deterministic, independent of order, and alternates by
   }
 })
 
-test('repair items and missing variants are excluded', () => {
-  assert.equal(selectRecallVariant(parent([mcq], { status: 'needs_repair' })), null)
+test('items without review variants are excluded', () => {
   assert.equal(selectRecallVariant(parent([])), null)
 })
 
