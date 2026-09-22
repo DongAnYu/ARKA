@@ -11,6 +11,8 @@ A.R.K.A is a local-first Windows desktop study application that turns Markdown n
 
 Choose fast, focused generation for an individual note or use **Deep thinking** to build a knowledge graph and generate questions that connect related concepts. Every generated item can be reviewed, edited, kept, or discarded before it enters the study library.
 
+![A.R.K.A daily study plan showing completed, due, and new learning items](docs/images/readme/daily-study-plan.png)
+
 > [!NOTE]
 > A.R.K.A is an evolving MVP. Data models, generation behavior, and user-facing workflows may change before version 1.0.
 
@@ -38,6 +40,26 @@ A.R.K.A is source-available, not open-source software. The [A.R.K.A Personal Use
 4. Save the selected items to a Recall Space.
 5. Open Recall and follow today's plan. Due reviews are presented before New material.
 6. Answer multiple-choice questions or reveal and rate flashcards to update their SM-2 schedules.
+
+## Product Tour
+
+### Review before saving
+
+Refine the shared answer, explanation, flashcard, and optional multiple-choice variant for every generated Learning Item. Choose its Recall Space, then keep or discard the draft before it reaches the Library.
+
+![Learning Item review with editable core knowledge and practice variants](docs/images/readme/learning-item-review.png)
+
+### Organize the study workload
+
+The Library summarizes due, overdue, and New material across Recall Spaces, while keeping each Space available as a focused study session.
+
+![Learning Item Library workload summary and Recall Spaces](docs/images/readme/learning-item-library.png)
+
+### Review with keyboard or mouse
+
+Study multiple-choice and flashcard variants from the same underlying Learning Item. Keyboard shortcuts keep longer review sessions moving quickly.
+
+![Multiple-choice active-recall session with keyboard controls](docs/images/readme/mcq-review-session.png)
 
 ## Daily Study Plan
 
