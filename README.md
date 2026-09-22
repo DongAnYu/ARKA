@@ -114,6 +114,10 @@ Supported providers:
 | OpenAI | Hosted | Base URL, model ID, and API key |
 | OpenRouter | Hosted | Base URL, model ID, and API key |
 
+The Models screen exposes the provider, endpoint, timeout, credentials, and selected model for each role. The example below uses a local Ollama embedding model, keeping entity names and selected context on the device.
+
+![Entity embedding provider and model configuration using local Ollama](docs/images/readme/model-configuration.png)
+
 A.R.K.A can fetch installed models from an Ollama connection and test the embedding configuration before generation. Generation and embedding settings are saved together in the application's local database.
 
 When a hosted provider is selected, the note content required for generation is sent to that provider and is subject to its privacy policy. Never commit API keys to the repository.
