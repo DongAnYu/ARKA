@@ -159,11 +159,11 @@ async fn candidate_ids(
     let remaining = limit - candidates.len() as i64;
     let new_limit = remaining.min((state.max_new_items - new_completed).max(0));
     if new_limit > 0 {
+        // Newly generated items can fill unused capacity within today's fixed limits.
         let new_items: Vec<i64> = sqlx::query_scalar(
             "SELECT item.id FROM learning_items item
              WHERE (? IS NULL OR item.space_id=?)
                AND item.recall_state='new'
-               AND (item.generated_at IS NULL OR datetime(item.generated_at)<=datetime(?))
                AND EXISTS(SELECT 1 FROM question_variants variant WHERE variant.learning_item_id=item.id)
                AND NOT EXISTS(SELECT 1 FROM review_events event
                               WHERE event.local_date=? AND event.learning_item_id=item.id)
@@ -172,7 +172,6 @@ async fn candidate_ids(
         )
         .bind(space_id)
         .bind(space_id)
-        .bind(&state.started_at)
         .bind(&state.local_date)
         .bind(new_limit)
         .fetch_all(&mut *conn)
@@ -358,6 +357,13 @@ mod tests {
             .bind(id).bind(space).bind(state).bind(due).execute(pool).await.unwrap();
         sqlx::query("INSERT INTO question_variants(id,learning_item_id,format,prompt,content_json) VALUES(?,?,'flashcard','Prompt','{}')")
             .bind(id).bind(id).execute(pool).await.unwrap();
+    }
+
+    async fn generated_after_start(pool: &SqlitePool, id: i64, space: i64) {
+        item(pool, id, space, "new", None).await;
+        // Use the persisted cutoff so this regression does not depend on clock timing.
+        sqlx::query("UPDATE learning_items SET generated_at=(SELECT strftime('%Y-%m-%dT%H:%M:%SZ',started_at,'+1 second') FROM daily_study_state WHERE local_date=?) WHERE id=?")
+            .bind(local_day()).bind(id).execute(pool).await.unwrap();
     }
 
     async fn limits(pool: &SqlitePool, daily_target: i64, max_new_items: i64) {
@@ -556,11 +562,104 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daily_state_freezes_settings_and_excludes_items_generated_after_start() {
+    async fn generated_items_fill_an_initially_empty_plan_on_refresh() {
         let pool = fixture().await;
-        limits(&pool, 3, 1).await;
+        limits(&pool, 20, 5).await;
+        let empty = get_plan(&pool, None, false).await.unwrap();
+        assert_eq!(empty.total_count, 0);
+        assert!(empty.items.is_empty());
+
+        for id in 1..=10 {
+            generated_after_start(&pool, id, 1).await;
+        }
+
+        let refreshed = get_plan(&pool, None, false).await.unwrap();
+        assert_eq!(ids(&refreshed), [1, 2, 3, 4, 5]);
+        assert_eq!(refreshed.total_count, 5);
+        assert_eq!(refreshed.completed_count, 0);
+        assert!(refreshed.items.iter().all(|item| item.was_new));
+        assert_eq!(
+            ids(&get_plan(&pool, None, false).await.unwrap()),
+            ids(&refreshed)
+        );
+
+        let reviewed = submit(&pool, &refreshed, 1).await.unwrap();
+        assert_eq!(reviewed.recall_state, RecallState::Scheduled);
+        let after = get_plan(&pool, None, false).await.unwrap();
+        assert_eq!(after.completed_count, 1);
+        assert_eq!(ids(&after), [2, 3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn generated_items_fill_remaining_capacity_without_displacing_session_items() {
+        let pool = fixture().await;
+        limits(&pool, 6, 4).await;
+        item(&pool, 1, 1, "scheduled", Some("2000-01-01 00:00:00")).await;
+        item(&pool, 2, 1, "new", None).await;
+        item(&pool, 3, 1, "new", None).await;
+        let session = get_plan(&pool, None, false).await.unwrap();
+        assert_eq!(ids(&session), [1, 2, 3]);
+        submit(&pool, &session, 2).await.unwrap();
+
+        for id in 4..=7 {
+            generated_after_start(&pool, id, 2).await;
+        }
+        let refreshed = get_plan(&pool, None, false).await.unwrap();
+        assert_eq!(ids(&refreshed), [1, 3, 4, 5]);
+        assert_eq!(refreshed.completed_count, 1);
+        assert_eq!(refreshed.total_count, 5);
+        assert!(!refreshed.items[0].was_new);
+
+        // The remaining items from the session started before generation still submit.
+        submit(&pool, &session, 1).await.unwrap();
+        submit(&pool, &session, 3).await.unwrap();
+        let focused = get_plan(&pool, Some(2), false).await.unwrap();
+        assert_eq!(focused.completed_count, 3);
+        assert_eq!(ids(&focused), [4, 5]);
+        submit(&pool, &focused, 4).await.unwrap();
+        submit(&pool, &focused, 5).await.unwrap();
+
+        let done = get_plan(&pool, None, false).await.unwrap();
+        assert_eq!(done.completed_count, 5);
+        assert!(done.items.is_empty());
+        assert!(!done.can_study_more);
+    }
+
+    #[tokio::test]
+    async fn generated_items_cannot_exceed_daily_target_or_new_allowance() {
+        for (daily_target, max_new_items) in [(2, 2), (6, 1), (6, 0)] {
+            let pool = fixture().await;
+            limits(&pool, daily_target, max_new_items).await;
+            item(&pool, 1, 1, "scheduled", None).await;
+            item(&pool, 2, 1, "new", None).await;
+            let session = get_plan(&pool, None, false).await.unwrap();
+            for id in ids(&session) {
+                submit(&pool, &session, id).await.unwrap();
+            }
+            for id in 3..=5 {
+                generated_after_start(&pool, id, 2).await;
+            }
+
+            for scope in [None, Some(2)] {
+                let after = get_plan(&pool, scope, false).await.unwrap();
+                assert_eq!(after.completed_count, session.total_count);
+                assert!(after.items.is_empty());
+                assert!(
+                    review(&pool, &after.local_date, scope, false, submission(3))
+                        .await
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn daily_state_freezes_settings_and_review_cutoff_but_allows_new_generation() {
+        let pool = fixture().await;
+        limits(&pool, 3, 2).await;
         item(&pool, 1, 1, "new", None).await;
         let original = get_plan(&pool, None, false).await.unwrap();
+        assert_eq!(ids(&original), [1]);
         sqlx::query("UPDATE daily_study_state SET started_at='2026-01-01 00:00:00'")
             .execute(&pool)
             .await
@@ -570,16 +669,20 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        limits(&pool, 8, 2).await;
+        generated_after_start(&pool, 3, 1).await;
+        item(&pool, 4, 1, "scheduled", Some("2026-01-01 00:00:01")).await;
+        limits(&pool, 8, 3).await;
 
         let same = get_plan(&pool, None, false).await.unwrap();
-        assert_eq!(ids(&same), ids(&original));
+        assert_eq!(ids(&same), [1, 3]);
         assert_eq!(same.daily_target, 3);
+        assert_eq!(same.max_new_items, 2);
 
         let tomorrow = (Local::now().date_naive() + chrono::Duration::days(1)).to_string();
         let next = plan_for_day(&pool, &tomorrow, None, false).await.unwrap();
         assert_eq!(next.daily_target, 8);
-        assert_eq!(ids(&next), [2, 1]);
+        assert_eq!(next.max_new_items, 3);
+        assert_eq!(ids(&next), [2, 4, 1, 3]);
     }
 
     #[tokio::test]
@@ -700,10 +803,12 @@ mod tests {
         super::super::database::run_migrations(&mut *pool.acquire().await.unwrap())
             .await
             .unwrap();
-        item(&pool, 1, 1, "new", None).await;
-        item(&pool, 2, 1, "new", None).await;
+        limits(&pool, 3, 2).await;
+        assert!(get_plan(&pool, None, false).await.unwrap().items.is_empty());
+        generated_after_start(&pool, 1, 1).await;
         let before = get_plan(&pool, None, false).await.unwrap();
         submit(&pool, &before, 1).await.unwrap();
+        generated_after_start(&pool, 2, 1).await;
         pool.close().await;
 
         let reopened = SqlitePoolOptions::new()
@@ -714,6 +819,11 @@ mod tests {
         let after = get_plan(&reopened, None, false).await.unwrap();
         assert_eq!(after.completed_count, 1);
         assert_eq!(ids(&after), [2]);
+        assert_eq!((after.daily_target, after.max_new_items), (3, 2));
+        submit(&reopened, &after, 2).await.unwrap();
+        let done = get_plan(&reopened, None, false).await.unwrap();
+        assert_eq!(done.completed_count, 2);
+        assert!(done.items.is_empty());
         reopened.close().await;
         std::fs::remove_file(path).unwrap();
     }
