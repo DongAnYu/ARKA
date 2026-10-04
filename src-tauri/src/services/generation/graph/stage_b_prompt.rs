@@ -127,20 +127,20 @@ pub fn render_bundle_context(bundle: &GraphContextBundle) -> String {
         for rel in &bundle.supporting_relations {
             // Render human-readable relation with canonical names, no internal IDs
             let rel_text = match rel.relation_type {
-                crate::services::graph_generation::types::RelationType::RelatedTo => {
+                crate::services::generation::graph::types::RelationType::RelatedTo => {
                     "is related to"
                 }
-                crate::services::graph_generation::types::RelationType::Contrasts => {
+                crate::services::generation::graph::types::RelationType::Contrasts => {
                     "contrasts with"
                 }
-                crate::services::graph_generation::types::RelationType::Prerequisite => {
+                crate::services::generation::graph::types::RelationType::Prerequisite => {
                     "is a prerequisite for"
                 }
-                crate::services::graph_generation::types::RelationType::Consequence => "leads to",
-                crate::services::graph_generation::types::RelationType::Example => {
+                crate::services::generation::graph::types::RelationType::Consequence => "leads to",
+                crate::services::generation::graph::types::RelationType::Example => {
                     "is an example of"
                 }
-                crate::services::graph_generation::types::RelationType::CounterExample => {
+                crate::services::generation::graph::types::RelationType::CounterExample => {
                     "is a counter-example to"
                 }
             };
@@ -199,7 +199,7 @@ pub fn build_user_prompt(bundle: &GraphContextBundle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph_generation::types::{
+    use crate::services::generation::graph::types::{
         EntityNode, KnowledgePoint, KnowledgeType, Relation, RelationType,
     };
 

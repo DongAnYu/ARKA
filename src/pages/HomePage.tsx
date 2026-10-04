@@ -19,6 +19,8 @@ import {
 } from 'lucide-react'
 import arkaAppIcon from '../assets/arka-app-icon.png'
 import { BackToHome } from '../components/BackToHome'
+import { DefaultGenerationMetrics } from '../components/DefaultGenerationMetrics'
+import { GenerationPhases, GenerationProgressRing } from '../generation/components/GenerationProgress'
 import { GeneratedLearningItemReview } from '../components/GeneratedLearningItemReview'
 import {
   GeneratedQuestionReview,
@@ -35,6 +37,8 @@ import {
   type ReviewQuestionDraft,
 } from '../generation/review'
 import { useGeneration } from '../generation/context'
+import { DefaultGenerationOptions } from '../generation/components/DefaultGenerationOptions'
+import { DEFAULT_GENERATION_PHASES, maximumInputError } from '../generation/options'
 import type { ChunkPreview, Note } from '../generation/types'
 import {
   MODEL_CONFIG_UPDATED_EVENT,
@@ -112,6 +116,8 @@ export function HomePage() {
     notes,
     selectedNote,
     generationMode,
+    generationOptions,
+    activeGenerationOptions,
     generationProgress,
     generationSummary,
     generationError,
@@ -120,10 +126,14 @@ export function HomePage() {
     selectNote,
     clearSelectedNote,
     setGenerationMode,
+    setGenerationOptions,
     startGeneration,
     togglePauseGeneration,
     cancelGeneration,
   } = useGeneration()
+  // Keep unfinished edits when the Default controls are hidden by a mode change.
+  const [maximumInput, setMaximumInput] = useState(String(generationOptions.max_learning_items))
+  const maximumError = maximumInputError(maximumInput)
 
   useEffect(() => {
     let cancelled = false
@@ -212,6 +222,7 @@ export function HomePage() {
         : false
   const canStartGeneration =
     areRequiredModelsReady && !isLoadingModelConfig && !modelConfigError
+      && (generationMode !== 'default' || !maximumError)
 
   useEffect(() => {
     if (hasSavedQuestions) {
@@ -703,9 +714,12 @@ export function HomePage() {
   }
 
   const generationPercent = generationProgress?.progress_percent ?? 0
+  const defaultReport = generationSummary?.default_selection ?? generationProgress?.default_selection
   const completedWork = generationProgress?.completed_chunks ?? 0
   const totalWork = generationProgress?.total_chunks ?? 0
-  const skippedWork = generationProgress?.failed_chunks ?? 0
+  const skippedWork = generationMode === 'default'
+    ? defaultReport?.extraction_failed_chunks ?? 0
+    : generationProgress?.failed_chunks ?? 0
   const successfulWork = Math.max(completedWork - skippedWork, 0)
   const questionsGenerated = generationProgress?.mcq_generated ?? 0
   const learningItemsGenerated =
@@ -714,7 +728,7 @@ export function HomePage() {
       0,
     ) ?? 0
   const generatedOutputCount = generationMode === 'default'
-    ? learningItemsGenerated
+    ? defaultReport?.generated_count ?? learningItemsGenerated
     : questionsGenerated
   const readyQuestionCount = activeReviewDrafts.length
   const recallQuestions = generationProgress?.recall_mcq_generated ?? 0
@@ -727,8 +741,9 @@ export function HomePage() {
     'Resolving entities',
     'Generating questions',
   ]
-  const currentGraphPhase = generationProgress?.phase_label ?? graphPhases[0]
-  const currentGraphPhaseIndex = Math.max(graphPhases.indexOf(currentGraphPhase), 0)
+  const activePhases = generationMode === 'graph' ? graphPhases : DEFAULT_GENERATION_PHASES
+  const currentPhase = generationProgress?.phase_label ?? activePhases[0]
+  const currentPhaseIndex = Math.max(activePhases.indexOf(currentPhase), 0)
   const finalCompletionPercent = generationProgress?.error
     ? generationProgress.progress_percent
     : 100
@@ -738,7 +753,7 @@ export function HomePage() {
   )
   const visibleSkippedWarnings = skippedWarningMessages.slice(0, 3)
   const additionalSkippedWarnings = skippedWarningMessages.length - visibleSkippedWarnings.length
-  const finalCompletedWork = Math.max(
+  const finalCompletedWork = generationMode === 'default' ? defaultReport?.extracted_chunks ?? 0 : Math.max(
     (generationSummary?.total_chunks ?? 0) - finalSkippedWork,
     0,
   )
@@ -869,9 +884,9 @@ export function HomePage() {
                   </span>
                   <span className="generation-mode-copy">
                     <strong>Default generation</strong>
-                    <span>Light reasoning. Extracts focused questions straight from the note.</span>
+                    <span>Assesses knowledge across the note to create a focused study set.</span>
                   </span>
-                  <span className="generation-mode-meta">Faster</span>
+                  <span className="generation-mode-meta">Focused</span>
                   {generationMode === 'default' && (
                     <span className="generation-mode-check" aria-hidden="true">
                       <Check />
@@ -905,6 +920,17 @@ export function HomePage() {
                 </button>
               </div>
 
+              {generationMode === 'default' && (
+                <DefaultGenerationOptions
+                  options={generationOptions}
+                  disabled={isGenerating}
+                  maximumInput={maximumInput}
+                  maximumError={maximumError}
+                  onMaximumInputChange={setMaximumInput}
+                  onOptionsChange={setGenerationOptions}
+                />
+              )}
+
               {generationMode && (
                 <div
                   className="generation-commit"
@@ -919,7 +945,7 @@ export function HomePage() {
                       <span>
                         {generationMode === 'graph'
                           ? 'Both models are required for connected, concept-heavy questions.'
-                          : 'One language model is required for a quick, focused study set.'}
+                          : 'One language model is required for a focused study set.'}
                       </span>
                     </div>
 
@@ -1044,12 +1070,14 @@ export function HomePage() {
                     >
                       <span className="btn-content">
                         <Sparkles className="size-4" aria-hidden="true" />
-                        Generate questions
+                        {generationMode === 'default' ? 'Generate learning items' : 'Generate questions'}
                       </span>
                     </button>
                     {!canStartGeneration && (
                       <span className="generation-action-help" id="generation-readiness-help">
-                        {isLoadingModelConfig
+                        {generationMode === 'default' && maximumError
+                          ? 'Enter a valid maximum to continue.'
+                          : isLoadingModelConfig
                           ? 'Checking your saved model settings…'
                           : 'Configure the required models to continue.'}
                       </span>
@@ -1074,9 +1102,6 @@ export function HomePage() {
                   {generationMode === 'graph' ? <GitBranch /> : <Sparkles />}
                 </span>
                 <div className="generation-live-copy">
-                  <span className="generation-live-kicker">
-                    {generationProgress?.is_paused ? 'Background activity paused' : 'AI working in background'}
-                  </span>
                   <h2 key={generationProgress?.activity ?? 'preparing'}>
                     {generationProgress?.is_paused
                       ? generationProgress.activity
@@ -1094,60 +1119,28 @@ export function HomePage() {
                 <div className="generation-phase-visual">
                   <div className="generation-panel-heading">
                     <span>Overall progress</span>
-                    <strong>{generationMode === 'graph' ? 'Graph pipeline' : 'Question pipeline'}</strong>
+                    <strong>{generationMode === 'graph' ? 'Graph pipeline' : 'Learning item pipeline'}</strong>
                   </div>
 
-                  <div
-                    className="generation-progress-ring"
-                    role="progressbar"
-                    aria-label="Question generation progress"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={generationPercent}
-                  >
-                    <svg viewBox="0 0 176 176" aria-hidden="true">
-                      <circle className="generation-ring-track" cx="88" cy="88" r="72" />
-                      <circle
-                        className="generation-ring-value"
-                        cx="88"
-                        cy="88"
-                        r="72"
-                        pathLength="1"
-                        style={{ strokeDashoffset: 1 - generationPercent / 100 }}
-                      />
-                    </svg>
-                    <div className="generation-ring-label">
-                      <strong key={generationPercent}>{generationPercent}%</strong>
-                      <span>complete</span>
-                    </div>
-                  </div>
-
-                  {generationMode === 'graph' ? (
-                    <ol className="generation-phase-list" aria-label="Graph generation phases">
-                      {graphPhases.map((phase, index) => (
-                        <li
-                          key={phase}
-                          className={index < currentGraphPhaseIndex ? 'is-complete' : index === currentGraphPhaseIndex ? 'is-current' : ''}
-                        >
-                          <span aria-hidden="true">{index < currentGraphPhaseIndex ? <Check /> : index + 1}</span>
-                          <div>
-                            <strong>{phase}</strong>
-                            <small>{index < currentGraphPhaseIndex ? 'Complete' : index === currentGraphPhaseIndex ? 'In progress' : 'Waiting'}</small>
-                          </div>
-                        </li>
-                      ))}
-                    </ol>
-                  ) : (
-                    <p className="generation-phase-note">
-                      Processing chunk {generationProgress?.current_chunk ?? 0} of {totalWork || '—'}
-                    </p>
-                  )}
+                  <GenerationProgressRing
+                    percent={generationPercent}
+                    label={generationMode === 'default' ? 'Learning item generation progress' : 'Question generation progress'}
+                    caption={generationProgress?.is_paused ? 'paused' : 'complete'}
+                  />
+                  <GenerationPhases
+                    phases={activePhases}
+                    currentIndex={currentPhaseIndex}
+                    paused={generationProgress?.is_paused ?? false}
+                    label={generationMode === 'graph' ? 'Graph generation phases' : 'Default generation phases'}
+                  />
                 </div>
 
                 <div className="generation-output-visual">
                   <div className="generation-panel-heading generation-output-heading">
-                    <span>Question output</span>
-                    <span className="generation-live-label"><i aria-hidden="true" /> Live</span>
+                    <span>{generationMode === 'default' ? 'Learning item output' : 'Question output'}</span>
+                    <span className={`generation-live-label${generationProgress?.is_paused ? ' is-paused' : ''}`}>
+                      <i aria-hidden="true" /> {generationProgress?.is_paused ? 'Paused' : 'Live'}
+                    </span>
                   </div>
 
                   <div className="generation-question-total">
@@ -1155,54 +1148,29 @@ export function HomePage() {
                     <span>{generationMode === 'default' ? 'learning items built' : 'questions built'}</span>
                   </div>
 
-                  <div className="generation-chart-group">
-                    {generationMode === 'graph' ? (
-                      <>
-                        <div className="generation-chart-row">
-                          <div><span>Relational</span><strong>{relationalQuestions}</strong></div>
-                          <div className="generation-chart-track"><span className="is-relational" style={{ transform: `scaleX(${relationalQuestions / questionScale})` }} /></div>
+                  {generationMode === 'graph' && (
+                    <div className="generation-chart-group">
+                      {[
+                        { label: 'Relational', count: relationalQuestions, className: 'is-relational' },
+                        { label: 'Recall', count: recallQuestions, className: 'is-recall' },
+                      ].map(({ label, count, className }) => (
+                        <div className="generation-chart-row" key={label}>
+                          <div><span>{label}</span><strong>{count}</strong></div>
+                          <div className="generation-chart-track">
+                            <span className={className} style={{ transform: `scaleX(${count / questionScale})` }} />
+                          </div>
                         </div>
-                        <div className="generation-chart-row">
-                          <div><span>Recall</span><strong>{recallQuestions}</strong></div>
-                          <div className="generation-chart-track"><span className="is-recall" style={{ transform: `scaleX(${recallQuestions / questionScale})` }} /></div>
-                        </div>
-                      </>
-                    ) : (
-                      <div className="generation-chart-row">
-                        <div><span>Generated</span><strong>{generatedOutputCount}</strong></div>
-                        <div className="generation-chart-track"><span className="is-relational" style={{ transform: `scaleX(${generatedOutputCount / workScale})` }} /></div>
-                      </div>
-                    )}
-                  </div>
-
-                  {readyQuestionCount > 0 && !hasSavedQuestions && (
-                    <div className="generation-review-ready" aria-live="polite">
-                      <div>
-                        <span>Ready now</span>
-                        <strong>
-                          {readyQuestionCount}{' '}
-                          {generationMode === 'default'
-                            ? readyQuestionCount === 1 ? 'learning item' : 'learning items'
-                            : readyQuestionCount === 1 ? 'question' : 'questions'}{' '}
-                          available
-                        </strong>
-                        <small>Review now while ARKA generates the rest.</small>
-                      </div>
-                      <button
-                        type="button"
-                        className="btn-secondary generation-review-ready-btn"
-                        onClick={beginQuestionReview}
-                        disabled={isSavingQuestions}
-                      >
-                        {hasStartedQuestionReview ? 'Continue Review' : 'Start Review'} · {readyQuestionCount} ready
-                        <ArrowRight aria-hidden="true" />
-                      </button>
+                      ))}
                     </div>
+                  )}
+
+                  {generationMode === 'default' && (
+                    <DefaultGenerationMetrics report={defaultReport} options={activeGenerationOptions ?? generationOptions} />
                   )}
 
                   <div className="generation-work-summary">
                     <div className="generation-work-heading">
-                      <span>{generationMode === 'graph' ? 'Knowledge work' : 'Chunk work'}</span>
+                      <span>{generationMode === 'graph' ? 'Knowledge work' : 'Source chunks processed'}</span>
                       <strong>{completedWork} / {totalWork || '—'}</strong>
                     </div>
                     <div className="generation-work-bar" aria-label={`${successfulWork} completed, ${skippedWork} skipped`}>
@@ -1220,6 +1188,31 @@ export function HomePage() {
                 </div>
               </div>
 
+              {readyQuestionCount > 0 && !hasSavedQuestions && (
+                <div className="generation-review-ready" aria-live="polite">
+                  <div>
+                    <span>Ready now</span>
+                    <strong>
+                      {readyQuestionCount}{' '}
+                      {generationMode === 'default'
+                        ? readyQuestionCount === 1 ? 'learning item' : 'learning items'
+                        : readyQuestionCount === 1 ? 'question' : 'questions'}{' '}
+                      available
+                    </strong>
+                    <small>Review now while ARKA generates the rest.</small>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary generation-review-ready-btn"
+                    onClick={beginQuestionReview}
+                    disabled={isSavingQuestions}
+                  >
+                    {hasStartedQuestionReview ? 'Continue Review' : 'Start Review'} · {readyQuestionCount} ready
+                    <ArrowRight aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+
               {(generationProgress?.failed_chunks ?? 0) > 0 && (
                 <p className="generation-inline-warning" role="status">
                   <AlertTriangle aria-hidden="true" />
@@ -1232,7 +1225,9 @@ export function HomePage() {
               <footer className="generation-dashboard-footer">
                 <span>
                   <Zap aria-hidden="true" />
-                  You can leave this screen open while ARKA keeps working.
+                  {generationProgress?.is_paused
+                    ? 'Your progress is preserved. Resume when you’re ready.'
+                    : 'You can leave this screen open while ARKA keeps working.'}
                 </span>
                 <div className="generation-actions">
                 <button
@@ -1327,30 +1322,12 @@ export function HomePage() {
                 <strong>{generationProgress?.error ? 'Stopped early' : 'Generation finished'}</strong>
               </div>
 
-              <div
-                className={`generation-progress-ring${generationProgress?.error ? ' is-error' : ' is-complete'}`}
-                role="progressbar"
-                aria-label="Completed generation progress"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={finalCompletionPercent}
-              >
-                <svg viewBox="0 0 176 176" aria-hidden="true">
-                  <circle className="generation-ring-track" cx="88" cy="88" r="72" />
-                  <circle
-                    className="generation-ring-value"
-                    cx="88"
-                    cy="88"
-                    r="72"
-                    pathLength="1"
-                    style={{ strokeDashoffset: 1 - finalCompletionPercent / 100 }}
-                  />
-                </svg>
-                <div className="generation-ring-label">
-                  <strong>{finalCompletionPercent}%</strong>
-                  <span>{generationProgress?.error ? 'reached' : 'complete'}</span>
-                </div>
-              </div>
+              <GenerationProgressRing
+                percent={finalCompletionPercent}
+                label="Completed generation progress"
+                caption={generationProgress?.error ? 'reached' : 'complete'}
+                className={generationProgress?.error ? 'is-error' : 'is-complete'}
+              />
 
               <p className="generation-complete-message">
                 {generationProgress?.error
@@ -1366,16 +1343,15 @@ export function HomePage() {
               </div>
 
               <dl className="generation-insight-list">
-                <div>
-                  <dt>{generationMode === 'default' ? 'Learning items created' : 'Questions created'}</dt>
-                  <dd>{generatedDraftCount}</dd>
-                </div>
+                {generationMode === 'graph' && (
+                  <div><dt>Questions created</dt><dd>{generatedDraftCount}</dd></div>
+                )}
                 <div>
                   <dt>Notes covered</dt>
                   <dd>{generationSummary.notes_with_chunks} / {generationSummary.total_notes}</dd>
                 </div>
                 <div>
-                  <dt>{generationMode === 'graph' ? 'Knowledge work completed' : 'Chunks completed'}</dt>
+                  <dt>{generationMode === 'graph' ? 'Knowledge work completed' : 'Source chunks extracted'}</dt>
                   <dd>{finalCompletedWork} / {generationSummary.total_chunks}</dd>
                 </div>
                 <div className={finalSkippedWork > 0 ? 'has-warning' : ''}>
@@ -1383,6 +1359,10 @@ export function HomePage() {
                   <dd>{finalSkippedWork}</dd>
                 </div>
               </dl>
+
+              {generationMode === 'default' && (
+                <DefaultGenerationMetrics report={defaultReport} options={generationOptions} finished />
+              )}
 
               {generationMode === 'graph' && generatedQuestionCount > 0 && (
                 <div className="generation-complete-composition">
@@ -1418,15 +1398,14 @@ export function HomePage() {
                     <p>{generationProgress.error.message}</p>
                   </div>
                 </div>
-              ) : finalSkippedWork > 0 ? (
+              ) : finalSkippedWork > 0 || (generationMode === 'default' && skippedWarningMessages.length > 0) ? (
                 <div className="generation-result-notice is-warning" role="status">
                   <AlertTriangle aria-hidden="true" />
                   <div>
                     <strong>
-                      Completed with {finalSkippedWork}{' '}
-                      {finalSkippedWork === 1 ? 'skipped chunk' : 'skipped chunks'}
+                      {finalSkippedWork > 0 ? `Completed with ${finalSkippedWork} skipped ${finalSkippedWork === 1 ? 'chunk' : 'chunks'}` : 'Concept assessment warnings'}
                     </strong>
-                    <p>Questions from the remaining work are ready to save.</p>
+                    <p>{generationMode === 'default' ? 'Generated learning items' : 'Questions'} from the remaining work are ready to review.</p>
                     {visibleSkippedWarnings.length > 0 && (
                       <div className="generation-result-details">
                         <ul>

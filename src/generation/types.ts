@@ -1,5 +1,17 @@
 export type GenerationMode = 'default' | 'graph'
 
+export type GenerationPurpose =
+  | 'balanced'
+  | 'foundations'
+  | 'explanations'
+  | 'practical_application'
+
+/** Captured per Default job; the ceiling counts learning targets, not variants. */
+export type GenerationOptions = Readonly<{
+  max_learning_items: number
+  purpose: GenerationPurpose
+}>
+
 export type Note = {
   id: number | null
   path: string
@@ -96,6 +108,32 @@ export type GenerationSummary = {
   notes_with_chunks: number
   note_reports: NoteGenerationReport[]
   chunk_previews: ChunkPreview[]
+  default_selection?: DefaultSelectionReport | null
+}
+
+export type DefaultSelectionReport = {
+  options: GenerationOptions
+  policy_version: string
+  extracted_chunks: number
+  extraction_failed_chunks: number
+  candidate_count: number
+  assessed_count: number
+  unresolved_assessments: number
+  unsuitable_count: number
+  source_context_reassessments: number
+  eligible_count: number
+  substantive_sections: number
+  selected_sections: number
+  selected_count: number
+  selection_complete: boolean
+  chunk_capacity_excluded: number
+  generation_total_chunks: number
+  generation_completed_chunks: number
+  generation_failed_chunks: number
+  generation_failed_targets: number
+  generation_omitted_count: number
+  generated_count: number
+  shortfall: { reason: string; message: string }[]
 }
 
 export type LlmFailureCode =
@@ -116,6 +154,7 @@ export type LlmFailure = {
 }
 
 export type GenerationProgress = {
+  default_selection?: DefaultSelectionReport | null
   job_id: string
   total_notes: number
   total_chunks: number

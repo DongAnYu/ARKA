@@ -229,8 +229,8 @@ fn connected_merge_groups(graph: &PropositionGraph, adjacency: &[Vec<usize>]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph_generation::entity_resolution::semantic_verifier::EntityVerificationSource;
-    use crate::services::graph_generation::types::EntityNode;
+    use crate::services::generation::graph::entity_resolution::semantic_verifier::EntityVerificationSource;
+    use crate::services::generation::graph::types::EntityNode;
 
     fn entity(id: &str, name: &str) -> EntityNode {
         EntityNode {

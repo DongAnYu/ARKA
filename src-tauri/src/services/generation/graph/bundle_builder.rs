@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::graph_index::GraphIndex;
 use super::types::{GraphContextBundle, KnowledgePoint, QuestionType, Relation};
-use crate::services::graph_generation::types::PropositionGraph;
+use crate::services::generation::graph::types::PropositionGraph;
 
 const MAX_RELATED_POINTS: usize = 3;
 
@@ -166,8 +166,8 @@ fn find_related_points(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph_generation::graph_index::build_index;
-    use crate::services::graph_generation::types::{
+    use crate::services::generation::graph::graph_index::build_index;
+    use crate::services::generation::graph::types::{
         EntityNode, KnowledgeType, Relation, RelationType,
     };
 

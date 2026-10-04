@@ -17,22 +17,22 @@ use rust_xlsxwriter::Workbook;
 use serde::Serialize;
 
 use services::embedding::{EmbeddingConfig, EmbeddingProvider, EmbeddingService};
-use services::graph_generation::entity_resolution::candidate_generator::CandidateConfig;
-use services::graph_generation::entity_resolution::pipeline::{
+use services::generation::graph::entity_resolution::candidate_generator::CandidateConfig;
+use services::generation::graph::entity_resolution::pipeline::{
     resolve_graph_entities_with_progress, EntityResolutionConfig, EntityResolutionProgress,
     DEFAULT_ENTITY_CANDIDATE_SIMILARITY,
 };
-use services::graph_generation::entity_resolution::semantic_verifier::{
+use services::generation::graph::entity_resolution::semantic_verifier::{
     EntityMatchDecision, EntityVerificationSource, VerifierConfig,
     DEFAULT_MAX_CONCURRENT_VERIFICATIONS,
 };
-use services::graph_generation::pipeline::{
+use services::generation::graph::pipeline::{
     run_graph_stage_a_with_progress_and_concurrency,
     run_graph_stage_b_for_graph_with_progress_and_concurrency, GraphStageAProgress,
     GraphStageAResult, GraphStageBProgress, GraphStageBResult, DEFAULT_STAGE_A_CONCURRENCY,
     DEFAULT_STAGE_B_CONCURRENCY,
 };
-use services::graph_generation::types::PropositionGraph;
+use services::generation::graph::types::PropositionGraph;
 use services::llm::{LlmConfig, LlmProvider, LlmRetryState, LlmService};
 
 const DEFAULT_OUTPUT_DIR_NAME: &str = "eval/output";
@@ -555,8 +555,8 @@ fn summarize_stage_b(stage_b: &GraphStageBResult) -> StageBSummary {
             continue;
         };
         match mcq.question_type {
-            services::graph_generation::types::QuestionType::Recall => recall_mcqs += 1,
-            services::graph_generation::types::QuestionType::Relational => relational_mcqs += 1,
+            services::generation::graph::types::QuestionType::Recall => recall_mcqs += 1,
+            services::generation::graph::types::QuestionType::Relational => relational_mcqs += 1,
         }
     }
 
@@ -607,7 +607,7 @@ fn format_duration(elapsed_ms: u128) -> String {
 }
 
 fn print_entity_resolution_summary(
-    metrics: &services::graph_generation::entity_resolution::pipeline::EntityResolutionMetrics,
+    metrics: &services::generation::graph::entity_resolution::pipeline::EntityResolutionMetrics,
     llm_verifications: usize,
     transitive_inferences: usize,
 ) {

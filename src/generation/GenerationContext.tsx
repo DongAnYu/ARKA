@@ -7,8 +7,10 @@ import {
 } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { GenerationContext, type GenerationContextValue } from './context'
+import { buildGenerationStartRequest, DEFAULT_GENERATION_OPTIONS, resolveGenerationOptions } from './options'
 import type {
   GenerationMode,
+  GenerationOptions,
   GenerationProgress,
   GenerationSummary,
   Note,
@@ -29,6 +31,9 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
   const [notes, setNotes] = useState<Note[]>([])
   const [selectedNote, setSelectedNote] = useState<Note | null>(null)
   const [generationMode, setMode] = useState<GenerationMode | null>(null)
+  // Editable setup and immutable active configuration are separate snapshots.
+  const [generationOptions, setOptions] = useState<GenerationOptions>(DEFAULT_GENERATION_OPTIONS)
+  const [activeGenerationOptions, setActiveGenerationOptions] = useState<GenerationOptions | null>(null)
   const [generationJobId, setGenerationJobId] = useState<string | null>(null)
   const [generationProgress, setGenerationProgress] =
     useState<GenerationProgress | null>(null)
@@ -67,6 +72,10 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
     setMode(mode)
   }, [])
 
+  const setGenerationOptions = useCallback((options: GenerationOptions) => {
+    setOptions(resolveGenerationOptions(options))
+  }, [])
+
   const startGeneration = useCallback(async () => {
     if (!vaultPath || !selectedNote) {
       setGenerationError('Choose a note before generating questions.')
@@ -78,25 +87,25 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
       return
     }
 
+    const request = buildGenerationStartRequest(
+      generationMode, vaultPath, selectedNote.path, generationOptions,
+    )
+    setActiveGenerationOptions(request.command === 'start_preview_generation' ? request.args.options : null)
     setIsStarting(true)
     setGenerationError('')
     setGenerationProgress(null)
     setGenerationSummary(null)
 
-    const command =
-      generationMode === 'graph'
-        ? 'start_graph_generation_job'
-        : 'start_preview_generation'
-
     try {
-      const jobId = await invoke<string>(command, { vaultPath })
+      const jobId = await invoke<string>(request.command, request.args)
       setGenerationJobId(jobId)
     } catch (error) {
+      setActiveGenerationOptions(null)
       setGenerationError(errorMessage(error, 'Failed to start question generation'))
     } finally {
       setIsStarting(false)
     }
-  }, [generationMode, selectedNote, vaultPath])
+  }, [generationMode, generationOptions, selectedNote, vaultPath])
 
   useEffect(() => {
     if (!generationJobId) {
@@ -124,6 +133,7 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
             setGenerationSummary(progress.summary)
           }
           setGenerationJobId(null)
+          setActiveGenerationOptions(null)
           return
         }
 
@@ -137,6 +147,7 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
           errorMessage(error, 'Failed to load generation progress'),
         )
         setGenerationJobId(null)
+        setActiveGenerationOptions(null)
       }
     }
 
@@ -182,6 +193,7 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
       setGenerationProgress(null)
       setGenerationSummary(null)
       setGenerationJobId(null)
+      setActiveGenerationOptions(null)
     } catch (error) {
       setGenerationError(errorMessage(error, 'Failed to cancel generation'))
     }
@@ -193,6 +205,8 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
       notes,
       selectedNote,
       generationMode,
+      generationOptions,
+      activeGenerationOptions,
       generationProgress,
       generationSummary,
       generationError,
@@ -201,6 +215,7 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
       selectNote,
       clearSelectedNote,
       setGenerationMode,
+      setGenerationOptions,
       startGeneration,
       togglePauseGeneration,
       cancelGeneration,
@@ -210,6 +225,8 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
       notes,
       selectedNote,
       generationMode,
+      generationOptions,
+      activeGenerationOptions,
       generationProgress,
       generationSummary,
       generationError,
@@ -218,6 +235,7 @@ export function GenerationProvider({ children }: { children: ReactNode }) {
       selectNote,
       clearSelectedNote,
       setGenerationMode,
+      setGenerationOptions,
       startGeneration,
       togglePauseGeneration,
       cancelGeneration,

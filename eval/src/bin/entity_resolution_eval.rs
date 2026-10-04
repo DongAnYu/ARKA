@@ -15,15 +15,15 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use services::embedding::{EmbeddingConfig, EmbeddingProvider, EmbeddingService};
-use services::graph_generation::entity_resolution::candidate_generator::CandidateConfig;
-use services::graph_generation::entity_resolution::merge_planner::EntityMergePlan;
-use services::graph_generation::entity_resolution::pipeline::{
+use services::generation::graph::entity_resolution::candidate_generator::CandidateConfig;
+use services::generation::graph::entity_resolution::merge_planner::EntityMergePlan;
+use services::generation::graph::entity_resolution::pipeline::{
     resolve_graph_entities, EntityResolutionConfig, EntityResolutionMetrics,
 };
-use services::graph_generation::entity_resolution::semantic_verifier::{
+use services::generation::graph::entity_resolution::semantic_verifier::{
     EntityMatchDecision, EntityVerificationSource, VerifierConfig,
 };
-use services::graph_generation::types::{
+use services::generation::graph::types::{
     EntityNode, KnowledgePoint, KnowledgeType, PropositionGraph,
 };
 use services::llm::{LlmConfig, LlmProvider, LlmService};
@@ -505,8 +505,8 @@ fn fixture_graph(fixture: &EntityResolutionFixture) -> PropositionGraph {
 
 fn evaluate_pairs(
     fixture: &EntityResolutionFixture,
-    candidates: &[services::graph_generation::entity_resolution::candidate_generator::EntityCandidate],
-    verified: &[services::graph_generation::entity_resolution::semantic_verifier::VerifiedEntityCandidate],
+    candidates: &[services::generation::graph::entity_resolution::candidate_generator::EntityCandidate],
+    verified: &[services::generation::graph::entity_resolution::semantic_verifier::VerifiedEntityCandidate],
 ) -> Vec<PairEvaluation> {
     let candidates_by_pair = candidates
         .iter()

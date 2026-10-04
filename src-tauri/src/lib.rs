@@ -5,6 +5,7 @@ mod services;
 #[cfg(debug_assertions)]
 use std::path::PathBuf;
 
+use models::generation_options::GenerationOptions;
 use models::learning_item::{
     GeneratedLearningItemSaveInput, LearningItem, LearningItemEditInput, ReviewIntervals,
     ReviewSubmission,
@@ -220,8 +221,11 @@ async fn preview_generation(vault_path: String) -> Result<GenerationSummary, Str
 }
 
 #[tauri::command]
-async fn start_preview_generation(vault_path: String) -> Result<String, String> {
-    services::generation::start_preview_generation_job(&vault_path).await
+async fn start_preview_generation(
+    vault_path: String,
+    options: Option<GenerationOptions>,
+) -> Result<String, String> {
+    services::generation::start_preview_generation_job(&vault_path, options).await
 }
 
 #[tauri::command]

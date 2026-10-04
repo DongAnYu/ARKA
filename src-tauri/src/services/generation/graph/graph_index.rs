@@ -28,10 +28,10 @@ pub struct GraphIndex {
     entity_edges: HashMap<String, Vec<(RelationType, String)>>,
 
     /// entity_id → EntityNode (O(1) lookup, avoids linear scans at scale)
-    entity_lookup: HashMap<String, crate::services::graph_generation::types::EntityNode>,
+    entity_lookup: HashMap<String, crate::services::generation::graph::types::EntityNode>,
 
     /// point_id → KnowledgePoint (O(1) lookup, avoids linear scans at scale)
-    point_lookup: HashMap<String, crate::services::graph_generation::types::KnowledgePoint>,
+    point_lookup: HashMap<String, crate::services::generation::graph::types::KnowledgePoint>,
 }
 
 // =====================================================================
@@ -81,14 +81,14 @@ pub fn build_index(graph: &PropositionGraph) -> GraphIndex {
     }
 
     // ── Pass 3: Entity and Point lookups (O(1) access) ────────────────
-    let entity_lookup: HashMap<String, crate::services::graph_generation::types::EntityNode> =
+    let entity_lookup: HashMap<String, crate::services::generation::graph::types::EntityNode> =
         graph
             .entities
             .iter()
             .map(|e| (e.id.clone(), e.clone()))
             .collect();
 
-    let point_lookup: HashMap<String, crate::services::graph_generation::types::KnowledgePoint> =
+    let point_lookup: HashMap<String, crate::services::generation::graph::types::KnowledgePoint> =
         graph
             .knowledge_points
             .iter()
@@ -142,7 +142,7 @@ impl GraphIndex {
     pub fn entity(
         &self,
         entity_id: &str,
-    ) -> Option<&crate::services::graph_generation::types::EntityNode> {
+    ) -> Option<&crate::services::generation::graph::types::EntityNode> {
         self.entity_lookup.get(entity_id)
     }
 
@@ -150,7 +150,7 @@ impl GraphIndex {
     pub fn point(
         &self,
         point_id: &str,
-    ) -> Option<&crate::services::graph_generation::types::KnowledgePoint> {
+    ) -> Option<&crate::services::generation::graph::types::KnowledgePoint> {
         self.point_lookup.get(point_id)
     }
 }
@@ -162,7 +162,7 @@ impl GraphIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph_generation::types::{EntityNode, KnowledgePoint, Relation};
+    use crate::services::generation::graph::types::{EntityNode, KnowledgePoint, Relation};
 
     fn make_entity(id: &str, name: &str) -> EntityNode {
         EntityNode {
@@ -174,7 +174,7 @@ mod tests {
     }
 
     fn make_point(id: &str, entity_ids: &[&str]) -> KnowledgePoint {
-        use crate::services::graph_generation::types::KnowledgeType;
+        use crate::services::generation::graph::types::KnowledgeType;
         KnowledgePoint {
             id: id.to_string(),
             point: "test point".to_string(),
@@ -306,7 +306,7 @@ mod tests {
             knowledge_points: vec![KnowledgePoint {
                 id: "p1".to_string(),
                 point: "test".to_string(),
-                knowledge_type: crate::services::graph_generation::types::KnowledgeType::Fact,
+                knowledge_type: crate::services::generation::graph::types::KnowledgeType::Fact,
                 chunk_id: "c1".to_string(),
                 raw_entity_names: vec![],
                 entity_ids: vec!["e1".to_string(), "e1".to_string()], // duplicate
