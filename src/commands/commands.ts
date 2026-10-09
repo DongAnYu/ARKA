@@ -8,6 +8,7 @@ export const commands = {
   recallChoose3: 'recall.choose.3',
   recallChoose4: 'recall.choose.4',
   recallPrimaryAction: 'recall.primary-action',
+  recallDeleteQuestion: 'recall.delete-question',
 } as const
 
 export type CommandId = (typeof commands)[keyof typeof commands]

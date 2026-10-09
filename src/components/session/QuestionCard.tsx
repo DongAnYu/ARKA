@@ -9,6 +9,7 @@ type QuestionCardProps = {
   selectedOptionId: string | null
   isSubmitted: boolean
   isSubmitting: boolean
+  disabled?: boolean
   onSelectOption: (optionId: string) => void
   onSubmit: () => void
 }
@@ -18,10 +19,11 @@ export function QuestionCard({
   selectedOptionId,
   isSubmitted,
   isSubmitting,
+  disabled = false,
   onSelectOption,
   onSubmit,
 }: QuestionCardProps) {
-  const canSubmit = selectedOptionId !== null && !isSubmitted && !isSubmitting
+  const canSubmit = selectedOptionId !== null && !isSubmitted && !isSubmitting && !disabled
   const outcome = isSubmitted
     ? selectedOptionId === question.correct_option_id ? 'recalled' : 'again'
     : undefined
@@ -51,7 +53,7 @@ export function QuestionCard({
                 text={option.text}
                 isSelected={isSelected}
                 isSubmitted={isSubmitted}
-                disabled={isSubmitted || isSubmitting}
+                disabled={isSubmitted || isSubmitting || disabled}
                 isCorrect={isCorrect}
                 isIncorrect={isIncorrect}
                 shortcutKey={shortcut?.display}

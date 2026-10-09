@@ -134,6 +134,56 @@
   min-width: 0;
 }
 
+.session-question-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.session-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  color: var(--color-medium-gray);
+}
+
+.session-delete-btn:hover:not(:disabled) {
+  color: var(--color-error-red);
+}
+
+dialog.session-delete-dialog {
+  width: min(560px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  box-sizing: border-box;
+  overflow-y: auto;
+  border: 0;
+  color: var(--color-bright-gray);
+  animation: none;
+}
+
+.session-delete-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.session-delete-dialog .session-delete-prompt {
+  color: var(--color-bright-gray);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.session-delete-dialog .error-banner {
+  margin-top: 16px;
+}
+
+.session-delete-dialog button:focus-visible {
+  outline: 2px solid var(--color-lavender);
+  outline-offset: 4px;
+}
+
+.session-delete-dialog .delete-space-modal-actions {
+  flex-wrap: wrap;
+}
+
 .session-shortcuts {
   min-width: 0;
   display: flex;

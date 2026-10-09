@@ -148,3 +148,76 @@ test('interval labels use singular and plural days', () => {
   assert.equal(reviewIntervalLabel(1), '1 day')
   assert.equal(reviewIntervalLabel(6), '6 days')
 })
+
+for (const format of ['mcq', 'flashcard']) {
+  test(`${format} can be deleted before answering using the parent ID, without a review`, async () => {
+    let reviews = 0
+    const item = selectRecallVariant(parent([format === 'mcq' ? mcq : flashcard]))
+    const controller = createReviewController(item, async () => { reviews++; return savedItem })
+    const deletedIds = []
+    assert.equal(await controller.delete(async (id) => { deletedIds.push(id) }), true)
+    assert.deepEqual(deletedIds, [2])
+    assert.equal(controller.getSnapshot().status, 'deleted')
+    controller.reveal()
+    assert.equal(await controller.submit(format === 'mcq' ? mcqResponse : flashResponse), null)
+    assert.equal(await controller.delete(async () => assert.fail('duplicate deletion')), false)
+    assert.equal(reviews, 0)
+  })
+}
+
+test('deletion is available after any MCQ answer or flashcard rating and preserves the saved response', async () => {
+  const responses = [mcqResponse, { ...mcqResponse, selected_option_id: 'wrong' },
+    ...['again', 'hard', 'good', 'easy'].map((rating) => ({ format: 'flashcard', rating }))]
+  for (const response of responses) {
+    const item = selectRecallVariant(parent([response.format === 'mcq' ? mcq : flashcard]))
+    const controller = createReviewController(item, async () => savedItem)
+    controller.reveal()
+    assert.ok(await controller.submit(response))
+    assert.equal(await controller.delete(async () => {}), true)
+    assert.deepEqual(controller.getSnapshot().response, response)
+    assert.equal(controller.getSnapshot().nextReviewDays, 6)
+  }
+})
+
+test('in-flight deletion blocks reviews, reveal and duplicate deletion', async () => {
+  const item = selectRecallVariant(parent([flashcard]))
+  const controller = createReviewController(item, async () => assert.fail('review during deletion'))
+  const { promise, resolve } = Promise.withResolvers()
+  let calls = 0
+  const pending = controller.delete(() => { calls++; return promise })
+  assert.equal(controller.getSnapshot().status, 'deleting')
+  controller.reveal()
+  assert.equal(controller.getSnapshot().revealed, false)
+  assert.equal(await controller.submit(flashResponse), null)
+  assert.equal(await controller.delete(async () => { calls++ }), false)
+  resolve()
+  assert.equal(await pending, true)
+  assert.equal(calls, 1)
+})
+
+test('in-flight review blocks deletion until saving finishes', async () => {
+  const { promise, resolve } = Promise.withResolvers()
+  const controller = createReviewController(selectRecallVariant(parent([mcq])), () => promise)
+  const pending = controller.submit(mcqResponse)
+  assert.equal(await controller.delete(async () => assert.fail('delete during review')), false)
+  resolve(savedItem)
+  assert.ok(await pending)
+  assert.equal(await controller.delete(async () => {}), true)
+})
+
+for (const reviewed of [false, true]) {
+  test(`failed deletion restores ${reviewed ? 'reviewed' : 'unanswered'} question and supports retry`, async () => {
+    const controller = createReviewController(selectRecallVariant(parent([flashcard])), async () => savedItem)
+    controller.reveal()
+    if (reviewed) await controller.submit(flashResponse)
+    const before = controller.getSnapshot()
+    assert.equal(await controller.delete(async () => { throw new Error('database locked') }), false)
+    assert.equal(controller.getSnapshot().status, before.status)
+    assert.equal(controller.getSnapshot().revealed, true)
+    assert.deepEqual(controller.getSnapshot().response, before.response)
+    assert.equal(controller.getSnapshot().nextReviewDays, before.nextReviewDays)
+    assert.match(controller.getSnapshot().error, /database locked.*Try again/)
+    assert.equal(await controller.delete(async () => {}), true)
+    assert.equal(controller.getSnapshot().error, '')
+  })
+}

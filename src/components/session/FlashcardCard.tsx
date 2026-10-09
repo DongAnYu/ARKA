@@ -37,7 +37,7 @@ export function FlashcardCard({ item, revealed, disabled, rating, onReveal, onRa
       </div>
       {!revealed ? (
         <div className="session-question-actions">
-          <button type="button" className="btn-primary session-reveal-btn" onClick={onReveal}
+          <button type="button" className="btn-primary session-reveal-btn" disabled={disabled} onClick={onReveal}
             aria-keyshortcuts={getAriaKeyShortcut(commands.recallPrimaryAction)}>
             <span>Reveal answer</span>
             <kbd className="session-keycap session-action-key" aria-hidden="true">
