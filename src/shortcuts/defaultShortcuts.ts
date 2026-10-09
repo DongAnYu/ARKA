@@ -79,6 +79,14 @@ export const defaultShortcuts: readonly ShortcutDefinition[] = [
     display: 'Enter',
     label: 'Reveal, submit, or continue',
   },
+  {
+    command: commands.recallDeleteQuestion,
+    scope: 'recall-session',
+    key: 'd',
+    shift: true,
+    display: 'Shift+D',
+    label: 'Delete question',
+  },
 ]
 
 export function getShortcut(command: CommandId) {

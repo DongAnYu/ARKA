@@ -41,6 +41,7 @@ export function SessionPage() {
   const [busy, setBusy] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [queue, setQueue] = useState<SessionItem[]>([])
   const [index, setIndex] = useState(0)
   const planHeading = useRef<HTMLHeadingElement>(null)
@@ -63,6 +64,7 @@ export function SessionPage() {
     const load = async () => {
       setLoading(true)
       setError('')
+      setNotice('')
       try {
         const result = await loadDashboard()
         if (!cancelled) {
@@ -93,6 +95,7 @@ export function SessionPage() {
   const start = async (extra = false) => {
     setBusy(true)
     setError('')
+    setNotice('')
     try {
       let next: DailyStudyPlan
       if (extra) {
@@ -146,12 +149,19 @@ export function SessionPage() {
             onClick={() => void returnToPlan()}><ArrowLeft className="size-4" aria-hidden="true" />Back to today’s plan</button>
           <SessionHeader sessionLabel={current.isExtra ? 'Extra study' : 'Today’s plan'} recallSpaceName={scopeName}
             currentItemNumber={index + 1} totalItems={queue.length} />
+          {notice ? <p className="session-review-status" role="status">{notice}</p> : null}
           <RecallCard key={current.item.learningItemId} item={current.item} planDate={sessionDate}
             spaceId={sessionSpaceId} isExtra={current.isExtra}
             isLast={index === queue.length - 1} onBusy={setSubmitting} onReviewed={() => { /* Progress is persisted with the review. */ }}
             onNext={() => {
+              setNotice('')
               if (index === queue.length - 1) void returnToPlan()
               else setIndex((value) => value + 1)
+            }}
+            onDeleted={() => {
+              setNotice('Question deleted.')
+              if (index === queue.length - 1) void returnToPlan()
+              else setQueue((items) => items.filter((entry) => entry.item.learningItemId !== current.item.learningItemId))
             }} />
         </div>
       </div>
@@ -188,6 +198,7 @@ export function SessionPage() {
         <div><h1>Recall</h1><p>A manageable plan for today, at your pace.</p></div>
       </header>
       {error ? <div className="error-banner" role="alert">{error}</div> : null}
+      {notice ? <p className="session-review-status" role="status">{notice}</p> : null}
       {loading ? <p role="status">Loading today’s plan…</p> : !plan ? (
         <button className="btn-secondary" type="button" disabled={busy} onClick={() => void loadDashboard()}>Retry loading plan</button>
       ) : (

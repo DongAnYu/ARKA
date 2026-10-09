@@ -47,7 +47,7 @@ export function summarizeRecall(results: RecallResult[]) {
 
 type ReviewSnapshot = {
   revealed: boolean
-  status: 'idle' | 'submitting' | 'reviewed'
+  status: 'idle' | 'submitting' | 'reviewed' | 'deleting' | 'deleted'
   response: ReviewResponse | null
   error: string
   nextReviewDays: number | null
@@ -67,7 +67,20 @@ export function createReviewController(item: RecallItem, save: (submission: Revi
       listeners.add(listener)
       return () => { listeners.delete(listener) }
     },
-    reveal: () => update({ revealed: true }),
+    reveal: () => { if (snapshot.status === 'idle') update({ revealed: true }) },
+    async delete(remove: (learningItemId: number) => Promise<void>): Promise<boolean> {
+      if (snapshot.status !== 'idle' && snapshot.status !== 'reviewed') return false
+      const previousStatus = snapshot.status
+      update({ status: 'deleting', error: '' })
+      try {
+        await remove(item.learningItemId)
+        update({ status: 'deleted' })
+        return true
+      } catch (error) {
+        update({ status: previousStatus, error: `Question was not deleted. ${error instanceof Error ? error.message : String(error)} Try again.` })
+        return false
+      }
+    },
     async submit(response: ReviewResponse): Promise<RecallResult | null> {
       if (snapshot.status !== 'idle' || (item.format === 'flashcard' && !snapshot.revealed)) return null
       update({ status: 'submitting', error: '' })

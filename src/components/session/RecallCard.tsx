@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { Keyboard } from 'lucide-react'
+import { Keyboard, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { commands } from '../../commands/commands'
 import { createReviewController, reviewIntervalLabel, type RecallItem, type RecallResult } from '../../learning-items/recall'
@@ -7,11 +7,12 @@ import type { LearningItem, ReviewResponse } from '../../learning-items/types'
 import { getAriaKeyShortcut, getShortcut } from '../../shortcuts/defaultShortcuts'
 import { useKeyboardShortcuts } from '../../shortcuts/useKeyboardShortcuts'
 import { ExplanationPanel } from './ExplanationPanel'
+import { DeleteRecallQuestionDialog } from './DeleteRecallQuestionDialog'
 import { FlashcardCard } from './FlashcardCard'
 import { QuestionCard } from './QuestionCard'
 import { flashcardRatings } from './recallOptions'
 
-export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewed, onNext, onBusy }: {
+export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewed, onNext, onDeleted, onBusy }: {
   item: RecallItem
   planDate: string
   spaceId: number | null
@@ -19,6 +20,7 @@ export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewe
   isLast: boolean
   onReviewed: (result: RecallResult) => void
   onNext: () => void
+  onDeleted: () => void
   onBusy: (busy: boolean) => void
 }) {
   const [controller] = useState(() => createReviewController(item,
@@ -31,23 +33,26 @@ export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewe
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
   const [motionEnabled, setMotionEnabled] = useState(true)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const focusTarget = useRef<HTMLDivElement>(null)
   const nextButton = useRef<HTMLButtonElement>(null)
   const continued = useRef(false)
   const isSubmitting = state.status === 'submitting'
   const isReviewed = state.status === 'reviewed'
+  const isDeleting = state.status === 'deleting'
+  const actionsDisabled = isSubmitting || isDeleting || confirmingDelete
   const submittedOptionId = state.response?.format === 'mcq' ? state.response.selected_option_id : null
 
   useEffect(() => { focusTarget.current?.focus() }, [])
   useEffect(() => {
-    if (!isReviewed) return
+    if (!isReviewed || confirmingDelete) return
     nextButton.current?.focus({ preventScroll: true })
     nextButton.current?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
-  }, [isReviewed])
+  }, [isReviewed, confirmingDelete])
 
   const submit = async (response: ReviewResponse) => {
     // Ignore duplicate events without releasing the parent's busy guard.
-    if (controller.getSnapshot().status !== 'idle') return
+    if (confirmingDelete || controller.getSnapshot().status !== 'idle') return
     onBusy(true)
     const result = await controller.submit(response)
     if (result) onReviewed(result)
@@ -55,10 +60,33 @@ export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewe
   }
 
   const continueSession = () => {
-    if (controller.getSnapshot().status !== 'reviewed' || continued.current) return false
+    if (confirmingDelete || controller.getSnapshot().status !== 'reviewed' || continued.current) return false
     continued.current = true
     onNext()
     return true
+  }
+
+  const requestDelete = () => {
+    const status = controller.getSnapshot().status
+    if (confirmingDelete || continued.current || (status !== 'idle' && status !== 'reviewed')) return false
+    onBusy(true)
+    setConfirmingDelete(true)
+    return true
+  }
+
+  const cancelDelete = () => {
+    if (controller.getSnapshot().status === 'deleting') return
+    setConfirmingDelete(false)
+    onBusy(false)
+  }
+
+  const deleteQuestion = async () => {
+    if (!confirmingDelete) return
+    const deleted = await controller.delete((id) => invoke<void>('delete_question', { id }))
+    if (!deleted) return
+    continued.current = true
+    onBusy(false)
+    onDeleted()
   }
 
   const chooseByIndex = (choiceIndex: number) => {
@@ -81,7 +109,7 @@ export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewe
 
   const runPrimaryAction = () => {
     const currentState = controller.getSnapshot()
-    if (currentState.status === 'submitting') return false
+    if (confirmingDelete || (currentState.status !== 'idle' && currentState.status !== 'reviewed')) return false
     if (currentState.status === 'reviewed') return continueSession()
 
     if (item.format === 'flashcard') {
@@ -97,12 +125,14 @@ export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewe
 
   useKeyboardShortcuts({
     scope: 'recall-session',
+    enabled: !actionsDisabled,
     handlers: {
       [commands.recallChoose1]: () => chooseByIndex(0),
       [commands.recallChoose2]: () => chooseByIndex(1),
       [commands.recallChoose3]: () => chooseByIndex(2),
       [commands.recallChoose4]: () => chooseByIndex(3),
       [commands.recallPrimaryAction]: runPrimaryAction,
+      [commands.recallDeleteQuestion]: requestDelete,
     },
   })
 
@@ -121,13 +151,22 @@ export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewe
       data-motion={motionEnabled ? 'animate' : 'instant'}
       onClickCapture={(event) => setMotionEnabled(event.detail > 0)}
       aria-label={`${item.format === 'mcq' ? 'Multiple choice' : 'Flashcard'}: ${item.prompt}`}>
-      {state.error ? <div className="error-banner" role="alert">{state.error}</div> : null}
+      {state.error && !confirmingDelete ? <div className="error-banner" role="alert">{state.error}</div> : null}
+      <div className="session-question-actions">
+        <button type="button" className="btn-secondary session-delete-btn" disabled={actionsDisabled}
+          onClick={requestDelete} aria-keyshortcuts={getAriaKeyShortcut(commands.recallDeleteQuestion)}>
+          <Trash2 className="size-4" aria-hidden="true" />Delete question
+          <kbd className="session-keycap session-action-key" aria-hidden="true">
+            {getShortcut(commands.recallDeleteQuestion)?.display}
+          </kbd>
+        </button>
+      </div>
       {item.format === 'mcq' ? (
         <QuestionCard question={item} selectedOptionId={selectedOptionId}
-          isSubmitted={isReviewed} isSubmitting={isSubmitting} onSelectOption={setSelectedOptionId}
+          isSubmitted={isReviewed} isSubmitting={isSubmitting} disabled={actionsDisabled} onSelectOption={setSelectedOptionId}
           onSubmit={() => { if (selectedOptionId !== null) void submit({ format: 'mcq', selected_option_id: selectedOptionId }) }} />
       ) : (
-        <FlashcardCard item={item} revealed={state.revealed} disabled={isSubmitting || isReviewed}
+        <FlashcardCard item={item} revealed={state.revealed} disabled={actionsDisabled || isReviewed}
           rating={state.response?.format === 'flashcard' ? state.response.rating : null}
           onReveal={controller.reveal} onRate={(rating) => { void submit({ format: 'flashcard', rating }) }} />
       )}
@@ -138,6 +177,9 @@ export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewe
         ) : null}
         {primaryShortcutLabel ? (
           <span><kbd className="session-keycap">{getShortcut(commands.recallPrimaryAction)?.display}</kbd>{primaryShortcutLabel}</span>
+        ) : null}
+        {!actionsDisabled ? (
+          <span><kbd className="session-keycap">{getShortcut(commands.recallDeleteQuestion)?.display}</kbd>Delete question</span>
         ) : null}
       </div>
       {isSubmitting || (isReviewed && state.nextReviewDays !== null) ? (
@@ -154,13 +196,17 @@ export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewe
       {isReviewed ? (
         <div className="session-navigation">
           <button ref={nextButton} type="button" className="btn-primary session-next-btn"
-            onClick={continueSession} aria-keyshortcuts={getAriaKeyShortcut(commands.recallPrimaryAction)}>
+            disabled={actionsDisabled} onClick={continueSession} aria-keyshortcuts={getAriaKeyShortcut(commands.recallPrimaryAction)}>
             <span>{isLast ? 'Finish session' : 'Next item'}</span>
             <kbd className="session-keycap session-action-key" aria-hidden="true">
               {getShortcut(commands.recallPrimaryAction)?.display}
             </kbd>
           </button>
         </div>
+      ) : null}
+      {confirmingDelete ? (
+        <DeleteRecallQuestionDialog prompt={item.prompt} deleting={isDeleting} error={state.error}
+          onCancel={cancelDelete} onDelete={() => { void deleteQuestion() }} />
       ) : null}
     </div>
   )

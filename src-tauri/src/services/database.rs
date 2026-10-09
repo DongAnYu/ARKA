@@ -1014,3 +1014,7 @@ mod tests {
 #[cfg(test)]
 #[path = "database_migration_tests.rs"]
 mod migration_tests;
+
+#[cfg(test)]
+#[path = "database_recall_deletion_tests.rs"]
+mod recall_deletion_tests;
