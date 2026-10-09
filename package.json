@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test:recall": "node --test scripts/test-recall.mjs",
+    "test:generation-options": "node --test scripts/test-generation-options.mjs",
     "preview": "vite preview",
     "version:set": "node scripts/set-version.mjs",
     "eval:default": "cargo run --manifest-path eval/Cargo.toml --bin aqg_eval -- --note docs/evaluation_notes/Photosynthesis.md --output-dir eval/output",

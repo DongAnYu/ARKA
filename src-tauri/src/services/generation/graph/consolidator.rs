@@ -480,7 +480,7 @@ pub fn validate_graph(graph: &PropositionGraph) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph_generation::types::{KnowledgeType, RawEntityMention, RelationRef};
+    use crate::services::generation::graph::types::{KnowledgeType, RawEntityMention, RelationRef};
 
     // ── normalize_for_comparison ─────────────────────────────────────────
 
@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_validate_graph_dangling_kp_entity_id() {
-        use crate::services::graph_generation::types::KnowledgeType;
+        use crate::services::generation::graph::types::KnowledgeType;
         let graph = PropositionGraph {
             entities: vec![],
             knowledge_points: vec![KnowledgePoint {

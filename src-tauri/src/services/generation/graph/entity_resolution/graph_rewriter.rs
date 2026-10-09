@@ -385,8 +385,8 @@ fn push_unique(target: &mut Vec<String>, seen: &mut HashSet<String>, value: &str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph_generation::entity_resolution::merge_planner::EntityMerge;
-    use crate::services::graph_generation::types::{
+    use crate::services::generation::graph::entity_resolution::merge_planner::EntityMerge;
+    use crate::services::generation::graph::types::{
         KnowledgePoint, KnowledgeType, RelationRef, RelationType,
     };
 

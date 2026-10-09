@@ -4,7 +4,6 @@ pub mod database_backup;
 pub mod embedding;
 pub mod filesystem;
 pub mod generation;
-pub mod graph_generation;
 pub mod learning_items;
 pub mod llm;
 pub mod scheduler;

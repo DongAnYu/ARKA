@@ -14,7 +14,7 @@ use chrono::Utc;
 use rust_xlsxwriter::Workbook;
 use serde::Serialize;
 
-use services::graph_generation::pipeline::{run_graph_stage_a, GraphStageAChunkResult};
+use services::generation::graph::pipeline::{run_graph_stage_a, GraphStageAChunkResult};
 use services::llm::LlmService;
 
 const DEFAULT_OUTPUT_DIR_NAME: &str = "eval/output";

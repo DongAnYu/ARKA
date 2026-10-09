@@ -5,7 +5,7 @@
 //! is associated with the stable entity ID that produced its input text.
 
 use crate::services::embedding::{EmbeddingService, EmbeddingServiceError, EmbeddingVector};
-use crate::services::graph_generation::types::PropositionGraph;
+use crate::services::generation::graph::types::PropositionGraph;
 
 use super::context_builder::{build_entity_contexts, EntityContext};
 
@@ -60,7 +60,7 @@ pub async fn generate_entity_context_embeddings(
 mod tests {
     use super::*;
     use crate::services::embedding::{EmbeddingConfig, EmbeddingProvider};
-    use crate::services::graph_generation::types::{
+    use crate::services::generation::graph::types::{
         EntityNode, KnowledgePoint, KnowledgeType, PropositionGraph,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

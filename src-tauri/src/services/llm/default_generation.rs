@@ -44,6 +44,11 @@ impl LlmService {
         chunk_markdown: &str,
         key_points: &[String],
     ) -> Result<GeneratedItemsOutput, LlmServiceError> {
+        if key_points.is_empty() || key_points.len() > 4 {
+            return Err(LlmServiceError::InvalidOutput(String::from(
+                "Stage B requires an allocation of one to four selected points",
+            )));
+        }
         log::info!(
             "LLM Stage B generation started (chunk_chars={}, key_points={})",
             chunk_markdown.chars().count(),
@@ -66,20 +71,29 @@ impl LlmService {
             .collect::<Vec<_>>();
         let key_points_json =
             serde_json::to_string(&keyed_points).map_err(LlmServiceError::Serialize)?;
-        let user_prompt = format_stage_b_user_prompt(chunk_markdown, &key_points_json);
+        let user_prompt =
+            format_stage_b_user_prompt(chunk_markdown, &key_points_json, key_points.len());
+        let mut schema = stage_b_format_schema();
+        schema["properties"]["items"]["maxItems"] = serde_json::json!(key_points.len());
         let request = StructuredGenerationRequest {
             stage_label: "Stage B",
             schema_name: "active_recall_learning_items",
             system_prompt: STAGE_B_SYSTEM_PROMPT,
             user_prompt: &user_prompt,
-            schema: stage_b_format_schema(),
+            schema,
             payload_preview_chars: 800,
         };
 
         let (parsed, _raw_json, attempts) = self
             .generate_json_with_retries(request, |json_payload| {
-                parse_stage_b_output(json_payload, &known_point_ids)
-                    .map_err(LlmServiceError::Schema)
+                let output = parse_stage_b_output(json_payload, &known_point_ids)
+                    .map_err(LlmServiceError::Schema)?;
+                if output.items.len() > key_points.len() {
+                    return Err(LlmServiceError::InvalidOutput(
+                        "Stage B exceeded its selected allocation".into(),
+                    ));
+                }
+                Ok(output)
             })
             .await?;
 
@@ -111,11 +125,15 @@ fn format_stage_a_user_prompt(chunk_markdown: &str) -> String {
     )
 }
 
-fn format_stage_b_user_prompt(chunk_markdown: &str, key_points_json: &str) -> String {
+fn format_stage_b_user_prompt(
+    chunk_markdown: &str,
+    key_points_json: &str,
+    selected_count: usize,
+) -> String {
     format!(
         concat!(
-            "Given this markdown chunk and extracted key points, create up to 4 atomic learning items for active recall. ",
-            "Use at most one learning item per key point and prioritize the strongest distinct concepts. ",
+            "Given this original markdown chunk and selected key points, create at most {} atomic learning items for active recall. ",
+            "Cover the supplied selected points, using at most one learning item per point. ",
             "Copy knowledge_point_id exactly from the supplied key points; never invent an ID. ",
             "Each item must contain one target, one concise canonical answer, and one required flashcard prompt. ",
             "The target should state the specific knowledge the learner is expected to retain, not merely repeat the question. ",
@@ -129,7 +147,7 @@ fn format_stage_b_user_prompt(chunk_markdown: &str, key_points_json: &str) -> St
             "When the flashcard wording also works for the MCQ, set mcq.prompt to null. Otherwise provide a self-contained MCQ prompt that tests the same target and has the same root answer. ",
             "When an MCQ is unsuitable, set mcq to null and set mcq_omission_reason to a short plain-language explanation of why a good MCQ could not be produced. ",
             "When an MCQ is present, set mcq_omission_reason to null. ",
-            "If concepts overlap, generate fewer items instead of duplicates. All content must be grounded in the chunk. ",
+            "If a valid grounded item cannot be produced for a selected point, omit that point. All content must be grounded in the chunk. ",
             "Include any essential facts from an example, code block, image, diagram, figure, or table directly in the prompt. ",
             "Never refer to unspecified context with wording such as 'the example', 'shown above', 'shown below', or 'the following configuration'. ",
             "Do not rely on distractors to supply context missing from the prompt. Base items only on source information that can be restated faithfully as text. ",
@@ -139,6 +157,7 @@ fn format_stage_b_user_prompt(chunk_markdown: &str, key_points_json: &str) -> St
             "Chunk:\n{}\n\n",
             "Key points with IDs JSON:\n{}"
         ),
+        selected_count,
         chunk_markdown,
         key_points_json,
     )
@@ -161,6 +180,7 @@ maxReplicas: 10
         let prompt = format_stage_b_user_prompt(
             chunk,
             r#"["The HPA scales the php-apache Deployment between 1 and 10 replicas."]"#,
+            1,
         );
 
         assert!(prompt.contains("self-contained and answerable without access to the source chunk"));

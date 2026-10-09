@@ -27,8 +27,8 @@ use std::fmt;
 use std::time::Instant;
 
 use crate::services::embedding::{EmbeddingService, EmbeddingServiceError};
-use crate::services::graph_generation::graph_index::{build_index, GraphIndex};
-use crate::services::graph_generation::types::PropositionGraph;
+use crate::services::generation::graph::graph_index::{build_index, GraphIndex};
+use crate::services::generation::graph::types::PropositionGraph;
 use crate::services::llm::LlmService;
 
 use super::candidate_generator::{
@@ -368,7 +368,7 @@ fn build_metrics(
 mod tests {
     use super::*;
     use crate::services::embedding::{EmbeddingConfig, EmbeddingProvider};
-    use crate::services::graph_generation::types::{
+    use crate::services::generation::graph::types::{
         EntityNode, KnowledgePoint, KnowledgeType, Relation, RelationType,
     };
     use crate::services::llm::{LlmConfig, LlmProvider};

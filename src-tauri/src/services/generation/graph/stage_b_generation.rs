@@ -206,7 +206,7 @@ fn parse_and_validate_mcq(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph_generation::types::{
+    use crate::services::generation::graph::types::{
         EntityNode, KnowledgePoint, KnowledgeType, QuestionType, Relation, RelationType,
     };
 
