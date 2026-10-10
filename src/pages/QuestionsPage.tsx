@@ -724,6 +724,12 @@ export function QuestionsPage() {
               Back to spaces
             </button>
 
+            <button type="button" className="btn-primary"
+              disabled={isLoadingQuestions || isManagingQuestions || questions.length === 0}
+              onClick={() => navigate('/session', { state: { recallSpaceId: selectedSpace.id } })}>
+              Study this Space<ArrowRight className="size-4" aria-hidden="true" />
+            </button>
+
             <button
               type="button"
               className={`btn-secondary btn-manage-questions${isManagingQuestions ? ' is-active' : ''}`}

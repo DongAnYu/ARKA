@@ -49,7 +49,7 @@ pub(super) async fn daily_counts(
     day: &str,
 ) -> Result<(i64, i64, i64), sqlx::Error> {
     sqlx::query_as(
-        "SELECT COALESCE(SUM(is_extra=0),0), COALESCE(SUM(is_extra=1),0),
+        "SELECT COUNT(*), COALESCE(SUM(is_extra=1),0),
                 COALESCE(SUM(was_new=1),0)
          FROM review_events WHERE local_date=?",
     )

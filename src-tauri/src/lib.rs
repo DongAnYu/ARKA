@@ -15,7 +15,9 @@ use models::note::Note;
 use models::question::{Question, QuestionInput};
 use models::recall_dashboard::RecallDashboard;
 use models::recall_space::RecallSpace;
-use models::study_plan::{DailyStudyPlan, StudyPreferences};
+use models::study_plan::{
+    DailyStudyPlan, SelfDirectedStudySession, StudyItemKind, StudyPreferences,
+};
 use models::user_profile::UserProfile;
 use services::generation::{GenerationProgressSnapshot, GenerationSummary};
 use tauri::Manager;
@@ -81,6 +83,34 @@ async fn extend_daily_study_plan(space_id: Option<i64>) -> Result<DailyStudyPlan
         .await
         .map_err(|e| e.to_string())?;
     services::study_plan::get_plan(&pool, space_id, true)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_self_directed_study_session(
+    space_id: Option<i64>,
+    kind: StudyItemKind,
+    limit: i64,
+) -> Result<SelfDirectedStudySession, String> {
+    let pool = services::database::open_pool()
+        .await
+        .map_err(|e| e.to_string())?;
+    services::study_plan::self_directed::session(&pool, space_id, kind, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn review_self_directed_item(
+    plan_date: String,
+    space_id: Option<i64>,
+    submission: ReviewSubmission,
+) -> Result<LearningItem, String> {
+    let pool = services::database::open_pool()
+        .await
+        .map_err(|e| e.to_string())?;
+    services::study_plan::self_directed::review(&pool, &plan_date, space_id, submission)
         .await
         .map_err(|e| e.to_string())
 }
@@ -487,6 +517,7 @@ pub fn run() {
             get_learning_items, get_due_learning_items, get_new_learning_items, save_generated_learning_items, modify_learning_item, review_learning_item, get_learning_item_review_intervals,
             get_user_profile, save_user_profile,
             get_study_preferences, save_study_preferences, get_daily_study_plan, extend_daily_study_plan, review_study_item,
+            get_self_directed_study_session, review_self_directed_item,
             get_questions_by_space,
             get_due_questions,
             get_recall_dashboard,
