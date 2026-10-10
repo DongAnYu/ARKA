@@ -13,7 +13,22 @@ export type DailyStudyPlan = StudyPreferences & {
   total_count: number
   extra_completed_count: number
   can_study_more: boolean
+  new_items_blocked_by_limit: boolean
   items: PlannedItem[]
+}
+
+export type StudyItemKind = 'all' | 'new' | 'reviews'
+export type SelfDirectedStudySession = {
+  local_date: string
+  space_id: number | null
+  items: LearningItem[]
+}
+
+export function dailyPlanStatus(plan: DailyStudyPlan): 'goal-reached' | 'ready' | 'new-limit-reached' | 'no-eligible-reviews' {
+  if (plan.completed_count >= plan.daily_target) return 'goal-reached'
+  if (plan.items.some((item) => !item.is_extra)) return 'ready'
+  if (plan.new_items_blocked_by_limit) return 'new-limit-reached'
+  return 'no-eligible-reviews'
 }
 
 export function studyPreferencesError(target: string, newItems: string): string {

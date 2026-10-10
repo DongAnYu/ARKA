@@ -3,7 +3,7 @@ use super::*;
 use crate::models::learning_item::{
     LearningItem, RecallState, ReviewRating, ReviewResponse, ReviewSubmission,
 };
-use crate::models::study_plan::{DailyStudyPlan, StudyPreferences};
+use crate::models::study_plan::{DailyStudyPlan, StudyItemKind, StudyPreferences};
 use crate::services::learning_items;
 use chrono::Local;
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
@@ -326,6 +326,83 @@ async fn generated_items_cannot_exceed_daily_target_or_new_allowance() {
 }
 
 #[tokio::test]
+async fn blocked_new_items_require_reviewable_items_in_the_requested_scope() {
+    let pool = fixture().await;
+    limits(&pool, 20, 0).await;
+    assert!(
+        !get_plan(&pool, None, false)
+            .await
+            .unwrap()
+            .new_items_blocked_by_limit
+    );
+
+    item(&pool, 1, 2, "new", None).await;
+    assert!(
+        get_plan(&pool, None, false)
+            .await
+            .unwrap()
+            .new_items_blocked_by_limit
+    );
+    assert!(
+        !get_plan(&pool, Some(1), false)
+            .await
+            .unwrap()
+            .new_items_blocked_by_limit
+    );
+    assert!(
+        get_plan(&pool, Some(2), false)
+            .await
+            .unwrap()
+            .new_items_blocked_by_limit
+    );
+
+    sqlx::query("DELETE FROM question_variants WHERE learning_item_id=1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !get_plan(&pool, None, false)
+            .await
+            .unwrap()
+            .new_items_blocked_by_limit
+    );
+}
+
+#[tokio::test]
+async fn new_limit_reason_uses_global_history_even_after_reviewed_item_deletion() {
+    let pool = fixture().await;
+    limits(&pool, 20, 1).await;
+    item(&pool, 1, 1, "new", None).await;
+    item(&pool, 2, 2, "new", None).await;
+    let first = get_plan(&pool, Some(1), false).await.unwrap();
+    assert!(!first.new_items_blocked_by_limit);
+    submit(&pool, &first, 1).await.unwrap();
+    sqlx::query("DELETE FROM learning_items WHERE id=1")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let blocked = get_plan(&pool, Some(2), false).await.unwrap();
+    assert_eq!(blocked.completed_count, 1);
+    assert!(blocked.items.is_empty());
+    assert!(blocked.new_items_blocked_by_limit);
+
+    save_preferences(
+        &pool,
+        StudyPreferences {
+            daily_target: 20,
+            max_new_items: 2,
+        },
+        true,
+    )
+    .await
+    .unwrap();
+    let available = get_plan(&pool, Some(2), false).await.unwrap();
+    assert!(!available.new_items_blocked_by_limit);
+    assert_eq!(ids(&available), [2]);
+}
+
+#[tokio::test]
 async fn daily_state_freezes_settings_and_review_cutoff_but_allows_new_generation() {
     let pool = fixture().await;
     limits(&pool, 3, 2).await;
@@ -409,9 +486,214 @@ async fn study_more_keeps_original_target_and_daily_new_limit() {
             done.total_count,
             done.extra_completed_count
         ),
-        (1, 1, 1)
+        (2, 2, 1)
     );
     assert!(!done.can_study_more);
+}
+
+#[tokio::test]
+async fn self_directed_new_and_due_items_count_beyond_plan_limits_without_future_reviews() {
+    let pool = fixture().await;
+    limits(&pool, 2, 0).await;
+    item(&pool, 1, 1, "new", None).await;
+    item(&pool, 2, 1, "new", None).await;
+    item(&pool, 3, 2, "scheduled", Some("2000-01-01 00:00:00")).await;
+    item(&pool, 4, 2, "scheduled", Some("2999-01-01 00:00:00")).await;
+    let plan = get_plan(&pool, None, false).await.unwrap();
+    assert_eq!(ids(&plan), [3]);
+    let own = self_directed::session(&pool, Some(1), StudyItemKind::New, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        own.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    for entry in &own.items {
+        self_directed::review(&pool, &own.local_date, Some(1), submission(entry.id))
+            .await
+            .unwrap();
+    }
+    assert!(get_plan(&pool, None, false).await.unwrap().items.is_empty());
+    let due = self_directed::session(&pool, Some(2), StudyItemKind::Reviews, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        due.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [3]
+    );
+    self_directed::review(&pool, &due.local_date, Some(2), submission(3))
+        .await
+        .unwrap();
+    assert!(
+        self_directed::review(&pool, &due.local_date, Some(2), submission(4))
+            .await
+            .is_err()
+    );
+    let done = get_plan(&pool, None, false).await.unwrap();
+    assert_eq!(done.completed_count, 3);
+    assert_eq!(done.daily_target, 2);
+    assert_eq!(done.max_new_items, 0);
+    let future = learning_items::load(&mut *pool.acquire().await.unwrap(), 4)
+        .await
+        .unwrap();
+    assert_eq!(
+        future.schedule.next_review_at.as_deref(),
+        Some("2999-01-01 00:00:00")
+    );
+    assert!(future.schedule.last_reviewed_at.is_none());
+}
+
+#[tokio::test]
+async fn self_directed_batches_refill_beyond_goal_and_include_newly_available_items() {
+    let pool = fixture().await;
+    limits(&pool, 1, 0).await;
+    for id in 1..=3 {
+        item(&pool, id, 1, "new", None).await;
+    }
+    item(&pool, 5, 1, "scheduled", Some("2999-01-01 00:00:00")).await;
+    item(&pool, 6, 2, "new", None).await;
+    let first = self_directed::session(&pool, Some(1), StudyItemKind::New, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        first.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    for entry in &first.items {
+        self_directed::review(&pool, &first.local_date, Some(1), submission(entry.id))
+            .await
+            .unwrap();
+    }
+    generated_after_start(&pool, 4, 1).await;
+    let next = self_directed::session(&pool, Some(1), StudyItemKind::All, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        next.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [3, 4]
+    );
+    for entry in &next.items {
+        self_directed::review(&pool, &next.local_date, Some(1), submission(entry.id))
+            .await
+            .unwrap();
+    }
+    assert!(
+        self_directed::session(&pool, Some(1), StudyItemKind::All, 2)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(
+        get_plan(&pool, None, false).await.unwrap().completed_count,
+        4
+    );
+}
+
+#[tokio::test]
+async fn self_directed_sessions_filter_items_and_use_current_due_time() {
+    let pool = fixture().await;
+    get_plan(&pool, None, false).await.unwrap();
+    sqlx::query("UPDATE daily_study_state SET started_at='2000-01-01 00:00:00'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    item(&pool, 1, 1, "scheduled", Some("2001-01-01 00:00:00")).await;
+    generated_after_start(&pool, 2, 1).await;
+    item(&pool, 3, 2, "new", None).await;
+    item(&pool, 4, 1, "new", None).await;
+    sqlx::query("DELETE FROM question_variants WHERE learning_item_id=4")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let all = self_directed::session(&pool, Some(1), StudyItemKind::All, 1)
+        .await
+        .unwrap();
+    assert_eq!(all.items[0].id, 1);
+    assert_eq!(all.items.len(), 1);
+    let new = self_directed::session(&pool, Some(1), StudyItemKind::New, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        new.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [2]
+    );
+    let due = self_directed::session(&pool, None, StudyItemKind::Reviews, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        due.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [1]
+    );
+    for limit in [-1, 0, 10001] {
+        assert!(
+            self_directed::session(&pool, None, StudyItemKind::All, limit)
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        self_directed::session(&pool, Some(999), StudyItemKind::All, 10)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn self_directed_reviews_validate_scope_day_and_retry_without_double_counting() {
+    let pool = fixture().await;
+    item(&pool, 1, 1, "new", None).await;
+    let day = local_day();
+    assert!(self_directed::review(&pool, &day, Some(2), submission(1))
+        .await
+        .is_err());
+    let yesterday = (Local::now().date_naive() - chrono::Duration::days(1)).to_string();
+    assert!(
+        self_directed::review(&pool, &yesterday, Some(1), submission(1))
+            .await
+            .is_err()
+    );
+    let reviewed = self_directed::review(&pool, &day, Some(1), submission(1))
+        .await
+        .unwrap();
+    let retried = self_directed::review(&pool, &day, Some(1), submission(1))
+        .await
+        .unwrap();
+    assert_eq!(reviewed.schedule, retried.schedule);
+    assert!(self_directed::review(&pool, &day, Some(2), submission(1))
+        .await
+        .is_err());
+    assert_eq!(
+        get_plan(&pool, None, false).await.unwrap().completed_count,
+        1
+    );
+    assert!(self_directed::session(&pool, None, StudyItemKind::All, 10)
+        .await
+        .unwrap()
+        .items
+        .is_empty());
+}
+
+#[tokio::test]
+async fn self_directed_event_failure_rolls_back_learning_and_progress() {
+    let pool = fixture().await;
+    item(&pool, 1, 1, "new", None).await;
+    sqlx::query("CREATE TRIGGER fail_self_event BEFORE INSERT ON review_events BEGIN SELECT RAISE(ABORT,'test failure'); END")
+        .execute(&pool).await.unwrap();
+    assert!(
+        self_directed::review(&pool, &local_day(), Some(1), submission(1))
+            .await
+            .is_err()
+    );
+    let stored = learning_items::load(&mut *pool.acquire().await.unwrap(), 1)
+        .await
+        .unwrap();
+    assert_eq!(stored.recall_state, RecallState::New);
+    assert!(stored.schedule.last_reviewed_at.is_none());
+    assert_eq!(
+        get_plan(&pool, None, false).await.unwrap().completed_count,
+        0
+    );
 }
 
 #[tokio::test]

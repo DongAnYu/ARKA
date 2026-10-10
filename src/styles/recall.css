@@ -49,8 +49,7 @@
   margin-top: 8px;
 }
 
-.daily-plan h2,
-.daily-plan-scope h2 {
+.daily-plan h2 {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
@@ -75,29 +74,21 @@
 .daily-plan-scope {
   display: grid;
   gap: 20px;
-  padding: 24px 28px;
+  padding-top: 24px;
+  border-top: 1px solid rgba(var(--rgb-white), 0.08);
 }
 
-.daily-plan-scope-head {
+.self-directed-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
   align-items: end;
-  gap: 28px;
+  gap: 16px;
 }
-.daily-plan-scope h2 { margin-bottom: 8px; }
+.daily-plan-scope h3 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
 .daily-plan-scope .settings-field { margin: 0; }
-.daily-plan-scope > a { display: flex; align-items: center; gap: 8px; width: fit-content; }
-.daily-plan-space-insight {
-  display: grid;
-  gap: 12px;
-  padding-block: 20px 4px;
-  border-top: 1px solid var(--border-subtle);
-}
-.daily-plan-space-insight h3 {
-  margin: 0 0 6px;
-  font-size: 16px;
-  font-weight: 600;
-}
+.self-directed-controls .settings-field { min-width: 0; }
+.self-directed-controls .settings-input { width: 100%; min-width: 0; }
+.daily-plan-actions > a { display: inline-flex; align-items: center; gap: 8px; }
 .daily-plan a,
 .daily-plan-scope a { color: var(--color-lavender); text-underline-offset: 3px; }
 .daily-plan a.btn-primary { color: var(--color-white); text-decoration: none; }
@@ -107,8 +98,7 @@
 @media (max-width: 600px) {
   .daily-plan { padding: 20px; }
   .daily-plan-heading { align-items: flex-start; flex-direction: column; }
-  .daily-plan-scope { padding: 20px; }
-  .daily-plan-scope-head { grid-template-columns: 1fr; gap: 16px; }
+  .self-directed-controls { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 900px) {

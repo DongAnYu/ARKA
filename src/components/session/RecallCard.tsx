@@ -12,11 +12,12 @@ import { FlashcardCard } from './FlashcardCard'
 import { QuestionCard } from './QuestionCard'
 import { flashcardRatings } from './recallOptions'
 
-export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewed, onNext, onDeleted, onBusy }: {
+export function RecallCard({ item, planDate, spaceId, isExtra, selfDirected = false, isLast, onReviewed, onNext, onDeleted, onBusy }: {
   item: RecallItem
   planDate: string
   spaceId: number | null
   isExtra: boolean
+  selfDirected?: boolean
   isLast: boolean
   onReviewed: (result: RecallResult) => void
   onNext: () => void
@@ -24,10 +25,10 @@ export function RecallCard({ item, planDate, spaceId, isExtra, isLast, onReviewe
   onBusy: (busy: boolean) => void
 }) {
   const [controller] = useState(() => createReviewController(item,
-    (submission) => invoke<LearningItem>('review_study_item', {
+    (submission) => invoke<LearningItem>(selfDirected ? 'review_self_directed_item' : 'review_study_item', {
       planDate,
       spaceId,
-      isExtra,
+      ...(selfDirected ? {} : { isExtra }),
       submission,
     })))
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
