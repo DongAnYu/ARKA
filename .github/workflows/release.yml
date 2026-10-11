@@ -3,7 +3,7 @@ name: Release Desktop App
 
 on:
   workflow_dispatch:
-    
+
 permissions:
   contents: write
 
@@ -12,12 +12,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-windows:
+  release-desktop:
+    name: Release ${{ matrix.name }}
     # Prevent accidentally releasing a feature branch.
     if: github.ref == 'refs/heads/main'
 
-    runs-on: windows-latest
-    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # Both builds merge their updater entries into the same latest.json asset.
+      max-parallel: 1
+      matrix:
+        include:
+          - name: Windows
+            runner: windows-latest
+            rust-targets: ''
+            args: ''
+          - name: macOS (universal)
+            runner: macos-latest
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin --bundles app,dmg
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
 
     steps:
       - name: Check out source
@@ -31,6 +47,8 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -46,16 +64,25 @@ jobs:
       - name: Test Rust
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Build and publish signed release
+      - name: Build and publish release with signed updater artifacts
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # Ad-hoc macOS signing requires no Apple developer certificate.
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
         with:
+          args: ${{ matrix.args }}
           tagName: v__VERSION__
           releaseName: ARKA v__VERSION__
           releaseBody: |
-            Download the Windows installer from the assets below.
+            Download the Windows installer or the universal macOS .dmg from the assets below.
+            The macOS installer supports both Apple Silicon (M-series) and Intel Macs.
+
+            macOS installation: open the .dmg and drag the app into Applications.
+            This build is ad-hoc signed and is not notarized by Apple. If macOS blocks
+            the first launch, open System Settings > Privacy & Security > Open Anyway.
+
             Report problems at https://github.com/DongAnYu/ARKA/issues.
           generateReleaseNotes: true
           releaseDraft: false
