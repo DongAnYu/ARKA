@@ -69,7 +69,7 @@ export function StudyPreferencesSettings() {
     <section id="study-preferences" className="settings-panel" aria-labelledby="study-preferences-heading">
       <header className="settings-section-head">
         <h2 id="study-preferences-heading" ref={heading} tabIndex={-1}>Study preferences</h2>
-        <p>Choose a daily workload shared across all your Recall Spaces. Due reviews take priority.</p>
+        <p>Choose a daily goal shared across all your Recall Spaces. The suggested plan prioritizes due reviews.</p>
       </header>
       {loading ? <p role="status">Loading study preferences…</p> : preferences ? (
         <form className="settings-stack" onSubmit={(event) => void save(event)}>
@@ -79,14 +79,14 @@ export function StudyPreferencesSettings() {
               <input id="daily-study-target" className="settings-input" type="number" min="1" max="10000" step="1" required
                 value={target} disabled={saving} onChange={(event) => { setTarget(event.target.value); setStatus('') }}
                 aria-labelledby="daily-study-target-label" aria-describedby="daily-study-target-help study-preferences-validation" />
-              <span id="daily-study-target-help" className="settings-help-text">Up to this many items per day, including reviews and new items.</span>
+              <span id="daily-study-target-help" className="settings-help-text">Your total goal for reviews and new items across all Spaces. You can keep studying after reaching it.</span>
             </label>
             <label className="settings-field" htmlFor="maximum-new-items">
-              <span id="maximum-new-items-label">Maximum new items per day</span>
+              <span id="maximum-new-items-label">Maximum new items in suggested plan</span>
               <input id="maximum-new-items" className="settings-input" type="number" min="0" max={Number(target) || 0} step="1" required
                 value={maximumNew} disabled={saving} onChange={(event) => { setMaximumNew(event.target.value); setStatus('') }}
                 aria-labelledby="maximum-new-items-label" aria-describedby="maximum-new-items-help study-preferences-validation" />
-              <span id="maximum-new-items-help" className="settings-help-text">Included in your daily target. Choose 0 to study scheduled reviews only.</span>
+              <span id="maximum-new-items-help" className="settings-help-text">Included in your daily target. Choose 0 for review-only suggestions. Self-directed study can include more new items.</span>
             </label>
           </div>
           <p id="study-preferences-validation" className="settings-status is-error" aria-live="polite">{validation}</p>

@@ -25,5 +25,21 @@ pub struct DailyStudyPlan {
     pub total_count: i64,
     pub extra_completed_count: i64,
     pub can_study_more: bool,
+    pub new_items_blocked_by_limit: bool,
     pub items: Vec<PlannedItem>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StudyItemKind {
+    All,
+    New,
+    Reviews,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SelfDirectedStudySession {
+    pub local_date: String,
+    pub space_id: Option<i64>,
+    pub items: Vec<LearningItem>,
 }

@@ -102,7 +102,8 @@ async fn snapshot(
     space_id: Option<i64>,
     extra: bool,
 ) -> Result<DailyStudyPlan, sqlx::Error> {
-    let (completed_count, extra_completed_count, _) = daily_counts(conn, &state.local_date).await?;
+    let (completed_count, extra_completed_count, new_completed) =
+        daily_counts(conn, &state.local_date).await?;
     let remaining = (state.daily_target - completed_count).max(0);
     if extra && remaining > 0 {
         return Err(invalid(
@@ -119,6 +120,22 @@ async fn snapshot(
     };
     let can_study_more =
         remaining == 0 && !candidate_ids(conn, state, space_id, 1).await?.is_empty();
+    let new_items_blocked_by_limit = if new_completed >= state.max_new_items {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM learning_items item
+             WHERE (? IS NULL OR item.space_id=?) AND item.recall_state='new'
+               AND EXISTS(SELECT 1 FROM question_variants variant WHERE variant.learning_item_id=item.id)
+               AND NOT EXISTS(SELECT 1 FROM review_events event
+                              WHERE event.local_date=? AND event.learning_item_id=item.id))",
+        )
+        .bind(space_id)
+        .bind(space_id)
+        .bind(&state.local_date)
+        .fetch_one(&mut *conn)
+        .await?
+    } else {
+        false
+    };
     let items = load_plan_items(conn, candidates, extra).await?;
 
     Ok(DailyStudyPlan {
@@ -130,6 +147,7 @@ async fn snapshot(
         total_count,
         extra_completed_count,
         can_study_more,
+        new_items_blocked_by_limit,
         items,
     })
 }

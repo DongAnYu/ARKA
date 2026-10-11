@@ -63,13 +63,13 @@ Study multiple-choice and flashcard variants from the same underlying Learning I
 
 ## Daily Study Plan
 
-Recall builds one manageable plan for the day across all Recall Spaces:
+Recall suggests a manageable plan and tracks one daily goal across all Recall Spaces:
 
-- **Daily study target** controls the total number of planned items.
-- **Maximum New items per day** limits how much unseen material can enter the plan and may be set to zero.
-- Scheduled reviews take priority over New items.
-- Filtering by Recall Space focuses the session without creating a separate quota.
-- Progress and the remaining review/New workload are visible from Recall and the Library.
+- **Daily study target** is a total goal for reviews and New items combined.
+- **Maximum new items in suggested plan** caps unseen material within that target and may be set to zero. Suggested sessions prioritize due reviews.
+- **Study your way** lets you choose a Space and New items, due reviews, or both. Continue beyond the suggested limits and stop whenever you want.
+- All items studied count toward the same daily goal, even in a different Space. Future reviews stay scheduled until they are due.
+- Recall distinguishes reaching the goal, running out of eligible reviews, and reaching the suggested New-item allowance. The Library shows the full workload.
 
 Study preferences are stored locally and can optionally be applied to the remainder of today's plan.
 

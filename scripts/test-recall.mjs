@@ -2,6 +2,33 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { buildReviewSubmission, createReviewController, selectRecallVariant, summarizeRecall, reviewIntervalLabel } from '../src/learning-items/recall.ts'
+import { dailyPlanStatus } from '../src/learning-items/study-plan.ts'
+
+test('an empty plan below target never means the daily goal was reached', () => {
+  for (const completed_count of [0, 5]) {
+    assert.equal(dailyPlanStatus({ daily_target: 20, completed_count, items: [],
+      new_items_blocked_by_limit: false }), 'no-eligible-reviews')
+  }
+})
+
+test('blocked new items explain an empty plan, including a zero new-item allowance', () => {
+  for (const max_new_items of [0, 5]) {
+    assert.equal(dailyPlanStatus({ daily_target: 20, max_new_items, completed_count: max_new_items,
+      items: [], new_items_blocked_by_limit: true }), 'new-limit-reached')
+  }
+})
+
+test('reaching or exceeding the target takes precedence over blocked new items', () => {
+  for (const completed_count of [20, 25]) {
+    assert.equal(dailyPlanStatus({ daily_target: 20, completed_count, items: [],
+      new_items_blocked_by_limit: true }), 'goal-reached')
+  }
+})
+
+test('scheduled reviews remain available after the new-item allowance is exhausted', () => {
+  assert.equal(dailyPlanStatus({ daily_target: 20, completed_count: 5,
+    items: [{ is_extra: false }], new_items_blocked_by_limit: true }), 'ready')
+})
 
 const mcq = { id: 101, format: 'mcq', prompt: 'Which complexity?', options: [
   { id: 'stable-correct', text: 'O(log n)' }, { id: 'wrong', text: 'O(n)' },

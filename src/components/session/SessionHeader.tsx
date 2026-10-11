@@ -5,6 +5,7 @@ type SessionHeaderProps = {
   recallSpaceName: string
   currentItemNumber: number
   totalItems: number
+  studiedCount?: number
 }
 
 export function SessionHeader({
@@ -12,6 +13,7 @@ export function SessionHeader({
   recallSpaceName,
   currentItemNumber,
   totalItems,
+  studiedCount,
 }: SessionHeaderProps) {
   const progressPercent = totalItems === 0 ? 0 : (currentItemNumber / totalItems) * 100
 
@@ -24,9 +26,10 @@ export function SessionHeader({
 
       <div className="session-progress-meta" aria-live="polite">
         <p>
-          Item {currentItemNumber} of {totalItems}
+          {studiedCount === undefined ? `Item ${currentItemNumber} of ${totalItems}`
+            : `${studiedCount} ${studiedCount === 1 ? 'item' : 'items'} studied this session`}
         </p>
-        <SessionProgress value={progressPercent} />
+        {studiedCount === undefined ? <SessionProgress value={progressPercent} /> : null}
       </div>
     </header>
   )

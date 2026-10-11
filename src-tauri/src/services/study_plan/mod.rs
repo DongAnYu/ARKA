@@ -4,6 +4,7 @@
 mod preferences;
 mod queue;
 mod review;
+pub mod self_directed;
 mod state;
 
 // Evaluation targets compile these services without the desktop command callers.
