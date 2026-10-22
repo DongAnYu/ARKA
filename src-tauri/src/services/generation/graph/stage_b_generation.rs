@@ -3,7 +3,7 @@
 //! Orchestrates the complete MCQ generation pipeline:
 //! 1. Build structured prompt from GraphContextBundle
 //! 2. Call LLM via StructuredGenerationRequest (with built-in retry logic)
-//! 3. Parse JSON response into GeneratedMCQ struct
+//! 3. Assemble options and their answer index from the model's answer/distractors
 //! 4. Validate structural correctness
 //! 5. Return or error
 //!
@@ -56,7 +56,7 @@ pub async fn generate_mcq(
     let system_prompt = stage_b_prompt::system_prompt();
     let user_prompt = stage_b_prompt::build_user_prompt(bundle);
 
-    // Build JSON schema that describes GeneratedMCQ output format
+    // The provider writes content; option positions and their key belong to us.
     let format_schema = schema_for_generated_mcq();
 
     // Prepare LLM request
@@ -71,7 +71,7 @@ pub async fn generate_mcq(
 
     let (mcq, _raw_json, attempt) = llm_client
         .generate_json_with_retries(request, |json_payload| {
-            parse_and_validate_mcq(json_payload, bundle.question_type)
+            parse_and_validate_mcq(json_payload, bundle.question_type, &bundle.root_point.id)
         })
         .await?;
 
@@ -95,16 +95,16 @@ pub async fn generate_mcq(
 // JSON Schema for GeneratedMCQ
 // =====================================================================
 
-/// Builds the JSON schema that describes GeneratedMCQ output format.
+/// Builds the schema for model-owned question content.
 ///
 /// This schema is passed to the LLM to constrain its output to valid MCQ structure:
 /// - question: string (10-500 chars)
-/// - options: array of exactly 4 strings (1-500 chars each)
-/// - correct_index: integer in [0, 3]
+/// - answer: the correct answer text (1-500 chars)
+/// - distractors: exactly 3 incorrect answers (1-500 chars each)
 /// - explanation: string (20-1000 chars)
 ///
-/// The schema matches GeneratedMCQ struct but without the question_type field
-/// (that's computed from supporting_relations presence during bundle assembly).
+/// The backend supplies option positions, correct_index, and question_type when
+/// converting this response to the existing GeneratedMCQ representation.
 fn schema_for_generated_mcq() -> Value {
     json!({
         "type": "object",
@@ -115,22 +115,22 @@ fn schema_for_generated_mcq() -> Value {
                 "minLength": 10,
                 "maxLength": 500
             },
-            "options": {
+            "answer": {
+                "type": "string",
+                "description": "The correct answer, supported by the source and explanation",
+                "minLength": 1,
+                "maxLength": 500
+            },
+            "distractors": {
                 "type": "array",
-                "description": "Exactly 4 answer options (each 1-500 characters)",
+                "description": "Exactly 3 distinct, plausible but incorrect answers",
                 "items": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500
                 },
-                "minItems": 4,
-                "maxItems": 4
-            },
-            "correct_index": {
-                "type": "integer",
-                "description": "Index of correct answer (0-3)",
-                "minimum": 0,
-                "maximum": 3
+                "minItems": 3,
+                "maxItems": 3
             },
             "explanation": {
                 "type": "string",
@@ -139,7 +139,7 @@ fn schema_for_generated_mcq() -> Value {
                 "maxLength": 1000
             }
         },
-        "required": ["question", "options", "correct_index", "explanation"],
+        "required": ["question", "answer", "distractors", "explanation"],
         "additionalProperties": false
     })
 }
@@ -149,10 +149,11 @@ fn schema_for_generated_mcq() -> Value {
 // =====================================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WireGeneratedMCQ {
     question: String,
-    options: Vec<String>,
-    correct_index: usize,
+    answer: String,
+    distractors: [String; 3],
     explanation: String,
 }
 
@@ -160,9 +161,10 @@ struct WireGeneratedMCQ {
 ///
 /// This closure is called by LlmService.generate_json_with_retries() as the
 /// parsing function. On each attempt, we:
-/// 1. Deserialize JSON string into GeneratedMCQ struct
-/// 2. Run structural validation via validate_mcq()
-/// 3. Return parsed MCQ or error
+/// 1. Deserialize the answer and exactly three distractors
+/// 2. Insert the answer at a stable backend-owned position
+/// 3. Run structural and duplicate-choice validation
+/// 4. Return parsed MCQ or error
 ///
 /// # Arguments
 /// - `json_payload` — Raw JSON string from LLM response
@@ -172,25 +174,45 @@ struct WireGeneratedMCQ {
 fn parse_and_validate_mcq(
     json_payload: &str,
     question_type: QuestionType,
+    root_point_id: &str,
 ) -> Result<GeneratedMCQ, LlmServiceError> {
-    // Deserialize only the LLM-owned fields. `question_type` is computed from
-    // the bundle and should never be supplied by the model.
+    // Reject model-supplied keys and positions rather than trusting them.
     let wire_mcq: WireGeneratedMCQ = serde_json::from_str(json_payload).map_err(|err| {
         LlmServiceError::Schema(
             crate::services::llm::default_generation_schema::LlmSchemaError::Parse(err),
         )
     })?;
 
+    // A stable root-ID checksum spreads answers across A-D without depending on
+    // task completion order or changing positions between provider retries.
+    let correct_index = root_point_id
+        .bytes()
+        .fold(0, |position, byte| (position + usize::from(byte)) % 4);
+    let mut options = Vec::from(wire_mcq.distractors);
+    options.insert(correct_index, wire_mcq.answer);
+
     let mcq = GeneratedMCQ {
         question: wire_mcq.question,
-        options: wire_mcq.options,
-        correct_index: wire_mcq.correct_index,
+        options,
+        correct_index,
         explanation: wire_mcq.explanation,
         question_type,
     };
 
     // Validate structural correctness
-    let validation_errors = validate_mcq(&mcq);
+    let mut validation_errors = validate_mcq(&mcq);
+    let mut seen = std::collections::HashSet::new();
+    for option in &mcq.options {
+        let normalized = option
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        if !seen.insert(normalized) {
+            validation_errors.push("Answer and distractors must all be distinct".into());
+            break;
+        }
+    }
     if !validation_errors.is_empty() {
         let error_msg = validation_errors.join("; ");
         return Err(LlmServiceError::InvalidOutput(error_msg));
@@ -277,8 +299,11 @@ mod tests {
         assert!(schema.is_object());
         assert!(schema["properties"].is_object());
         assert!(schema["properties"]["question"].is_object());
-        assert!(schema["properties"]["options"].is_object());
-        assert!(schema["properties"]["correct_index"].is_object());
+        assert!(schema["properties"]["answer"].is_object());
+        assert_eq!(schema["properties"]["distractors"]["minItems"], 3);
+        assert_eq!(schema["properties"]["distractors"]["maxItems"], 3);
+        assert!(schema["properties"].get("options").is_none());
+        assert!(schema["properties"].get("correct_index").is_none());
         assert!(schema["properties"]["explanation"].is_object());
     }
 
@@ -293,32 +318,64 @@ mod tests {
         let required = schema["required"].as_array().unwrap();
         assert_eq!(required.len(), 4);
         assert!(required.iter().any(|r| r.as_str() == Some("question")));
-        assert!(required.iter().any(|r| r.as_str() == Some("options")));
-        assert!(required.iter().any(|r| r.as_str() == Some("correct_index")));
+        assert!(required.iter().any(|r| r.as_str() == Some("answer")));
+        assert!(required.iter().any(|r| r.as_str() == Some("distractors")));
         assert!(required.iter().any(|r| r.as_str() == Some("explanation")));
     }
 
-    #[test]
-    fn test_parse_and_validate_valid_mcq() {
-        let json = r#"{
+    fn valid_content() -> Value {
+        json!({
             "question": "What is JWT used for?",
-            "options": ["Stateless auth", "Session storage", "Compression", "Encryption"],
-            "correct_index": 0,
+            "answer": "Stateless auth",
+            "distractors": ["Session storage", "Compression", "Encryption"],
             "explanation": "JWT tokens are self-contained and used for stateless authentication"
-        }"#;
+        })
+    }
 
-        let result = parse_and_validate_mcq(json, QuestionType::Recall);
-        assert!(result.is_ok());
-        let mcq = result.unwrap();
-        assert_eq!(mcq.question, "What is JWT used for?");
-        assert_eq!(mcq.options.len(), 4);
-        assert_eq!(mcq.correct_index, 0);
+    #[test]
+    fn backend_positions_preserve_answer_and_downstream_format() {
+        let content = valid_content().to_string();
+        let mut positions = std::collections::HashSet::new();
+        for root_id in [
+            "chunk-0-kp-0",
+            "chunk-0-kp-1",
+            "chunk-0-kp-2",
+            "chunk-0-kp-3",
+        ] {
+            let mcq = parse_and_validate_mcq(&content, QuestionType::Relational, root_id).unwrap();
+            positions.insert(mcq.correct_index);
+            assert_eq!(mcq.options.len(), 4);
+            assert_eq!(mcq.options[mcq.correct_index], "Stateless auth");
+            let distractors = mcq
+                .options
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != mcq.correct_index)
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                distractors,
+                ["Session storage", "Compression", "Encryption"]
+            );
+            assert_eq!(mcq.question_type, QuestionType::Relational);
+            // Replaying a request must preserve both the options and their key.
+            assert_eq!(
+                mcq,
+                parse_and_validate_mcq(&content, QuestionType::Relational, root_id).unwrap()
+            );
+            let stored = serde_json::to_value(&mcq).unwrap();
+            assert!(stored.get("answer").is_none());
+            assert!(stored.get("distractors").is_none());
+            assert_eq!(stored["options"][mcq.correct_index], "Stateless auth");
+            assert_eq!(serde_json::from_value::<GeneratedMCQ>(stored).unwrap(), mcq);
+        }
+        assert_eq!(positions.len(), 4);
     }
 
     #[test]
     fn test_parse_and_validate_invalid_json() {
         let json = r#"{ "question": "What is JWT?" }"#;
-        let result = parse_and_validate_mcq(json, QuestionType::Recall);
+        let result = parse_and_validate_mcq(json, QuestionType::Recall, "p1");
         assert!(result.is_err());
         match result.unwrap_err() {
             LlmServiceError::Schema(_) => {}
@@ -327,55 +384,70 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_and_validate_wrong_option_count() {
-        let json = r#"{
-            "question": "What is JWT?",
-            "options": ["A", "B", "C"],
-            "correct_index": 0,
-            "explanation": "JWT is a token format for stateless authentication"
-        }"#;
-
-        let result = parse_and_validate_mcq(json, QuestionType::Recall);
-        assert!(result.is_err());
+    fn rejects_wrong_distractor_counts() {
+        for distractors in [json!([]), json!(["A", "B"]), json!(["A", "B", "C", "D"])] {
+            let mut content = valid_content();
+            content["distractors"] = distractors;
+            assert!(
+                parse_and_validate_mcq(&content.to_string(), QuestionType::Recall, "p1").is_err()
+            );
+        }
     }
 
     #[test]
-    fn test_parse_and_validate_correct_index_out_of_range() {
-        let json = r#"{
-            "question": "What is JWT?",
-            "options": ["A", "B", "C", "D"],
-            "correct_index": 5,
-            "explanation": "JWT is a token format for stateless authentication"
-        }"#;
-
-        let result = parse_and_validate_mcq(json, QuestionType::Recall);
-        assert!(result.is_err());
+    fn rejects_model_owned_positions_and_classification() {
+        for (field, value) in [
+            ("correct_index", json!(2)),
+            ("options", json!(["A", "B", "C", "D"])),
+            ("question_type", json!("recall")),
+        ] {
+            let mut content = valid_content();
+            content[field] = value;
+            assert!(
+                parse_and_validate_mcq(&content.to_string(), QuestionType::Recall, "p1").is_err()
+            );
+        }
     }
 
     #[test]
-    fn test_parse_and_validate_question_too_short() {
-        let json = r#"{
-            "question": "JWT?",
-            "options": ["A", "B", "C", "D"],
-            "correct_index": 0,
-            "explanation": "JWT is a token format for stateless authentication"
-        }"#;
-
-        let result = parse_and_validate_mcq(json, QuestionType::Recall);
-        assert!(result.is_err());
+    fn rejects_invalid_content_lengths_and_blank_choices() {
+        for (field, value) in [
+            ("question", json!("JWT?")),
+            ("question", json!("x".repeat(501))),
+            ("explanation", json!("Stateless")),
+            ("explanation", json!("x".repeat(1001))),
+            ("answer", json!("   ")),
+            ("answer", json!("x".repeat(501))),
+            (
+                "distractors",
+                json!(["Session storage", "\n", "Encryption"]),
+            ),
+            (
+                "distractors",
+                json!(["Session storage", "x".repeat(501), "Encryption"]),
+            ),
+        ] {
+            let mut content = valid_content();
+            content[field] = value;
+            assert!(
+                parse_and_validate_mcq(&content.to_string(), QuestionType::Recall, "p1").is_err(),
+                "accepted {field}"
+            );
+        }
     }
 
     #[test]
-    fn test_parse_and_validate_explanation_too_short() {
-        let json = r#"{
-            "question": "What is JWT used for in web applications?",
-            "options": ["A", "B", "C", "D"],
-            "correct_index": 0,
-            "explanation": "Stateless"
-        }"#;
-
-        let result = parse_and_validate_mcq(json, QuestionType::Recall);
-        assert!(result.is_err());
+    fn rejects_answer_distractor_and_distractor_distractor_duplicates() {
+        for distractors in [
+            json!([" stateless  AUTH\n", "Compression", "Encryption"]),
+            json!(["Session storage", " session\tSTORAGE ", "Encryption"]),
+        ] {
+            let mut content = valid_content();
+            content["distractors"] = distractors;
+            let error = parse_and_validate_mcq(&content.to_string(), QuestionType::Recall, "p1")
+                .unwrap_err();
+            assert!(matches!(error, LlmServiceError::InvalidOutput(_)));
+        }
     }
 
     #[test]

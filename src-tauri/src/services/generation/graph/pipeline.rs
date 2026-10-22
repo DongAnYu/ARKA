@@ -838,14 +838,13 @@ mod tests {
 
         let mcq = json!({
             "question": "Which statement matches the supplied knowledge point?",
-            "options": [
-                "The supplied statement is correct",
+            "answer": "The supplied statement is correct",
+            "distractors": [
                 "The first distractor is correct",
                 "The second distractor is correct",
                 "The third distractor is correct"
             ],
-            "correct_index": 0,
-            "explanation": "The first option directly restates the evidence supplied in the graph bundle."
+            "explanation": "The answer directly restates the evidence supplied in the graph bundle."
         })
         .to_string();
         let body = json!({

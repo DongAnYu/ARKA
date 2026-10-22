@@ -30,6 +30,9 @@ REQUIREMENTS:
 3. Use related knowledge only as supporting context. Do not ask about unrelated supporting facts.
 4. All four options must be grammatically parallel and plausible.
 5. Exactly one option is correct; the other three are convincing distractors.
+   Write the correct option in "answer" and the three incorrect options in "distractors".
+   The answer and all distractors must be distinct. The explanation must support "answer".
+   The application assigns option positions; do not return option letters or an answer index.
 6. Avoid "none of the above" or "all of the above" options.
 7. The question stem must be self-contained and answerable without access to the source note.
 8. Include any essential facts from an example, code block, image, diagram, figure, or table directly in the question stem.
@@ -63,8 +66,8 @@ QUALITY GUIDELINES:
 OUTPUT JSON SCHEMA:
 {
   "question": "string (10-500 chars)",
-  "options": ["option A", "option B", "option C", "option D"],
-  "correct_index": 0-3,
+  "answer": "string (1-500 chars, the correct answer)",
+  "distractors": ["incorrect answer 1", "incorrect answer 2", "incorrect answer 3"],
   "explanation": "string (20-1000 chars, justify correctness)"
 }
 "#.to_string()
@@ -187,7 +190,7 @@ pub fn build_user_prompt(bundle: &GraphContextBundle) -> String {
     let context = render_bundle_context(bundle);
 
     format!(
-        "{}Respond with valid JSON matching this schema:\n{{\n  \"question\": \"...\",\n  \"options\": [\"A\", \"B\", \"C\", \"D\"],\n  \"correct_index\": 0-3,\n  \"explanation\": \"...\"\n}}\n",
+        "{}Respond with valid JSON matching this schema:\n{{\n  \"question\": \"...\",\n  \"answer\": \"the correct answer\",\n  \"distractors\": [\"incorrect answer 1\", \"incorrect answer 2\", \"incorrect answer 3\"],\n  \"explanation\": \"why the answer is correct\"\n}}\n",
         context
     )
 }
@@ -371,8 +374,10 @@ mod tests {
 
         // Should contain JSON schema
         assert!(prompt.contains("\"question\""));
-        assert!(prompt.contains("\"options\""));
-        assert!(prompt.contains("\"correct_index\""));
+        assert!(prompt.contains("\"answer\""));
+        assert!(prompt.contains("\"distractors\""));
+        assert!(!prompt.contains("\"options\""));
+        assert!(!prompt.contains("\"correct_index\""));
         assert!(prompt.contains("\"explanation\""));
     }
 
